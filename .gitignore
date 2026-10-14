@@ -1,0 +1,14 @@
+# Build output
+/voiceime
+/dist/
+*.test
+*.out
+
+# Local runtime artefacts from manual testing
+*.pcm
+captured/
+tmp/
+
+# Editor / OS noise
+.DS_Store
+*.swp

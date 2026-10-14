@@ -79,8 +79,12 @@ type Config struct {
 	DownloadMirror string `toml:"download_mirror" desc:"hf-mirror, huggingface or modelscope."`
 
 	// Integration.
-	Hotkey         string `toml:"hotkey" desc:"GNOME custom shortcut that toggles dictation."`
-	IBusEngineName string `toml:"ibus_engine_name" desc:"IBus engine name registered for text delivery."`
+	Hotkey string `toml:"hotkey" desc:"Shortcut held down to dictate, e.g. <Control>apostrophe."`
+	// IBus's global-shortcut property carries a consumer byte, which it echoes
+	// back on every event so a listener can tell its own events from another
+	// consumer's (the panel's emoji shortcut, for one).
+	HotkeyShortcutType int    `toml:"hotkey_shortcut_type" desc:"Consumer byte for the IBus global shortcut registration."`
+	IBusEngineName     string `toml:"ibus_engine_name" desc:"IBus engine name registered for text delivery."`
 
 	// Escape hatches passed straight through to audio.cpp. Keeping these maps
 	// means a new framework option becomes usable without a voiceime release.
@@ -107,10 +111,16 @@ func Default() *Config {
 		SilenceRMSThreshold: 350,
 		CaptureRate:         TargetRate,
 		DownloadMirror:      "hf-mirror",
-		Hotkey:              "<Control><Alt>space",
-		IBusEngineName:      "voiceime",
-		SessionOptions:      map[string]string{},
-		RequestOptions:      map[string]string{},
+		// A function key, not a modifier combination: IBus's global-shortcut
+		// mechanism consumes the key's release, so a shortcut containing a modifier
+		// leaves that modifier latched in the focused application (measured - Ctrl
+		// stayed down until tapped again, even when the engine switch was delayed by
+		// 300ms). A plain function key has no modifier state to latch.
+		Hotkey:             "<F9>",
+		HotkeyShortcutType: 1,
+		IBusEngineName:     "voiceime",
+		SessionOptions:     map[string]string{},
+		RequestOptions:     map[string]string{},
 	}
 }
 

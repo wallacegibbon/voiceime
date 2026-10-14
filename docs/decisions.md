@@ -235,3 +235,34 @@ an injected sink, so `voiceime stream` drives the identical code with a printing
 sink - which is why tuning per invocation and tuning what a user feels are the
 same measurements. The cost is that the engine's logs have nowhere natural to go
 (its stdout is discarded by the daemon), so it can write a trace file instead.
+
+## D13 — The dictation trigger is a function key, never a modifier combination.
+
+**Decision.** The default shortcut is `<F9>`: a tap starts dictation, a second tap
+returns to the input method that was selected before. The key is configurable, but
+a combination containing a modifier key should not be used.
+
+**Why.** IBus's global-shortcut property consumes the registered key sequence,
+including the release events. A modifier key is not "typed" - clients maintain a
+modifier *state bit* from its KeyPress/KeyRelease pair - so a combination like
+Ctrl+' lets the application see Ctrl go down (the grab only applies once the
+combination is complete) and then swallows the Ctrl release. The application is
+left believing Ctrl is still held, until the user taps Ctrl again. Measured on the
+reference machine: with Ctrl+', Ctrl stayed latched after every tap, *even when the
+engine switch was delayed 300ms past the release* to let the modifiers come up. A
+plain function key cannot fail this way: the client sees neither the press nor the
+release, so there is no state to leave latched.
+
+**Consequence.** Function keys are not free either - applications claim them by
+convention (F1 help, F5 refresh, F11 fullscreen, F12 devtools) - and the listener
+consumes the chosen key globally, so an application that expects F9 will not see
+it. No desktop-level binding on the reference machine uses F1-F12, so the choice is
+about application habits; `voiceime hotkey status` reports the parsed keyval and
+modifier mask so a typo is visible, and the key can be changed with one config
+setting.
+
+**Rejected.** Push-to-talk (hold to dictate, release to return): the mechanism
+supports it - the daemon reports both edges - but holding the key produced ~200
+repeat presses per second-long hold, and the switch it triggered mid-combination is
+what latched the modifier. A tap is also easier to hit than a hold for a single
+utterance.

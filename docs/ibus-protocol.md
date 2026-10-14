@@ -122,6 +122,34 @@ and verified by loading a generated copy into a sandbox daemon:
 </component>
 ```
 
+## Global shortcuts, and why the trigger must not be a modifier
+
+IBus 1.5.29 adds a write-only property on the daemon, `GlobalShortcutKeys` of type
+`(y a(uuu))` - a consumer byte plus (keyval, keycode, state) keys - and a signal
+`GlobalShortcutKeyResponded(y type, b pressed, b backward)`. A third-party client
+may register (verified: the `Set` call succeeds on a private daemon), and the
+signal carries **both** edges, which is what a push-to-talk design would need.
+
+Measured behaviour of a registered combination:
+
+* While the key is held, the daemon emits a `pressed=true` event for **every**
+  auto-repeat tick - roughly 200 for a one-second hold - and exactly **one**
+  `pressed=false` at the real release. So the release, not the press, is what
+  identifies a tap, and a listener that acts on presses must ignore repeats itself.
+* `keycode` may be 0, meaning "any keycode for this keyval"; there is no need for a
+  local X11 keymap.
+* **A modifier in the combination latches in the focused application.** With
+  Ctrl+', the application received Ctrl's press (the grab only covers the complete
+  combination) and never its release, so Ctrl stayed held until the user tapped it
+  again. Delaying the engine switch by 300ms past the release did not help, which
+  rules out the switch as the cause and points at the daemon consuming the
+  modifier release along with the rest of the sequence. A function key has no
+  modifier state to latch, which is why the default trigger is `<F9>`.
+* The property is a **single slot**: the last writer owns the shortcut. Nothing on
+  the reference machine registers it today (gnome-shell, the ibus panel extensions
+  and ibus-dconf do not reference it; the emoji shortcut uses the older gsettings
+  path), so voiceime does not collide with anything - but a second consumer would.
+
 ## The engine process contract
 
 0. **The bus name the engine owns must be the component `<name>`.** A mismatch is

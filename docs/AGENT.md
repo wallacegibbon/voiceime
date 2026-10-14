@@ -171,9 +171,19 @@ Two facts decide whether this works, and both were measured (see
   removes that file before restarting IBus. Without this the engine stays
   invisible even though the environment variable took effect.
 
-Then switch to the engine to dictate: `ibus engine voiceime`, and switch away
-(`ibus engine xkb:us::eng`) to stop. Activating it is what starts capture; there is
-no hotkey in this version.
+Then either switch to the engine directly (`ibus engine voiceime`, and away again
+to stop), or run the shortcut listener so one key does it:
+
+```
+voiceime config set hotkey "<F9>"     # a tap toggles dictation
+voiceime hotkey install               # systemd --user unit, starts at login
+voiceime hotkey status --json
+voiceime hotkey run --log-events      # foreground, prints every event the daemon sends
+```
+
+Use a function key, not a modifier combination: IBus consumes the release of the
+keys it grabs, so Ctrl+' leaves Ctrl latched in the focused application until it is
+tapped again (measured; see docs/decisions.md D13).
 
 Two diagnostics that need no microphone:
 

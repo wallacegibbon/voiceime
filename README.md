@@ -30,13 +30,24 @@ cannot yet type into an application. That is the next piece.
 ## Build
 
 ```
-go build ./cmd/voiceime          # CGO_ENABLED=0, no cgo anywhere
-go test ./...
+make build        # bin/voiceime, version stamped from git describe
+make check        # gofmt check, go vet, unit tests
+make install      # PREFIX=/usr/local by default, DESTDIR honoured
+make cross        # linux/amd64, linux/arm64, windows/amd64, darwin/arm64
+make dist         # tarball with the binary and the docs
+make help         # every target
 ```
+
+`make` drives everything; the targets are non-interactive for the same reason the
+program is. `make measure AUDIO=speech.wav` replays a recording at real time and
+prints the latency and repair numbers.
 
 Requires an audio.cpp installation (the CLI binary is what does the inference) and
 Go 1.24 or newer. Nothing else: capture is a subprocess, so there is no audio
-library and no development headers to install.
+library, no development headers and no cgo — which is why the same source
+cross-compiles to four platforms from Linux with no toolchain per platform.
+
+The stripped binary is 3.1 MB, 1.4 MB compressed, plus the documentation.
 
 ## Use
 

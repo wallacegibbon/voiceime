@@ -5,6 +5,22 @@ voiceime without a human. Every command is non-interactive, idempotent and has a
 `--json` mode. `voiceime capabilities` prints the same surface at runtime,
 derived from the code, so it is the authoritative version if the two disagree.
 
+## Building and installing
+
+The Makefile is the intended interface; every target is non-interactive.
+
+```
+make build                     # bin/voiceime, version stamped from git describe
+make check                     # gofmt check, go vet, unit tests
+make install PREFIX=~/.local   # DESTDIR is honoured for packaging
+make measure AUDIO=speech.wav CHUNK=3
+```
+
+A plain `go build ./cmd/voiceime` also works and produces the same binary, with
+the version reporting as `dev`. An installed copy is not required: running
+`bin/voiceime doctor` straight from the checkout is the normal development loop,
+and nothing in the program depends on being on `PATH`.
+
 ## Ground rules
 
 * **No prompts, no GUI.** Nothing waits for input. If a command needs a decision,

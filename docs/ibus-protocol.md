@@ -76,6 +76,17 @@ From component XML files, not from the engine process:
   ibus restart
   ```
 
+* **The component registry is cached**, and the cache records the directories the
+  daemon watched when it was written. A daemon started with a cache never looks at
+  a newly configured directory: with `IBUS_COMPONENT_PATH` already in the daemon's
+  environment (confirmed by reading `/proc/<pid>/environ`), the engine stayed
+  invisible across `ibus restart` and appeared the moment
+  `~/.cache/ibus/bus/registry` was removed. `voiceime engine install --apply` now
+  removes that file before restarting, and this is the step that makes a user
+  install actually take effect.
+* Adding a component file to an already-watched directory is **not** picked up
+  live: a new XML written into the watched directory did not appear in
+  `list-engine` after three seconds. A cache-invalidating restart is required.
 * An engine process does **not** call `RegisterComponent` on startup. The pinyin
   engine was killed and re-spawned while monitoring the bus, and no registration
   call was captured: the daemon already knows the engine from the XML.
@@ -113,6 +124,12 @@ and verified by loading a generated copy into a sandbox daemon:
 
 ## The engine process contract
 
+0. **The bus name the engine owns must be the component `<name>`.** A mismatch is
+   silent on the engine's side and a timeout on the daemon's: the daemon spawns
+   the `<exec>` and then waits for a name nobody claims
+   (`SetGlobalEngine: Timeout was reached`). Found the hard way with a probe
+   component whose name differed from the hardcoded default, which is why
+   `voiceime ibus-engine` takes `--name`.
 1. Connect to the private bus and take the well-known name equal to the component
    `<name>` (`org.freedesktop.IBus.Voiceime`).
 2. Export `/org/freedesktop/IBus/Factory` implementing
@@ -186,7 +203,25 @@ Reproduced end to end on a sandbox daemon:
    engine receives `Enable`.
 5. The engine emits `CommitText` with the structure above — captured on the bus.
 
-Not yet verified: the final hop into a focused application's text field. That
-needs a real client on the session bus (a GTK entry receiving the text), which is
-the next measurement to take, and the reason `voiceime ibus-engine` currently
-accepts `--commit-on-enable`.
+The same path was then exercised against the **live session** daemon (not just the
+sandbox), with a trace of incoming calls recorded by the engine:
+
+```
+CreateEngine("voiceimetest")
+Properties.GetAll(org.freedesktop.IBus.Engine)
+Properties.Get(org.freedesktop.IBus.Engine.FocusId)
+Properties.Get(org.freedesktop.IBus.Engine.ActiveSurroundingText)
+Enable()
+Properties.Set(org.freedesktop.IBus.Engine.ContentType)
+```
+
+After activation, `ibus engine` reported the engine as current and the trace
+filled with the *user's own keystrokes* (`ProcessKeyEvent`, `SetCursorLocation`)
+— proof that GNOME routes a real application's input through an engine process
+that speaks this protocol, and that answering the methods above is sufficient to
+be that engine.
+
+Not yet verified: text visibly landing in an application's field. The GTK entry
+probe used for it never received window focus (its `notify::is-active` stayed
+false), so there was no focused input context to commit into. The remaining doubt
+is therefore about the probe, not the protocol.

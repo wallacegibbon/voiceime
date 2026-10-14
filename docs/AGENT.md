@@ -166,6 +166,10 @@ Two facts decide whether this works, and both were measured (see
 * `IBUS_COMPONENT_PATH` **replaces** the default search path. A value naming only
   voiceime's directory hides every system engine, which is why the value printed
   by `engine install` always includes `/usr/share/ibus/component`.
+* The daemon's component registry is **cached** (`~/.cache/ibus/bus/registry`) and
+  a cached run does not look at a newly configured directory, so `--apply`
+  removes that file before restarting IBus. Without this the engine stays
+  invisible even though the environment variable took effect.
 
 Verify without speaking (this is also the experiment that established the
 protocol):

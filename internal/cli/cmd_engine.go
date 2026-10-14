@@ -108,6 +108,19 @@ func runEngineInstall(ctx *Context, system, apply, quiet bool) error {
 		if err := runCommand(setEnv); err != nil {
 			return FailureError("%v", err)
 		}
+		// `ibus restart` alone is not enough. The daemon caches the component
+		// registry together with the directories it watched when the cache was
+		// written, so a newly added search path stays invisible until that cache
+		// is gone. This was measured: with IBUS_COMPONENT_PATH already in the
+		// daemon's environment, the engine did not appear until the cache was
+		// removed and the daemon restarted.
+		if cache := ibus.RegistryCachePath(); cache != "" {
+			if err := os.Remove(cache); err != nil && !os.IsNotExist(err) {
+				ctx.Print("warning: could not remove %s: %v", cache, err)
+			} else if !quiet {
+				ctx.Print("removed the component registry cache (%s)", cache)
+			}
+		}
 		if err := runCommand("ibus restart"); err != nil {
 			return FailureError("%v", err)
 		}
@@ -200,6 +213,8 @@ func cmdIBusEngine() *Command {
 	var (
 		commitOnEnable string
 		address        string
+		tracePath      string
+		componentName  string
 	)
 	return &Command{
 		Name:    "ibus-engine",
@@ -210,14 +225,22 @@ func cmdIBusEngine() *Command {
 			set.StringVar(&commitOnEnable, "commit-on-enable", "",
 				"diagnostic: commit this text when the engine is activated, without audio")
 			set.StringVar(&address, "address", "", "IBus bus address (default: IBUS_ADDRESS or the registry file)")
+			set.StringVar(&tracePath, "trace", "", "append every incoming D-Bus call to this file (diagnostics)")
+			set.StringVar(&componentName, "name", ibus.DefaultComponentName,
+				"bus name to own; must equal the component XML <name> of the file that spawned this process")
 		},
 		Run: func(ctx *Context, args []string) error {
-			return runIBusEngine(ctx, address, commitOnEnable)
+			if tracePath != "" {
+				// Enabled through the environment so the tracing code stays out of
+				// the engine's own plumbing.
+				os.Setenv("VOICEIME_IBUS_TRACE", tracePath)
+			}
+			return runIBusEngine(ctx, address, commitOnEnable, componentName)
 		},
 	}
 }
 
-func runIBusEngine(ctx *Context, address, commitOnEnable string) error {
+func runIBusEngine(ctx *Context, address, commitOnEnable, componentName string) error {
 	if address == "" {
 		resolved, err := ibus.ResolveAddress(ibus.Ping)
 		if err != nil {
@@ -226,6 +249,14 @@ func runIBusEngine(ctx *Context, address, commitOnEnable string) error {
 		address = resolved
 	}
 	component := ibus.DefaultComponent(ctx.Config, "voiceime ibus-engine --ibus")
+	// The daemon finds the engine process under the component name, so a mismatch
+	// here is silent from our side and a timeout on the daemon's: it spawns the
+	// process, then waits for a name nobody ever claims. Keeping the name
+	// configurable is what makes a probe component (a second XML with its own
+	// engine name) testable at all.
+	if componentName != "" {
+		component.Name = componentName
+	}
 
 	runCtx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

@@ -3,6 +3,7 @@ package ibus
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -65,6 +66,22 @@ func newAttrList() ibusAttrList {
 		Attachments: map[string]dbus.Variant{},
 		Attributes:  []dbus.Variant{},
 	}
+}
+
+// trace records every call the daemon makes, when VOICEIME_IBUS_TRACE names a
+// file. The engine is spawned detached by ibus-daemon, so its stdout is lost;
+// this is the only way to see where an activation stalls.
+func trace(format string, args ...interface{}) {
+	path := os.Getenv("VOICEIME_IBUS_TRACE")
+	if path == "" {
+		return
+	}
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+	fmt.Fprintf(file, format+"\n", args...)
 }
 
 // Control is what a handler uses to publish text through the engine.
@@ -261,6 +278,7 @@ type factoryObject struct{ service *Service }
 
 // CreateEngine is the only method the daemon needs from a factory.
 func (f *factoryObject) CreateEngine(name string) (dbus.ObjectPath, *dbus.Error) {
+	trace("CreateEngine(%q)", name)
 	path, err := f.service.engine(name)
 	if err != nil {
 		return "/", dbus.MakeFailedError(err)
@@ -321,6 +339,7 @@ func (e *engineObject) DeleteSurroundingText(offset int32, chars uint32) error {
 // keystrokes, so the interesting ones are Enable and Disable.
 
 func (e *engineObject) Enable() *dbus.Error {
+	trace("Enable()")
 	e.mu.Lock()
 	e.active = true
 	handler, testText := e.service.Handler, e.service.EnableText
@@ -343,6 +362,7 @@ func (e *engineObject) Enable() *dbus.Error {
 }
 
 func (e *engineObject) Disable() *dbus.Error {
+	trace("Disable()")
 	e.mu.Lock()
 	e.active = false
 	handler := e.service.Handler
@@ -356,6 +376,7 @@ func (e *engineObject) Disable() *dbus.Error {
 // ProcessKeyEvent returns false: every key belongs to the application. Consuming
 // keys would make voiceime a keyboard layout, which it is not.
 func (e *engineObject) ProcessKeyEvent(keyval, keycode, state uint32) (bool, *dbus.Error) {
+	trace("ProcessKeyEvent(%d,%d,%d)", keyval, keycode, state)
 	e.mu.Lock()
 	handler := e.service.Handler
 	e.mu.Unlock()
@@ -386,7 +407,10 @@ func (e *engineObject) ProcessHandWritingEvent(coordinates []float64) *dbus.Erro
 func (e *engineObject) PanelExtensionReceived(event dbus.Variant) *dbus.Error     { return nil }
 func (e *engineObject) PanelExtensionRegisterKeys(data dbus.Variant) *dbus.Error  { return nil }
 
-func (e *engineObject) SetCursorLocation(x, y, w, h int32) *dbus.Error { return nil }
+func (e *engineObject) SetCursorLocation(x, y, w, h int32) *dbus.Error {
+	trace("SetCursorLocation(%d,%d,%d,%d)", x, y, w, h)
+	return nil
+}
 
 func (e *engineObject) SetSurroundingText(text dbus.Variant, cursorPos, anchorPos uint32) *dbus.Error {
 	return nil
@@ -416,6 +440,7 @@ func (e *engineObject) shutdown() {
 type propertiesObject struct{ engine *engineObject }
 
 func (p *propertiesObject) Get(iface, name string) (dbus.Variant, *dbus.Error) {
+	trace("Properties.Get(%s.%s)", iface, name)
 	switch name {
 	case "FocusId":
 		return dbus.MakeVariant(true), nil
@@ -428,6 +453,7 @@ func (p *propertiesObject) Get(iface, name string) (dbus.Variant, *dbus.Error) {
 }
 
 func (p *propertiesObject) GetAll(iface string) (map[string]dbus.Variant, *dbus.Error) {
+	trace("Properties.GetAll(%s)", iface)
 	return map[string]dbus.Variant{
 		"FocusId":               dbus.MakeVariant(true),
 		"ActiveSurroundingText": dbus.MakeVariant(false),
@@ -436,6 +462,7 @@ func (p *propertiesObject) GetAll(iface string) (map[string]dbus.Variant, *dbus.
 }
 
 func (p *propertiesObject) Set(iface, name string, value dbus.Variant) *dbus.Error {
+	trace("Properties.Set(%s.%s)", iface, name)
 	// ContentType is the only writable property and voiceime does not vary its
 	// behaviour by input purpose, so accepting and ignoring is correct.
 	return nil

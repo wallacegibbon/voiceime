@@ -136,6 +136,26 @@ func displayMatches(name string) bool {
 	return false
 }
 
+// RegistryCachePath is the daemon's cached component registry.
+//
+// It has to be invalidated when the component search path changes: the cache
+// records the directories the daemon watched when it was written, and a daemon
+// that starts with a cache never looks at a new directory. Measured on the
+// reference machine: with IBUS_COMPONENT_PATH already in the daemon's
+// environment, the engine stayed invisible across `ibus restart`, and appeared as
+// soon as this file was removed.
+func RegistryCachePath() string {
+	base := os.Getenv("XDG_CACHE_HOME")
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		base = filepath.Join(home, ".cache")
+	}
+	return filepath.Join(base, "ibus", "bus", "registry")
+}
+
 // configDir mirrors the XDG lookup for the IBus registry, which lives under the
 // config directory rather than voiceime's own.
 func configDir(home string) string {

@@ -20,12 +20,16 @@ for the operational surface.
 | Microphone capture, endpointing | implemented, tests pass, not yet run against a real dictation |
 | Streaming ASR adapter, offline repair pass | working, measured ([numbers](docs/measurements.md)) |
 | `doctor` diagnostics with fix commands | working |
-| IBus engine (text delivery into applications) | **not implemented** |
-| Daemon, hotkey installation, notification/sound cues | **not implemented** |
+| IBus engine (text delivery into applications) | implemented; protocol verified against a live daemon ([transcript](docs/ibus-protocol.md)) |
+| Wiring the dictation pipeline into the engine | **not implemented**: the engine speaks the protocol, but `voiceime ibus-engine` does not yet drive capture |
+| Hotkey installation, notification/sound cues | **not implemented** |
 
-So: the pipeline can be configured and measured end to end today — it transcribes
-audio streaming, repairs finished sentences, and reports its own timings — but it
-cannot yet type into an application. That is the next piece.
+So: the pipeline can be configured and measured end to end, and the text-delivery
+path is proven as far as a client receiving it can be proven without a GUI app --
+the engine process owns its bus name, answers `CreateEngine`, and its `CommitText`
+was captured on the bus in the exact format IBus expects. What is missing is the
+join between the two: the engine process does not yet run the capture/ASR pipeline
+itself, which is the next piece of work.
 
 ## Build
 
@@ -101,6 +105,7 @@ internal/audio      PCM helpers, capture, endpointing, rolling buffer
 internal/asr        the streaming adapter, the transcript model, the repair pass
 internal/models     discovery through `--inspect`, the model manager wrapper
 docs/AGENT.md       the operational surface, for agents
+docs/ibus-protocol.md  the IBus engine protocol, established by experiment
 docs/decisions.md   why each choice was made, and what would change it
 docs/measurements.md  every number, with the command that produced it
 ```

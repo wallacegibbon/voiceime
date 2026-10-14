@@ -143,12 +143,40 @@ With `--realtime`, the `fed_seconds` of a partial is also the time from the user
 speaking to that text appearing, which is the latency number to compare against
 `chunk_seconds`.
 
-## Pending: text delivery
+## Text delivery
 
-The IBus engine is **not implemented yet**. Commands referenced by `doctor`'s fix
-text (`voiceime engine install`, `voiceime dictate`) do not exist in this build;
-`doctor` reports IBus as failing and that is accurate. Until it lands, voiceime
-can be configured and measured end to end, but it cannot type into an application.
+The engine exists and speaks the IBus protocol; what is not wired yet is the
+dictation pipeline *inside* the engine process, so it commits text from
+`--commit-on-enable` rather than from the microphone.
+
+```
+voiceime engine install              # write the component file, print what to run
+voiceime engine install --apply      # also set the activation environment and restart IBus
+voiceime engine install --system     # print the one-line root install instead
+voiceime engine status --json        # is the engine registered, and where is it installed
+voiceime engine uninstall
+```
+
+Two facts decide whether this works, and both were measured (see
+[docs/ibus-protocol.md](ibus-protocol.md)):
+
+* IBus reads `/usr/share/ibus/component` and whatever `IBUS_COMPONENT_PATH`
+  names. It does **not** read `~/.local/share/ibus/component`, so a user install
+  must set that variable in the activation environment and restart the daemon.
+* `IBUS_COMPONENT_PATH` **replaces** the default search path. A value naming only
+  voiceime's directory hides every system engine, which is why the value printed
+  by `engine install` always includes `/usr/share/ibus/component`.
+
+Verify without speaking (this is also the experiment that established the
+protocol):
+
+```
+dbus-monitor --address "$(grep -o 'unix:path=[^,]*' ~/.config/ibus/bus/*-unix-wayland-0)"
+voiceime ibus-engine --ibus --commit-on-enable "hello from voiceime"
+```
+
+Activating the engine (`ibus engine voiceime`) then makes the daemon spawn the
+engine, and the monitor shows the `CommitText` signal.
 
 ## Troubleshooting table
 

@@ -110,6 +110,12 @@ type Engine struct {
 	started  time.Time
 	loadOnce sync.Once
 	loadTime time.Duration
+	// closeOnce guards the drain of the event stream. Two callers (the session's
+	// explicit Close and its deferred safety net, say) would otherwise both range
+	// over the same channel: the second would see nothing, and whichever caller
+	// saw the events first would be the only one to observe the final transcript.
+	closeOnce sync.Once
+	closeErr  error
 
 	resultMu sync.Mutex
 	result   Result
@@ -278,25 +284,29 @@ func (e *Engine) FedSamples() int64 { return e.fed.Load() }
 // LoadTime is how long the model took to become ready.
 func (e *Engine) LoadTime() time.Duration { return e.loadTime }
 
-// Close finishes the stream and returns the session result.
-//
-// Closing stdin is the protocol's end-of-audio signal: the CLI flushes the model
-// state, prints the joined transcript and exits, which is what makes a
-// push-to-talk style stop work without a special command.
+// Close finishes the stream and returns the session result. Closing stdin is the
+// protocol's end-of-audio signal: the CLI flushes the model state, prints the
+// joined transcript and exits, which is what makes a push-to-talk style stop work
+// without a special command. Safe to call more than once, and from more than one
+// goroutine; the second caller gets the same result.
 func (e *Engine) Close() (Result, error) {
-	_ = e.stdin.Close()
-	deadline := time.After(30 * time.Second)
-	for {
-		select {
-		case _, ok := <-e.events:
-			if !ok {
-				return e.Result(), nil
+	e.closeOnce.Do(func() {
+		_ = e.stdin.Close()
+		deadline := time.After(30 * time.Second)
+		for {
+			select {
+			case _, ok := <-e.events:
+				if !ok {
+					return
+				}
+			case <-deadline:
+				_ = e.cmd.Process.Kill()
+				e.closeErr = fmt.Errorf("engine did not exit within 30s of end of audio")
+				return
 			}
-		case <-deadline:
-			_ = e.cmd.Process.Kill()
-			return e.Result(), fmt.Errorf("engine did not exit within 30s of end of audio")
 		}
-	}
+	})
+	return e.Result(), e.closeErr
 }
 
 // Result returns what the session produced so far.

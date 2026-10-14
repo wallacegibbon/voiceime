@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -389,12 +388,3 @@ func (h *diagnosticHandler) Disable() {
 }
 
 func (h *diagnosticHandler) KeyEvent(keyval, keycode, state uint32) bool { return false }
-
-// engineBinaryHint is used by doctor to explain what the component points at.
-func engineBinaryHint() string {
-	binary, err := os.Executable()
-	if err != nil {
-		return ""
-	}
-	return filepath.Clean(binary)
-}

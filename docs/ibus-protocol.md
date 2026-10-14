@@ -145,6 +145,15 @@ Measured behaviour of a registered combination:
   rules out the switch as the cause and points at the daemon consuming the
   modifier release along with the rest of the sequence. A function key has no
   modifier state to latch, which is why the default trigger is `<F9>`.
+* **An empty key list aborts the daemon.** libibus asserts `size > 0` in
+  `_ibus_set_global_shortcut_keys`, so "unregister by writing an empty list" - the
+  obvious way to release a shortcut - kills ibus-daemon with SIGABRT (observed in
+  the session journal, twice in the GLib layer as well, with systemd restarting the
+  service and SIGKILLing the engine processes it had spawned). There is no way to
+  clear the registration while the daemon runs; a restart is the only thing that
+  does. voiceime therefore hands the slot to an inert combination
+  (Ctrl+Alt+Shift+Super+F24) when its listener stops, and `hotkey uninstall` runs
+  `ibus restart`.
 * The property is a **single slot**: the last writer owns the shortcut. Nothing on
   the reference machine registers it today (gnome-shell, the ibus panel extensions
   and ibus-dconf do not reference it; the emoji shortcut uses the older gsettings

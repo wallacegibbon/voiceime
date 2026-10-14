@@ -32,6 +32,10 @@ type Sink interface {
 
 // Observer receives everything the session learns, for logging and measurement.
 // All callbacks are optional.
+//
+// They are invoked from three goroutines (recognition events, the capture loop and
+// the repair worker), so an implementation must be safe for concurrent use. Text
+// delivery is already serialised; these are notifications and are not.
 type Observer struct {
 	Ready     func(load time.Duration)
 	Partial   func(text string, fedSeconds float64)

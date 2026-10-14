@@ -228,6 +228,7 @@ type ShortcutListener struct {
 	shortcutType byte
 	keys         []Key
 	address      string
+	closeErr     error
 }
 
 // NewShortcutListener connects to the IBus bus and registers the shortcut.
@@ -266,7 +267,21 @@ func dialIBus(address string) (*dbus.Conn, error) {
 // register writes the shortcut property. The property is a single slot: whoever
 // writes it last owns the shortcut, which is why voiceime registers only the one
 // combination a user configured and says so in `hotkey status`.
+//
+// An empty key list must never be sent. libibus asserts `size > 0` in
+// _ibus_set_global_shortcut_keys, and the daemon aborts on the assertion - it
+// core-dumps, systemd restarts it, and any engine process it had spawned is
+// SIGKILLed with it. Observed in the session log:
+//
+//	ibus-daemon[680482]: _ibus_set_global_shortcut_keys: assertion 'size > 0' failed
+//	systemd: org.freedesktop.IBus.session.GNOME.service: Main process exited, code=dumped, status=6/ABRT
+//
+// There is therefore no way to withdraw a registration while the daemon runs; a
+// daemon restart is the only thing that clears the slot.
 func (l *ShortcutListener) register() error {
+	if len(l.keys) == 0 {
+		return fmt.Errorf("refusing to register an empty key list: ibus-daemon aborts on it (see register's comment)")
+	}
 	tuples := make([]shortcutKeyTuple, 0, len(l.keys))
 	for _, key := range l.keys {
 		tuples = append(tuples, shortcutKeyTuple{Keyval: key.Keyval, Keycode: key.Keycode, State: key.State})
@@ -281,13 +296,34 @@ func (l *ShortcutListener) register() error {
 	return nil
 }
 
-// Close releases the shortcut by registering an empty key list.
+// inertKeys is what a listener leaves behind when it stops.
+//
+// IBus cannot be told to forget a registration: the property *is* the
+// registration, and an empty key list makes the daemon abort (see register's
+// comment). So the choice is between leaving the user's own key swallowed by a
+// daemon nobody is listening to, and handing the slot to a combination no
+// application claims. The second is clearly better: Ctrl+Alt+Shift+Super+F24 is on
+// no keyboard.
+var inertKeys = []Key{{
+	Keyval: 0xffd5, // XK_F24
+	State:  ModControl | ModShift | ModMod1 | ModMod4,
+}}
+
+// Close ends the listener, releasing the user's key.
+//
+// What the daemon ends up holding afterwards is the inert combination, not an
+// empty registration, because the latter is fatal to it. `ibus restart` clears the
+// slot outright, which is what `voiceime hotkey uninstall` does.
 func (l *ShortcutListener) Close() {
-	empty := shortcutRegistration{Type: l.shortcutType, Keys: []shortcutKeyTuple{}}
-	_ = l.conn.Object(ifaceIBus, ibusObjectPath).Call(
-		"org.freedesktop.DBus.Properties.Set", 0, ifaceIBus, propShortcutKeys, dbus.MakeVariant(empty)).Err
+	l.keys = inertKeys
+	if err := l.register(); err != nil {
+		l.closeErr = err
+	}
 	l.conn.Close()
 }
+
+// CloseError reports why releasing the shortcut failed, if it did.
+func (l *ShortcutListener) CloseError() error { return l.closeErr }
 
 // Listen delivers shortcut events until the context ends or the bus closes.
 func (l *ShortcutListener) Listen(ctx context.Context, deliver func(ShortcutEvent)) error {

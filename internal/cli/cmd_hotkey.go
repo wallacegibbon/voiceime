@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -86,10 +87,33 @@ func runHotkey(ctx *Context, spec string, quiet, logEvents bool) error {
 	}
 	defer listener.Close()
 
-	logf := func(format string, args ...any) {
-		if !quiet {
-			ctx.Print(format, args...)
+	// The listener is a long-running command, so --json emits one object per event
+	// rather than a single document: an agent watching it needs the transitions as
+	// they happen, and the process does not end.
+	emit := func(kind string, fields map[string]any) {
+		if ctx.JSON {
+			if fields == nil {
+				fields = map[string]any{}
+			}
+			fields["event"] = kind
+			encoder := json.NewEncoder(ctx.Stdout)
+			_ = encoder.Encode(fields)
+			return
 		}
+		if quiet {
+			return
+		}
+		switch kind {
+		case "log":
+			ctx.Print("%v", fields["message"])
+		case "dictation_on":
+			ctx.Print("dictation on (was %v)", fields["previous"])
+		case "dictation_off":
+			ctx.Print("dictation off; back to %v", fields["previous"])
+		}
+	}
+	logf := func(format string, args ...any) {
+		emit("log", map[string]any{"message": fmt.Sprintf(format, args...)})
 	}
 	logf("tap %s to start dictating, tap it again to return to the previous engine",
 		hotkeySpec(ctx, spec))
@@ -116,7 +140,7 @@ func runHotkey(ctx *Context, spec string, quiet, logEvents bool) error {
 				fmt.Fprintf(ctx.Stderr, "voiceime: %v\n", err)
 				return
 			}
-			logf("dictation off; back to %s", previous)
+			emit("dictation_off", map[string]any{"previous": previous})
 			previous = ""
 			return
 		}
@@ -125,11 +149,18 @@ func runHotkey(ctx *Context, spec string, quiet, logEvents bool) error {
 			fmt.Fprintf(ctx.Stderr, "voiceime: %v\n", err)
 			return
 		}
-		logf("dictation on (was %s)", previous)
+		emit("dictation_on", map[string]any{"previous": previous})
 	}
 
 	runCtx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	// The daemon cannot be told to forget a shortcut (it aborts on an empty key
+	// list), so its registration outlives this process. Saying so is better than
+	// leaving the user wondering why the key is still swallowed.
+	defer func() {
+		emit("log", map[string]any{"message": "listener stopped; " + hotkeySpec(ctx, spec) + " released"})
+	}()
 
 	if err := ctx.Emit("hotkey run", map[string]any{
 		"listening":     true,
@@ -140,6 +171,7 @@ func runHotkey(ctx *Context, spec string, quiet, logEvents bool) error {
 		"modifiers":     key.State,
 		"shortcut_type": ctx.Config.HotkeyShortcutType,
 		"semantics":     "tap to toggle",
+		"events":        "one JSON object per event on stdout",
 	}); err != nil {
 		return err
 	}
@@ -250,7 +282,13 @@ func shellQuote(value string) string {
 }
 
 func uninstallHotkeyService(ctx *Context) error {
-	commands := []string{"systemctl --user disable --now voiceime-hotkey.service"}
+	// The restart is part of the uninstall, not a nicety: the daemon keeps the
+	// shortcut registration alive (it cannot be cleared while it runs), so the key
+	// stays swallowed until it is restarted.
+	commands := []string{
+		"systemctl --user disable --now voiceime-hotkey.service",
+		"ibus restart",
+	}
 	for _, command := range commands {
 		if _, err := exec.LookPath("systemctl"); err == nil {
 			_ = runCommand(command)

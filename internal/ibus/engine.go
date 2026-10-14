@@ -123,7 +123,18 @@ type Service struct {
 	mu           sync.Mutex
 	engines      map[dbus.ObjectPath]*engineObject
 	nextEngineID int
-	closed       chan struct{}
+
+	// closed is shut exactly once. Two paths can decide to end the service - a
+	// failed liveness ping, and the daemon asking the component to Destroy - and
+	// D-Bus dispatches each incoming call on its own goroutine, so they can run at
+	// the same time. A check-then-close could therefore close twice and panic.
+	closed    chan struct{}
+	closeOnce sync.Once
+}
+
+// shutdown ends the service; safe to call from any goroutine, any number of times.
+func (s *Service) shutdown() {
+	s.closeOnce.Do(func() { close(s.closed) })
 }
 
 // Ping connects to an address and pings the bus, which is how a stale registry
@@ -206,7 +217,7 @@ func (s *Service) connect(address string) error {
 			case <-time.After(time.Second):
 				// Peer.Ping is the cheapest proof the daemon is still there.
 				if call := conn.BusObject().Call("org.freedesktop.DBus.Peer.Ping", 0); call.Err != nil {
-					close(s.closed)
+					s.shutdown()
 					return
 				}
 			}
@@ -266,7 +277,11 @@ func (s *Service) drop(path dbus.ObjectPath) {
 
 	if instance != nil {
 		instance.shutdown()
-		_ = s.conn.Export(nil, path, ifaceIBusEngine)
+		// Every interface exported for this path has to go, or the daemon could
+		// still call Destroy (and Properties) on an engine it already discarded.
+		for _, iface := range []string{ifaceIBusEngine, ifaceIBusService, ifaceDBusProps} {
+			_ = s.conn.Export(nil, path, iface)
+		}
 	}
 }
 
@@ -293,11 +308,7 @@ func (f *factoryObject) Destroy() *dbus.Error {
 	empty := len(f.service.engines) == 0
 	f.service.mu.Unlock()
 	if empty {
-		select {
-		case <-f.service.closed:
-		default:
-			close(f.service.closed)
-		}
+		f.service.shutdown()
 	}
 	return nil
 }
@@ -305,6 +316,38 @@ func (f *factoryObject) Destroy() *dbus.Error {
 type serviceObject struct{ service *Service }
 
 func (s *serviceObject) Destroy() *dbus.Error { return (&factoryObject{service: s.service}).Destroy() }
+
+// engineControl publishes text for one engine instance.
+//
+// It is deliberately a separate type from engineObject. godbus exports *every*
+// exported method of whatever object it is handed, under the interface name it is
+// given, so an engine object that also implemented Commit/Preedit would expose
+// those as D-Bus methods the daemon could call - harmless today, but it means the
+// wire surface would silently grow with every helper added here.
+type engineControl struct {
+	conn *dbus.Conn
+	path dbus.ObjectPath
+}
+
+func (c *engineControl) Commit(text string) error {
+	if text == "" {
+		return nil
+	}
+	return c.conn.Emit(c.path, signalCommitText, dbus.MakeVariant(NewText(text)))
+}
+
+func (c *engineControl) Preedit(text string, cursor int, visible bool) error {
+	// mode 0 is IBus's "clear and replace" update; the engine has no other mode.
+	return c.conn.Emit(c.path, signalPreedit, dbus.MakeVariant(NewText(text)), uint32(cursor), visible, uint32(0))
+}
+
+func (c *engineControl) DeleteSurroundingText(offset int32, chars uint32) error {
+	return c.conn.Emit(c.path, ifaceIBusEngine+".DeleteSurroundingText", offset, chars)
+}
+
+func (e *engineObject) control() Control {
+	return &engineControl{conn: e.service.conn, path: e.path}
+}
 
 // engineObject is one input context's engine instance.
 type engineObject struct {
@@ -315,24 +358,6 @@ type engineObject struct {
 	mu          sync.Mutex
 	active      bool
 	placeholder bool // true when a test handler is standing in for the pipeline
-}
-
-// Control implementation, bound to this engine instance.
-
-func (e *engineObject) Commit(text string) error {
-	if text == "" {
-		return nil
-	}
-	return e.service.conn.Emit(e.path, signalCommitText, dbus.MakeVariant(NewText(text)))
-}
-
-func (e *engineObject) Preedit(text string, cursor int, visible bool) error {
-	// mode 0 is IBus's "clear and replace" update; the engine has no other mode.
-	return e.service.conn.Emit(e.path, signalPreedit, dbus.MakeVariant(NewText(text)), uint32(cursor), visible, uint32(0))
-}
-
-func (e *engineObject) DeleteSurroundingText(offset int32, chars uint32) error {
-	return e.service.conn.Emit(e.path, ifaceIBusEngine+".DeleteSurroundingText", offset, chars)
 }
 
 // Methods the daemon calls. Most are no-ops: voiceime does not compose text from
@@ -347,14 +372,14 @@ func (e *engineObject) Enable() *dbus.Error {
 
 	switch {
 	case handler != nil:
-		handler.Enable(e)
+		handler.Enable(e.control())
 	case testText != "":
 		// No pipeline attached: this is a diagnostic run, whose only purpose is to
 		// prove text reaches an application.
 		e.mu.Lock()
 		e.placeholder = true
 		e.mu.Unlock()
-		if err := e.Commit(testText); err != nil {
+		if err := e.control().Commit(testText); err != nil {
 			return dbus.MakeFailedError(err)
 		}
 	}

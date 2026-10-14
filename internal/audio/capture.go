@@ -2,7 +2,6 @@ package audio
 
 import (
 	"bufio"
-	"context"
 	"fmt"
 	"io"
 	"os/exec"
@@ -45,6 +44,11 @@ type captureBase struct {
 	stopped sync.Once
 	errMu   sync.Mutex
 	err     error
+	// diagnostic is the client's own last words on stderr. A capture client can
+	// be chatty about formats and latencies while working perfectly, so stderr is
+	// not treated as failure on its own: it is attached to the error when the
+	// stream really did fail or produced nothing.
+	diagnostic string
 
 	sampleCursor int64
 	dropped      int64
@@ -83,6 +87,20 @@ func (c *captureBase) setErr(err error) {
 	}
 }
 
+func (c *captureBase) setDiagnostic(line string) {
+	c.errMu.Lock()
+	defer c.errMu.Unlock()
+	c.diagnostic = line
+}
+
+// diagnosticTail reports what the capture client last complained about, for the
+// error message when there is one.
+func (c *captureBase) diagnosticTail() string {
+	c.errMu.Lock()
+	defer c.errMu.Unlock()
+	return c.diagnostic
+}
+
 // publish hands a chunk to the consumer, dropping the oldest chunk when the
 // consumer is behind. Dropping the oldest rather than the newest keeps output
 // close to what is being said right now, which is the whole point of a live
@@ -112,10 +130,11 @@ func (c *captureBase) publish(data []byte) {
 // readLoop blocks on reader, assembling fixed-size chunks. It is shared by every
 // subprocess-backed source because both parec and pw-record behave identically
 // here: a byte stream on stdout that ends when the process ends.
-func (c *captureBase) readLoop(ctx context.Context, reader io.Reader, wait func() error) {
+func (c *captureBase) readLoop(reader io.Reader, wait func() error) {
 	defer close(c.chunks)
 	blockBytes := c.rate * FrameMS / 1000 * BytesPerSample
 	buffer := make([]byte, blockBytes)
+	published := 0
 	for {
 		select {
 		case <-c.stop:
@@ -125,17 +144,32 @@ func (c *captureBase) readLoop(ctx context.Context, reader io.Reader, wait func(
 		read, err := io.ReadFull(reader, buffer)
 		if read > 0 {
 			c.publish(append([]byte(nil), buffer[:read]...))
+			published++
 		}
 		if err != nil {
 			if err != io.ErrUnexpectedEOF && err != io.EOF {
 				c.setErr(fmt.Errorf("capture read: %w", err))
+				return
 			}
-			// A source that exits on its own (device unplugged, stop requested)
-			// is not an error; the wait result only matters if it failed early.
+			// The stream ended. A source that exits on its own (stop requested,
+			// device gone) is not automatically an error, so the wait result and
+			// the amount of audio produced decide.
 			if wait != nil {
 				if waitErr := wait(); waitErr != nil {
-					c.setErr(fmt.Errorf("capture process: %w", waitErr))
+					message := fmt.Sprintf("capture process exited: %v", waitErr)
+					if tail := c.diagnosticTail(); tail != "" {
+						message += ": " + tail
+					}
+					c.setErr(fmt.Errorf("%s", message))
+					return
 				}
+			}
+			if published == 0 {
+				message := "capture produced no audio"
+				if tail := c.diagnosticTail(); tail != "" {
+					message += ": " + tail
+				}
+				c.setErr(fmt.Errorf("%s", message))
 			}
 			return
 		}
@@ -223,20 +257,21 @@ func (m *microphone) Start() error {
 	}
 	m.cmd = cmd
 
-	// The client's diagnostics are the only explanation available when a device
-	// is missing, so they are kept as the error text.
+	// The client's diagnostics are the only explanation available when a device is
+	// missing, so the last line is kept - but as a diagnostic, not as a failure:
+	// these clients narrate formats and latencies while working correctly.
 	go func() {
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
 			if line := scanner.Text(); line != "" {
-				m.setErr(fmt.Errorf("%s: %s", m.command[0], line))
+				m.setDiagnostic(fmt.Sprintf("%s: %s", m.command[0], line))
 			}
 		}
 	}()
 
 	go func() {
 		defer close(m.finished)
-		m.readLoop(context.Background(), stdout, cmd.Wait)
+		m.readLoop(stdout, cmd.Wait)
 	}()
 	return nil
 }
@@ -245,6 +280,11 @@ func (m *microphone) Stop() {
 	m.captureBase.Stop()
 	if m.cmd != nil && m.cmd.Process != nil {
 		_ = m.cmd.Process.Kill()
+	}
+	if m.cmd == nil {
+		// Never started: there is no reader goroutine to wait for, and waiting
+		// would stall the caller for the whole timeout.
+		return
 	}
 	select {
 	case <-m.finished:

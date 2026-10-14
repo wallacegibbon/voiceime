@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wallacegibbon/voiceime/internal/config"
@@ -98,6 +99,12 @@ type index struct {
 }
 
 const indexVersion = 1
+
+// indexMu serialises read-modify-write of the inspection cache. Two commands can
+// run at once (a doctor and a models list, or two agents), and both would
+// otherwise load the index, modify their own copy and save, losing the other's
+// work - which shows up later as models being re-inspected for no reason.
+var indexMu sync.Mutex
 
 func loadIndex(path string) index {
 	loaded := index{Version: indexVersion, Models: map[string]indexEntry{}}
@@ -186,6 +193,9 @@ func Scan(cfg *config.Config, force bool, progress func(string)) ([]Model, error
 	if err != nil {
 		return nil, err
 	}
+
+	indexMu.Lock()
+	defer indexMu.Unlock()
 
 	indexPath := config.ModelIndexPath()
 	cached := loadIndex(indexPath)

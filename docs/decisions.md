@@ -266,3 +266,22 @@ supports it - the daemon reports both edges - but holding the key produced ~200
 repeat presses per second-long hold, and the switch it triggered mid-combination is
 what latched the modifier. A tap is also easier to hit than a hold for a single
 utterance.
+
+## D14 — Releasing the shortcut cannot be a deregistration.
+
+**Decision.** When the hotkey listener stops it registers an inert combination
+(Ctrl+Alt+Shift+Super+F24) in place of the user's key, and `hotkey uninstall` runs
+`ibus restart`.
+
+**Why.** IBus offers no way to withdraw a registration: the property *is* the
+registration, and an empty key list makes the daemon abort - libibus asserts
+`size > 0`, the process core-dumps, systemd restarts it, and every engine process
+it had spawned is killed with it. This was not a hypothesis: it happened in the
+reference session, repeatedly, and the daemon log named the assertion. Leaving the
+registration untouched was the alternative, and it is worse: the user's key stays
+swallowed by a daemon that no longer has a listener, so F9 would simply stop
+working in every application with no explanation.
+
+**Consequence.** Stopping the listener releases the user's key, at the cost of the
+daemon still holding a combination nobody can press. Only a daemon restart clears
+the slot, which is why uninstall does it and why the listener says what it did.

@@ -33,6 +33,12 @@ type EngineHandler struct {
 	mu     sync.Mutex
 	cancel context.CancelFunc
 	done   chan struct{}
+	// lifecycle serialises Enable against Disable *including* the wait for the
+	// previous session to finish. Without it a rapid deactivate-then-activate -
+	// which the daemon can do while the first session is still committing its tail
+	// - would start a second session while the first is still stopping: two
+	// captures of the same microphone, and two text streams into one application.
+	lifecycle sync.Mutex
 }
 
 func (h *EngineHandler) logf(format string, args ...any) {
@@ -45,6 +51,9 @@ func (h *EngineHandler) logf(format string, args ...any) {
 // only the first one starts a session: two sessions would capture the same
 // microphone twice and interleave their text.
 func (h *EngineHandler) Enable(control ibus.Control) {
+	h.lifecycle.Lock()
+	defer h.lifecycle.Unlock()
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.cancel != nil {
@@ -103,6 +112,9 @@ func (h *EngineHandler) Enable(control ibus.Control) {
 // Disable stops dictation. The session commits the tail as it shuts down, so a
 // deactivation mid-sentence does not lose words.
 func (h *EngineHandler) Disable() {
+	h.lifecycle.Lock()
+	defer h.lifecycle.Unlock()
+
 	h.mu.Lock()
 	cancel, done := h.cancel, h.done
 	h.cancel, h.done = nil, nil

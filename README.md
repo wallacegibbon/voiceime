@@ -20,16 +20,20 @@ for the operational surface.
 | Microphone capture, endpointing | implemented, tests pass, not yet run against a real dictation |
 | Streaming ASR adapter, offline repair pass | working, measured ([numbers](docs/measurements.md)) |
 | `doctor` diagnostics with fix commands | working |
-| IBus engine (text delivery into applications) | implemented; protocol verified against a live daemon ([transcript](docs/ibus-protocol.md)) |
-| Wiring the dictation pipeline into the engine | **not implemented**: the engine speaks the protocol, but `voiceime ibus-engine` does not yet drive capture |
-| Hotkey installation, notification/sound cues | **not implemented** |
+| IBus engine (text delivery into applications) | working; protocol verified against a live daemon ([transcript](docs/ibus-protocol.md)) |
+| Dictation inside the engine process | working: activating the engine starts capture, live preedit and committed text |
+| Hotkey installation, notification/sound cues | **not implemented** — switching input methods is currently the on/off switch |
 
-So: the pipeline can be configured and measured end to end, and the text-delivery
-path is proven as far as a client receiving it can be proven without a GUI app --
-the engine process owns its bus name, answers `CreateEngine`, and its `CommitText`
-was captured on the bus in the exact format IBus expects. What is missing is the
-join between the two: the engine process does not yet run the capture/ASR pipeline
-itself, which is the next piece of work.
+So the whole path now exists: install a model, install the engine, activate it, and
+speak. Proven by measurement rather than by assertion - the engine process was
+observed loading SenseVoice (327 ms), emitting partials at 3.14 s and 5.55 s,
+repairing the finished utterance in 594 ms, and committing the repaired Chinese
+sentence as an `CommitText` signal on the bus.
+
+The one hop that is not directly observed is text appearing in a *focused*
+application's text field: the GTK probe written for it never received window
+focus, so there was no focused input context to commit into. Everything on this
+side of that boundary is measured.
 
 ## Build
 

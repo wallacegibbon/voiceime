@@ -12,7 +12,9 @@ import (
 	"syscall"
 
 	"github.com/wallacegibbon/voiceime/internal/config"
+	"github.com/wallacegibbon/voiceime/internal/daemon"
 	"github.com/wallacegibbon/voiceime/internal/ibus"
+	"github.com/wallacegibbon/voiceime/internal/models"
 )
 
 // cmdEngine installs and inspects the IBus component, and hosts the engine
@@ -215,6 +217,8 @@ func cmdIBusEngine() *Command {
 		address        string
 		tracePath      string
 		componentName  string
+		audioFile      string
+		repairModel    string
 	)
 	return &Command{
 		Name:    "ibus-engine",
@@ -225,7 +229,11 @@ func cmdIBusEngine() *Command {
 			set.StringVar(&commitOnEnable, "commit-on-enable", "",
 				"diagnostic: commit this text when the engine is activated, without audio")
 			set.StringVar(&address, "address", "", "IBus bus address (default: IBUS_ADDRESS or the registry file)")
-			set.StringVar(&tracePath, "trace", "", "append every incoming D-Bus call to this file (diagnostics)")
+			set.StringVar(&tracePath, "trace", "", "append incoming D-Bus calls and the session log to this file")
+			set.StringVar(&audioFile, "audio-file", "",
+				"diagnostic: dictate from a WAV instead of the microphone")
+			set.StringVar(&repairModel, "repair-model", "",
+				"offline model for the repair pass (default: from config)")
 			set.StringVar(&componentName, "name", ibus.DefaultComponentName,
 				"bus name to own; must equal the component XML <name> of the file that spawned this process")
 		},
@@ -235,12 +243,32 @@ func cmdIBusEngine() *Command {
 				// the engine's own plumbing.
 				os.Setenv("VOICEIME_IBUS_TRACE", tracePath)
 			}
-			return runIBusEngine(ctx, address, commitOnEnable, componentName)
+			return runIBusEngine(ctx, engineRunOptions{
+				address:        address,
+				commitOnEnable: commitOnEnable,
+				componentName:  componentName,
+				audioFile:      audioFile,
+				repairModel:    repairModel,
+				tracePath:      tracePath,
+			})
 		},
 	}
 }
 
-func runIBusEngine(ctx *Context, address, commitOnEnable, componentName string) error {
+// engineRunOptions is the engine process's whole configuration. It is a struct
+// because the argument list had grown past the point where position is readable.
+type engineRunOptions struct {
+	address        string
+	commitOnEnable string
+	componentName  string
+	audioFile      string
+	repairModel    string
+	tracePath      string
+}
+
+func runIBusEngine(ctx *Context, options engineRunOptions) error {
+	address, commitOnEnable, componentName := options.address, options.commitOnEnable, options.componentName
+	audioFile, repairModel, tracePath := options.audioFile, options.repairModel, options.tracePath
 	if address == "" {
 		resolved, err := ibus.ResolveAddress(ibus.Ping)
 		if err != nil {
@@ -261,17 +289,31 @@ func runIBusEngine(ctx *Context, address, commitOnEnable, componentName string) 
 	runCtx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	// The engine hosts the dictation pipeline. Until that wiring lands, the
-	// engine still speaks the protocol, which is what makes injection testable.
-	service := "engine started on %s"
-	if commitOnEnable == "" {
-		service += " (no audio pipeline attached yet: text delivery cannot be exercised)"
+	// Session logs must go somewhere: ibus-daemon spawns this process detached, so
+	// its stdout is discarded. A trace file is where a user can find out why
+	// dictation did nothing.
+	logf := func(format string, args ...any) {
+		line := fmt.Sprintf(format, args...)
+		if tracePath != "" {
+			appendLogLine(tracePath, "session: "+line)
+			return
+		}
+		fmt.Fprintf(ctx.Stderr, "voiceime: %s\n", line)
 	}
-	ctx.Print(service, address)
 
-	handler := ibus.Handler(nil)
-	if commitOnEnable != "" {
-		handler = &diagnosticHandler{text: commitOnEnable, out: ctx.Stdout, jsonMode: ctx.JSON}
+	var handler ibus.Handler
+	switch {
+	case commitOnEnable != "":
+		// Diagnostic: commit a fixed string, no audio pipeline.
+		ctx.Print("engine started on %s (diagnostic commit only)", address)
+		handler = &diagnosticHandler{text: commitOnEnable, out: ctx.Stdout}
+	default:
+		pipeline, err := newPipelineHandler(ctx, logf, audioFile, repairModel)
+		if err != nil {
+			return err
+		}
+		ctx.Print("engine started on %s; dictation begins when the engine is activated", address)
+		handler = pipeline
 	}
 	engineErr := ibus.Run(runCtx, component, handler, address)
 	if engineErr != nil {
@@ -280,12 +322,57 @@ func runIBusEngine(ctx *Context, address, commitOnEnable, componentName string) 
 	return ctx.Emit("ibus-engine", map[string]any{"address": address, "stopped": true})
 }
 
-// diagnosticHandler commits a fixed string when activated and reports key events,
-// so that a session can be verified end to end without a microphone.
+// newPipelineHandler assembles the dictation pipeline the engine runs: the
+// streaming model for live text, the repair model for finished utterances, and
+// either the microphone or a file as the audio source.
+func newPipelineHandler(ctx *Context, logf func(string, ...any), audioFile, repairModel string) (*daemon.EngineHandler, error) {
+	binary, err := ctx.Config.FindASRBinary()
+	if err != nil {
+		return nil, PreconditionError("voiceime config set audio_cpp_dir /path/to/audio.cpp", "%v", err)
+	}
+	model := resolveModel(ctx, false)
+	if model == "" {
+		return nil, PreconditionError("voiceime models install "+models.RecommendedPackages()[0].ID,
+			"no streaming model available")
+	}
+	repair := repairModel
+	if repair == "" {
+		repair = resolveModel(ctx, true)
+	}
+
+	handler := &daemon.EngineHandler{
+		Config:      ctx.Config,
+		Binary:      binary,
+		Model:       model,
+		RepairModel: repair,
+		Log:         logf,
+	}
+	if audioFile != "" {
+		// Validated here rather than at first use: a typo in the path should fail
+		// when the engine starts, not silently later.
+		expanded := config.Expand(audioFile)
+		if _, err := os.Stat(expanded); err != nil {
+			return nil, FailureError("--audio-file %s: %v", expanded, err)
+		}
+		handler.AudioFile = expanded
+	}
+	return handler, nil
+}
+
+func appendLogLine(path, line string) {
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+	fmt.Fprintln(file, line)
+}
+
+// diagnosticHandler commits a fixed string when activated, so that the delivery
+// path can be verified without any audio at all.
 type diagnosticHandler struct {
-	text     string
-	out      interface{ Write([]byte) (int, error) }
-	jsonMode bool
+	text string
+	out  interface{ Write([]byte) (int, error) }
 }
 
 func (h *diagnosticHandler) Enable(control ibus.Control) {

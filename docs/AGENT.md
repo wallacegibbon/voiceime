@@ -145,9 +145,9 @@ speaking to that text appearing, which is the latency number to compare against
 
 ## Text delivery
 
-The engine exists and speaks the IBus protocol; what is not wired yet is the
-dictation pipeline *inside* the engine process, so it commits text from
-`--commit-on-enable` rather than from the microphone.
+The engine hosts the full pipeline: activating it starts capture, streams partial
+text as an IBus preedit, repairs each finished utterance offline, and commits the
+result into the focused application.
 
 ```
 voiceime engine install              # write the component file, print what to run
@@ -171,16 +171,24 @@ Two facts decide whether this works, and both were measured (see
   removes that file before restarting IBus. Without this the engine stays
   invisible even though the environment variable took effect.
 
-Verify without speaking (this is also the experiment that established the
-protocol):
+Then switch to the engine to dictate: `ibus engine voiceime`, and switch away
+(`ibus engine xkb:us::eng`) to stop. Activating it is what starts capture; there is
+no hotkey in this version.
+
+Two diagnostics that need no microphone:
 
 ```
-dbus-monitor --address "$(grep -o 'unix:path=[^,]*' ~/.config/ibus/bus/*-unix-wayland-0)"
+# Commit a fixed string on activation, proving delivery only.
 voiceime ibus-engine --ibus --commit-on-enable "hello from voiceime"
+
+# Run the real pipeline over a WAV: recognition, repair and delivery, no speech.
+voiceime ibus-engine --ibus --audio-file speech.wav --trace /tmp/engine.log
 ```
 
-Activating the engine (`ibus engine voiceime`) then makes the daemon spawn the
-engine, and the monitor shows the `CommitText` signal.
+`--trace` writes both the incoming D-Bus calls and the session log to a file,
+which matters because ibus-daemon spawns the engine detached: its stdout is
+discarded, and without the trace a silent failure looks identical to success.
+Run the engine by hand (as above) to see the same log on stderr instead.
 
 ## Troubleshooting table
 

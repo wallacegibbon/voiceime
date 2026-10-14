@@ -199,3 +199,39 @@ is on HuggingFace only and fails on ModelScope with a 404, while the aggregate
 repository is on both. voiceime reports the failing package and the message rather
 than falling back silently, and `models sizes <pkg>` answers reachability without
 downloading.
+
+## D11 — While the engine is active, voiceime dictates.
+
+**Decision.** Activation starts the dictation session; deactivation stops it and
+commits whatever was still provisional. There is no global hotkey in this version,
+and no push-to-talk.
+
+**Why.** Switching input methods is already the user's way of saying "this is how I
+want to type right now", so the engine state *is* the switch. It costs no extra
+privilege or daemon, and it cannot get out of sync with the input method the way a
+separate toggle can. A hotkey (push-to-talk, or toggling dictation while another
+engine stays selected) is a genuine convenience on top, not a prerequisite, and is
+deferred rather than half-built.
+
+**Consequence.** Audio is captured whenever this engine is selected, so the engine
+process is the one place that must not leak a capture stream: the session opens a
+fresh capture per activation and stops it on deactivation.
+
+## D12 — The engine process hosts the pipeline.
+
+**Decision.** `voiceime ibus-engine` runs capture, endpointing, streaming
+recognition, repair and text delivery in one process. There is no separate
+dictation daemon and no IPC between the two halves.
+
+**Why.** The text has to reach a D-Bus object that only the engine process owns, so
+splitting them would mean inventing a second protocol to say "here is a sentence,
+now put it in the document" - and that protocol would need its own lifecycle,
+supervision and failure modes. The daemon already supervises the engine process:
+it spawns the `<exec>` when the engine is activated and the process exits when the
+bus goes away. One process means one lifecycle, owned by the component XML.
+
+**Consequence.** The session is a plain callable type (`daemon.Options.Run`) with
+an injected sink, so `voiceime stream` drives the identical code with a printing
+sink - which is why tuning per invocation and tuning what a user feels are the
+same measurements. The cost is that the engine's logs have nowhere natural to go
+(its stdout is discarded by the daemon), so it can write a trace file instead.

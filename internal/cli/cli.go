@@ -124,6 +124,9 @@ func commands() []*Command {
 		cmdConfig(),
 		cmdDevices(),
 		cmdDoctor(),
+		cmdModels(),
+		cmdStream(),
+		cmdTranscribe(),
 	}
 }
 
@@ -161,7 +164,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	if command.Flags != nil {
 		command.Flags(flags)
 	}
-	if err := flags.Parse(rest[1:]); err != nil {
+	positional, err := parseInterspersed(flags, rest[1:])
+	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			printCommandHelp(stdout, command)
 			return ExitOK
@@ -184,11 +188,73 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		Stdout:     stdout,
 		Stderr:     stderr,
 	}
-	if err := command.Run(ctx, flags.Args()); err != nil {
+	if err := command.Run(ctx, positional); err != nil {
 		writeError(stderr, name, globals, err)
 		return exitCode(err)
 	}
 	return ExitOK
+}
+
+// parseInterspersed parses flags that may appear before, after or between
+// positional arguments, and returns the positionals.
+//
+// Go's flag package stops at the first non-flag argument, so the natural
+// command line `voiceime transcribe file.wav --model m.gguf` would leave the
+// flags unparsed. Scripts and agents write flags last, so accepting both orders
+// is worth these twenty lines. Whether a flag takes a value is asked of the
+// FlagSet itself rather than guessed, so a boolean flag is not mistaken for one.
+func parseInterspersed(flags *flag.FlagSet, args []string) ([]string, error) {
+	var positional []string
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		if arg == "--" {
+			positional = append(positional, args[index+1:]...)
+			break
+		}
+		if len(arg) < 2 || arg[0] != '-' || arg == "-" {
+			positional = append(positional, arg)
+			continue
+		}
+
+		name := strings.TrimLeft(arg, "-")
+		hasValue := false
+		if _, equals, found := strings.Cut(name, "="); found {
+			name, hasValue = equals, true
+		}
+		declared := flags.Lookup(name)
+		if declared == nil {
+			// An unknown flag is the FlagSet's error to report, with its own
+			// message; handing it the single argument produces exactly that.
+			if err := flags.Parse([]string{arg}); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if hasValue || isBooleanFlag(declared) {
+			if err := flags.Parse([]string{arg}); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if index+1 >= len(args) {
+			return nil, fmt.Errorf("flag needs an argument: %s", arg)
+		}
+		index++
+		if err := flags.Parse([]string{arg, args[index]}); err != nil {
+			return nil, err
+		}
+	}
+	return positional, nil
+}
+
+// isBooleanFlag reports whether a flag was declared as a boolean, which is the
+// only kind that may omit its value.
+func isBooleanFlag(f *flag.Flag) bool {
+	type boolFlag interface{ IsBoolFlag() bool }
+	if candidate, ok := f.Value.(boolFlag); ok {
+		return candidate.IsBoolFlag()
+	}
+	return false
 }
 
 func exitCode(err error) int {

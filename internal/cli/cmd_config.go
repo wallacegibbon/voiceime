@@ -1,8 +1,8 @@
 package cli
 
 import (
-	"fmt"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -199,11 +199,11 @@ func runCapabilities(ctx *Context, args []string) error {
 	}
 
 	document := map[string]any{
-		"version":    Version,
-		"config_path": ctx.ConfigPath,
+		"version":       Version,
+		"config_path":   ctx.ConfigPath,
 		"config_exists": fileExists(ctx.ConfigPath),
-		"commands":   entries,
-		"settings":   ctx.Config.Fields(),
+		"commands":      entries,
+		"settings":      ctx.Config.Fields(),
 		"paths": map[string]string{
 			"config_dir":  config.ConfigDir(),
 			"cache_dir":   config.CacheDir(),

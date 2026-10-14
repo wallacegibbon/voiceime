@@ -82,14 +82,14 @@ func (m Model) SupportsLanguage(language string) bool {
 // indexEntry is the cache record for one path. Size and mtime are the cache key:
 // a re-downloaded or replaced model is re-inspected, an untouched one is not.
 type indexEntry struct {
-	SizeBytes    int64  `json:"size_bytes"`
-	ModifiedUnix int64  `json:"modified_unix"`
-	Family       string `json:"family"`
-	Variant      string `json:"variant"`
-	Tasks        []Task `json:"tasks"`
+	SizeBytes    int64    `json:"size_bytes"`
+	ModifiedUnix int64    `json:"modified_unix"`
+	Family       string   `json:"family"`
+	Variant      string   `json:"variant"`
+	Tasks        []Task   `json:"tasks"`
 	Languages    []string `json:"languages"`
-	Timestamps   bool   `json:"supports_timestamps"`
-	Error        string `json:"error,omitempty"`
+	Timestamps   bool     `json:"supports_timestamps"`
+	Error        string   `json:"error,omitempty"`
 }
 
 type index struct {
@@ -321,13 +321,13 @@ func lastNonEmptyLine(text string) string {
 // models do not run in real time at all on a CPU. See docs/measurements.md.
 func PickStreaming(models []Model, language string) *Model {
 	ranking := map[string]int{
-		"sense_asr":       100,
-		"qwen3_asr":       90,
-		"parakeet_tdt":    80,
-		"kroko_asr":       70,
-		"moonshine_asr":   60,
-		"higgs_audio_stt": 50,
-		"nemotron_asr":    40,
+		"sense_asr":        100,
+		"qwen3_asr":        90,
+		"parakeet_tdt":     80,
+		"kroko_asr":        70,
+		"moonshine_asr":    60,
+		"higgs_audio_stt":  50,
+		"nemotron_asr":     40,
 		"voxtral_realtime": 30,
 	}
 	var best *Model
@@ -351,36 +351,83 @@ func PickStreaming(models []Model, language string) *Model {
 	return best
 }
 
-// PickRepair returns the model for the offline repair pass. Preference is
-// inverted relative to streaming: accuracy matters and latency does not, so the
-// strongest installed ASR model wins, but a model that cannot stream is still a
-// legitimate choice.
-func PickRepair(models []Model, language string) *Model {
+// fastRepairFamilies are the families whose offline decode keeps up with speech
+// on a CPU, so a repair of a finished segment finishes while the user is still
+// talking. The classification is measured, not guessed: on the reference machine
+// a 4.2s segment costs about 0.55s with SenseVoice (roughly 8x realtime including
+// model load) and about 5.7s with Qwen3-ASR-0.6B (about 0.75x realtime), and the
+// larger LLM-based ASR families are slower still. See docs/measurements.md.
+var fastRepairFamilies = map[string]bool{
+	"sense_asr":     true,
+	"moonshine_asr": true,
+	"kroko_asr":     true,
+	"parakeet_tdt":  true,
+	"citrinet_asr":  true,
+	"canary_asr":    true,
+	"gigaam_asr":    true,
+	"moonshine":     true,
+	"whistle_asr":   true,
+	"vibeasr":       true,
+	"niagara_asr":   true,
+	"hviske_asr":    true,
+	"hviske_asr_v6": true,
+	"owsm":          true,
+	"owsm_ctc":      true,
+	"granite5asr":   true,
+	"sensevoice":    true,
+}
+
+// RepairIsRealtime reports whether re-decoding a finished segment with this model
+// is expected to keep up with speech on a CPU-only machine.
+func RepairIsRealtime(model Model) bool { return fastRepairFamilies[model.Family] }
+
+// SuggestRepair returns the most accurate installed ASR model that is *different*
+// from the one already used for streaming, or nil when there is nothing extra to
+// suggest.
+//
+// It is only used for advice, never to silently select a model: a stronger repair
+// model is a real trade (better text against a repair that lags behind speech),
+// and the user is the one who knows whether that trade is worth it on their
+// hardware.
+func SuggestRepair(scanned []Model, streamingFamily string) *Model {
 	var best *Model
 	bestScore := -1
-	for i := range models {
-		model := &models[i]
-		if model.Error != "" || !model.Supports("asr", "offline") {
+	for i := range scanned {
+		model := &scanned[i]
+		if model.Error != "" || model.Family == streamingFamily {
 			continue
 		}
-		score := 0
-		if strings.Contains(model.Family, "qwen3_asr") {
-			score += 100 // strongest punctuation and CJK accuracy measured here
+		if !model.Supports("asr", "offline") || RepairIsRealtime(*model) {
+			continue
 		}
-		if model.Family == "sense_asr" {
-			score += 50
-		}
-		if names := len(model.Languages); names > 1 {
-			score += 5
-		}
-		if model.SupportsLanguage(language) {
-			score += 20
-		}
+		// Prefer larger checkpoints within the accurate set: among LLM-based ASR
+		// models, size is what buys accuracy.
+		score := int(model.SizeBytes >> 20)
 		if score > bestScore {
 			best, bestScore = model, score
 		}
 	}
 	return best
+}
+
+// ASRModels filters a scan down to the models voiceime can actually use, which
+// is what every caller except an explicit "show me everything" wants.
+//
+// This matters more than it looks: the models directory is shared with whatever
+// else the user keeps there - text LLMs, embedding models, vision projectors in
+// the reference machine's case. Listing those as unusable models would bury the
+// two that matter and make an agent think the install is broken.
+func ASRModels(scanned []Model) []Model {
+	var usable []Model
+	for _, model := range scanned {
+		if model.Error != "" {
+			continue
+		}
+		if model.Supports("asr", "offline") || model.Supports("asr", "streaming") {
+			usable = append(usable, model)
+		}
+	}
+	return usable
 }
 
 // Lookup finds a model by path among the scanned set.

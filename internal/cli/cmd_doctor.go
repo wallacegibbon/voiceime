@@ -201,7 +201,8 @@ func runDoctor(ctx *Context, refresh bool) []Check {
 // drift apart.
 func modelChecks(ctx *Context, refresh bool, report func(Check)) {
 	cfg := ctx.Config
-	scanned, err := models.Scan(cfg, refresh, nil)
+	everything, err := models.Scan(cfg, refresh, nil)
+	scanned := models.ASRModels(everything)
 	if err != nil {
 		report(Check{
 			ID:     "models",
@@ -216,7 +217,7 @@ func modelChecks(ctx *Context, refresh bool, report func(Check)) {
 		report(Check{
 			ID:     "streaming_model",
 			Status: "fail",
-			Detail: "no models found in " + cfg.ResolvedModelsDir(),
+			Detail: "no speech models found in " + cfg.ResolvedModelsDir(),
 			Fix:    fmt.Sprintf("voiceime models install %s   # %s", recommendation.ID, recommendation.Reason),
 		})
 		return
@@ -273,8 +274,11 @@ func modelChecks(ctx *Context, refresh bool, report func(Check)) {
 		}
 	}
 
-	// The repair model is optional: without it the streaming model is reused in
-	// offline mode, which already fixes most window-boundary damage.
+	// The repair model is optional and defaults to the streaming model, which is
+	// the interactive choice: measured on the reference machine, re-decoding a
+	// 4.2s segment costs ~0.55s with SenseVoice against ~5.7s with the strongest
+	// accurate model installed there. Doctor states that trade rather than
+	// deciding it.
 	if cfg.RefineModel != "" {
 		found := models.Lookup(scanned, cfg.RefineModel)
 		if found == nil || found.Error != "" {
@@ -285,27 +289,36 @@ func modelChecks(ctx *Context, refresh bool, report func(Check)) {
 				Fix:    "voiceime models list",
 			})
 		} else {
-			report(Check{
-				ID:     "refine_model",
-				Status: "ok",
-				Detail: fmt.Sprintf("%s (%s)", found.Path, found.Family),
-			})
+			detail := fmt.Sprintf("%s (%s)", found.Path, found.Family)
+			if !models.RepairIsRealtime(*found) {
+				detail += "; measured cost: slower than real time on CPU, so repairs will lag behind speech"
+			}
+			report(Check{ID: "refine_model", Status: "ok", Detail: detail})
 		}
-	} else if cfg.RefineOnSegmentEnd {
-		picked := models.PickRepair(scanned, cfg.Language)
-		if picked == nil {
+	} else if !cfg.RefineOnSegmentEnd {
+		report(Check{
+			ID:     "refine_model",
+			Status: "warn",
+			Detail: "repair is disabled: window-boundary damage in the stream text will be delivered as-is",
+			Fix:    "voiceime config set refine_on_segment_end true",
+		})
+	} else {
+		streamingFamily := ""
+		if picked := models.PickStreaming(scanned, cfg.Language); picked != nil {
+			streamingFamily = picked.Family
+		}
+		report(Check{
+			ID:     "refine_model",
+			Status: "ok",
+			Detail: "reuses the streaming model (fastest repair)",
+		})
+		if better := models.SuggestRepair(scanned, streamingFamily); better != nil {
 			report(Check{
-				ID:     "refine_model",
+				ID:     "refine_model_advice",
 				Status: "warn",
-				Detail: "repair is enabled but no offline ASR model is installed",
-				Fix:    "voiceime models install qwen3_asr_0_6b_q8_0",
-			})
-		} else {
-			report(Check{
-				ID:     "refine_model",
-				Status: "ok",
-				Detail: fmt.Sprintf("%s (%s) - picked automatically", picked.Path, picked.Family),
-				Fix:    "voiceime config set refine_model " + picked.Path,
+				Detail: fmt.Sprintf("%s (%s, %s) is installed and more accurate; on CPU it costs roughly 1.3x real time to decode a segment, so repairs would lag behind speech",
+					better.Path, better.Family, models.Sizes(better.SizeBytes)),
+				Fix: "voiceime config set refine_model " + better.Path,
 			})
 		}
 	}

@@ -104,7 +104,7 @@ func runDoctor(ctx *Context, refresh bool) []Check {
 		report(Check{ID: "audio_cpp", Status: "ok", Detail: detail})
 	}
 
-	// 3. The model manager script, used for downloads.
+	// 3. Downloads: the model manager script and the endpoint it fetches from.
 	if manager, err := cfg.FindModelManager(); err != nil {
 		report(Check{
 			ID:     "model_manager",
@@ -114,6 +114,20 @@ func runDoctor(ctx *Context, refresh bool) []Check {
 		})
 	} else {
 		report(Check{ID: "model_manager", Status: "ok", Detail: manager})
+	}
+	// The endpoint is checked for syntax only. Whether a host is reachable or
+	// holds a package is what `voiceime models sizes` answers with a real
+	// request; doctor never touches the network, so it stays usable offline and
+	// cannot hang on an unreachable mirror.
+	if endpoint, err := cfg.DownloadEndpoint(); err != nil {
+		report(Check{
+			ID:     "download_mirror",
+			Status: "fail",
+			Detail: err.Error(),
+			Fix:    "voiceime config set download_mirror " + config.DefaultDownloadEndpoint,
+		})
+	} else {
+		report(Check{ID: "download_mirror", Status: "ok", Detail: endpoint})
 	}
 
 	// 4. The models directory itself.

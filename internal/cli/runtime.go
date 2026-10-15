@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/wallacegibbon/voiceime/internal/asr"
@@ -43,6 +44,21 @@ func resolveModel(ctx *Context, repair bool) string {
 		return picked.Path
 	}
 	return ""
+}
+
+// newModelManager builds the download manager, turning each failure into the
+// command that fixes it: a bad endpoint is a configuration mistake, everything
+// else NewManager rejects is a missing prerequisite.
+func newModelManager(ctx *Context) (*models.Manager, error) {
+	manager, err := models.NewManager(ctx.Config)
+	if err != nil {
+		if errors.Is(err, models.ErrBadEndpoint) {
+			return nil, PreconditionError(
+				"voiceime config set download_mirror "+config.DefaultDownloadEndpoint, "%v", err)
+		}
+		return nil, PreconditionError("voiceime config set audio_cpp_dir /path/to/audio.cpp", "%v", err)
+	}
+	return manager, nil
 }
 
 // readPCM loads a WAV file as 16 kHz mono PCM, which is the format every model

@@ -16,7 +16,7 @@ for the operational surface.
 |---|---|
 | Config surface, validation, capabilities | working |
 | Model discovery with an inspect cache | working |
-| Model download through hf-mirror / ModelScope | working |
+| Model download through a configurable Hugging Face protocol endpoint | working |
 | Microphone capture, endpointing | implemented, tests pass, not yet run against a real dictation |
 | Streaming ASR adapter, offline repair pass | working, measured ([numbers](docs/measurements.md)) |
 | `doctor` diagnostics with fix commands | working |

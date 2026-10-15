@@ -93,9 +93,9 @@ func runModels(ctx *Context, args []string) error {
 		return nil
 
 	case "installed":
-		manager, err := models.NewManager(ctx.Config)
+		manager, err := newModelManager(ctx)
 		if err != nil {
-			return PreconditionError("voiceime config set audio_cpp_dir /path/to/audio.cpp", "%v", err)
+			return err
 		}
 		probeCtx, cancel := timeout(60)
 		defer cancel()
@@ -109,9 +109,9 @@ func runModels(ctx *Context, args []string) error {
 				continue
 			}
 			rows = append(rows, map[string]any{
-				"id":     status.ID,
-				"state":  status.VersionState,
-				"source": manager.Mirror,
+				"id":       status.ID,
+				"state":    status.VersionState,
+				"endpoint": manager.Endpoint,
 			})
 			ctx.Print("%s", status.ID)
 		}
@@ -133,9 +133,9 @@ func runModels(ctx *Context, args []string) error {
 		if len(rest) > 0 {
 			needle = rest[0]
 		}
-		manager, err := models.NewManager(ctx.Config)
+		manager, err := newModelManager(ctx)
 		if err != nil {
-			return PreconditionError("voiceime config set audio_cpp_dir /path/to/audio.cpp", "%v", err)
+			return err
 		}
 		probeCtx, cancel := timeout(120)
 		defer cancel()
@@ -152,9 +152,9 @@ func runModels(ctx *Context, args []string) error {
 		if len(rest) == 0 {
 			return UsageError("models sizes needs at least one package id")
 		}
-		manager, err := models.NewManager(ctx.Config)
+		manager, err := newModelManager(ctx)
 		if err != nil {
-			return PreconditionError("voiceime config set audio_cpp_dir /path/to/audio.cpp", "%v", err)
+			return err
 		}
 		probeCtx, cancel := timeout(300)
 		defer cancel()
@@ -169,18 +169,18 @@ func runModels(ctx *Context, args []string) error {
 			}
 			ctx.Print("%-40s %-8s %s", status.ID, status.State, detail)
 		}
-		return ctx.Emit("models sizes", map[string]any{"statuses": statuses, "mirror": manager.Mirror})
+		return ctx.Emit("models sizes", map[string]any{"statuses": statuses, "endpoint": manager.Endpoint})
 
 	case "install":
 		if len(rest) == 0 {
 			return UsageError("models install needs a package id; try `voiceime models recommended`")
 		}
 		packageID := rest[0]
-		manager, err := models.NewManager(ctx.Config)
+		manager, err := newModelManager(ctx)
 		if err != nil {
-			return PreconditionError("voiceime config set audio_cpp_dir /path/to/audio.cpp", "%v", err)
+			return err
 		}
-		ctx.Print("installing %s from %s into %s", packageID, manager.Mirror, manager.ModelsDir)
+		ctx.Print("installing %s from %s into %s", packageID, manager.Endpoint, manager.ModelsDir)
 		lastPercent := -1
 		installCtx, cancelInstall := timeout(3600)
 		defer cancelInstall()
@@ -212,7 +212,7 @@ func runModels(ctx *Context, args []string) error {
 		}
 		return ctx.Emit("models install", map[string]any{
 			"package":    packageID,
-			"mirror":     manager.Mirror,
+			"endpoint":   manager.Endpoint,
 			"models_dir": manager.ModelsDir,
 		})
 
@@ -220,9 +220,9 @@ func runModels(ctx *Context, args []string) error {
 		if len(rest) == 0 {
 			return UsageError("models uninstall needs a package id")
 		}
-		manager, err := models.NewManager(ctx.Config)
+		manager, err := newModelManager(ctx)
 		if err != nil {
-			return PreconditionError("voiceime config set audio_cpp_dir /path/to/audio.cpp", "%v", err)
+			return err
 		}
 		removeCtx, cancelRemove := timeout(120)
 		defer cancelRemove()

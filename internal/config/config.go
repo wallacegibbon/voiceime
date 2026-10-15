@@ -12,6 +12,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,6 +31,14 @@ const AppName = "voiceime"
 // matches the convention used by audio.cpp's own model manager so models
 // downloaded by either tool are found by the other.
 const DefaultModelsDir = "~/models"
+
+// DefaultDownloadEndpoint is the host voiceime ships pointing downloads at. It
+// is an ordinary endpoint, not a special case: https://huggingface.co is equally
+// valid and is exactly what setting the value to it means. The default is a
+// mirror rather than the upstream project because it is the endpoint that works
+// from networks where huggingface.co is unreachable (measured on the reference
+// machine: a direct request to huggingface.co times out there).
+const DefaultDownloadEndpoint = "https://hf-mirror.com"
 
 // TargetRate is the only capture rate the pipeline supports. The ASR models'
 // bundled Silero VAD rejects anything else, so resampling happens in the capture
@@ -75,8 +84,12 @@ type Config struct {
 	CaptureSource string `toml:"capture_source" desc:"PipeWire source name; empty uses the default input."`
 	CaptureRate   int    `toml:"capture_rate" desc:"Capture rate; must stay 16000, the models' VAD rejects other rates."`
 
-	// Downloads.
-	DownloadMirror string `toml:"download_mirror" desc:"hf-mirror, huggingface or modelscope."`
+	// Downloads. The value is an endpoint URL, not a preset name: every package
+	// audio.cpp's registry ships downloads over Hugging Face's protocol, so any
+	// HF-compatible host works (hf-mirror.com, huggingface.co, a LAN cache) and
+	// a preset table would only be a shorter way of writing the same two URLs.
+	// It is exported to the model manager as HF_ENDPOINT.
+	DownloadMirror string `toml:"download_mirror" desc:"HF-protocol endpoint URL model downloads go through, e.g. https://hf-mirror.com."`
 
 	// Integration.
 	Hotkey string `toml:"hotkey" desc:"Shortcut held down to dictate, e.g. <Control>apostrophe."`
@@ -110,7 +123,7 @@ func Default() *Config {
 		EndpointMinSpeechMS: 300,
 		SilenceRMSThreshold: 350,
 		CaptureRate:         TargetRate,
-		DownloadMirror:      "hf-mirror",
+		DownloadMirror:      DefaultDownloadEndpoint,
 		// A function key, not a modifier combination: IBus's global-shortcut
 		// mechanism consumes the key's release, so a shortcut containing a modifier
 		// leaves that modifier latched in the focused application (measured - Ctrl
@@ -186,6 +199,34 @@ func (c *Config) ResolvedModelsDir() string { return Expand(c.ModelsDir) }
 
 // AudioCPPDirPath returns the absolute audio.cpp location.
 func (c *Config) AudioCPPDirPath() string { return Expand(c.AudioCPPDir) }
+
+// DownloadEndpoint returns the host model downloads go through, normalized by
+// dropping any trailing slash.
+//
+// The check is deliberately syntactic. Whether a host is reachable or holds a
+// given package is a question for `voiceime models sizes`, which asks the
+// network; validation stays offline so `doctor` and `config validate` keep
+// working on a disconnected machine.
+func (c *Config) DownloadEndpoint() (string, error) {
+	raw := strings.TrimSpace(c.DownloadMirror)
+	if raw == "" {
+		return "", errors.New("must be an http(s) endpoint URL, not empty")
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("is not a valid URL: %v", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", errors.New("must start with http:// or https://")
+	}
+	if parsed.Host == "" {
+		return "", errors.New("has no host")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", errors.New("must not carry a query string or fragment")
+	}
+	return strings.TrimRight(raw, "/"), nil
+}
 
 // --------------------------------------------------------------------------- //
 // Load / save / validate
@@ -288,11 +329,9 @@ func (c *Config) Validate() []Issue {
 	if c.EndpointSilenceMS <= 0 {
 		add("error", "endpoint_silence_ms", "must be positive", "voiceime config set endpoint_silence_ms 800")
 	}
-	switch c.DownloadMirror {
-	case "hf-mirror", "huggingface", "modelscope":
-	default:
-		add("error", "download_mirror", "must be hf-mirror, huggingface or modelscope",
-			"voiceime config set download_mirror hf-mirror")
+	if _, err := c.DownloadEndpoint(); err != nil {
+		add("error", "download_mirror", err.Error(),
+			"voiceime config set download_mirror "+DefaultDownloadEndpoint)
 	}
 	if c.Backend == "" {
 		add("error", "backend", "must name a backend", "voiceime config set backend cpu")

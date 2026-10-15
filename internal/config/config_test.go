@@ -108,6 +108,85 @@ func TestLoadMissingFileIsNotAnError(t *testing.T) {
 	}
 }
 
+func TestDownloadEndpointAcceptsAnyHuggingFaceProtocolHost(t *testing.T) {
+	cases := map[string]string{
+		"https://hf-mirror.com":            "https://hf-mirror.com",
+		"https://hf-mirror.com/":           "https://hf-mirror.com",
+		"http://192.168.1.10:8080":         "http://192.168.1.10:8080",
+		"https://huggingface.co":           "https://huggingface.co",
+		"  https://mirror.example.com/hf/": "https://mirror.example.com/hf",
+	}
+	for configured, want := range cases {
+		cfg := Default()
+		cfg.DownloadMirror = configured
+		got, err := cfg.DownloadEndpoint()
+		if err != nil {
+			t.Errorf("DownloadEndpoint(%q): %v", configured, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("DownloadEndpoint(%q) = %q, want %q", configured, got, want)
+		}
+	}
+}
+
+// The former preset names are gone rather than aliased: a value that is not an
+// endpoint URL must fail loudly, because silently reading it as "some host we
+// know" is the ambiguity this setting was simplified to remove.
+func TestDownloadEndpointRejectsTheFormerPresetNames(t *testing.T) {
+	for _, configured := range []string{"hf-mirror", "huggingface", "modelscope", ""} {
+		cfg := Default()
+		cfg.DownloadMirror = configured
+		if _, err := cfg.DownloadEndpoint(); err == nil {
+			t.Errorf("DownloadEndpoint(%q) was accepted", configured)
+		}
+		issues := Errors(cfg.Validate())
+		if len(issues) != 1 || issues[0].Key != "download_mirror" || issues[0].Fix == "" {
+			t.Errorf("Validate with download_mirror=%q = %+v, want one issue carrying a fix", configured, issues)
+		}
+	}
+}
+
+func TestDownloadEndpointRejectsMalformedEndpoints(t *testing.T) {
+	for _, configured := range []string{
+		"hf-mirror.com",             // no scheme
+		"ftp://hf-mirror.com",       // wrong scheme
+		"https://",                  // no host
+		"https://host/path?token=x", // query string
+		"https://host/path#frag",    // fragment
+	} {
+		cfg := Default()
+		cfg.DownloadMirror = configured
+		if _, err := cfg.DownloadEndpoint(); err == nil {
+			t.Errorf("DownloadEndpoint(%q) was accepted", configured)
+		}
+	}
+}
+
+// An existing config file that still holds a preset name must stay loadable, so
+// that the one command that repairs it is runnable. Failing at Load time would
+// leave hand-editing as the only way out, which is the state a key rename would
+// produce.
+func TestLoadToleratesALegacyEndpointValueSoTheFixStaysRunnable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := WriteFileForTest(path, "download_mirror = \"hf-mirror\"\n"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load refused a file with a legacy endpoint, leaving no CLI path to fix it: %v", err)
+	}
+	if len(Errors(cfg.Validate())) == 0 {
+		t.Fatal("the legacy value validated clean, but it is not an endpoint URL")
+	}
+	if err := cfg.Set("download_mirror", DefaultDownloadEndpoint); err != nil {
+		t.Fatalf("the repair command is not runnable: %v", err)
+	}
+	if len(Errors(cfg.Validate())) != 0 {
+		t.Error("the documented fix did not resolve the issue")
+	}
+}
+
 func TestExpandHome(t *testing.T) {
 	home, err := UserHomeDirForTest()
 	if err != nil {

@@ -13,10 +13,10 @@ Reproduce with `voiceime stream --file <wav> --realtime --chunk <seconds>` and
 
 ## Models on this machine
 
-| Model | Package id | Bytes on disk | License note |
+| Model | Package id | Bytes on disk | Availability note |
 |---|---|---:|---|
-| SenseVoice-Small Q8 GGUF | `sensevoice_small_q8` | 254,211,200 (242 MiB) | HuggingFace only; the repo `FunAudioLLM/SenseVoiceSmall-GGUF-audiocpp` is **not** on ModelScope |
-| Qwen3-ASR-0.6B Q8 GGUF | `qwen3_asr_0_6b_q8_0` | 1,151,272,416 (1.07 GiB) | published in the aggregate repo, present on both HuggingFace and ModelScope |
+| SenseVoice-Small Q8 GGUF | `sensevoice_small_q8` | 254,211,200 (242 MiB) | its repo `FunAudioLLM/SenseVoiceSmall-GGUF-audiocpp` is served over the Hugging Face protocol and does **not** exist on ModelScope |
+| Qwen3-ASR-0.6B Q8 GGUF | `qwen3_asr_0_6b_q8_0` | 1,151,272,416 (1.07 GiB) | published in the aggregate repo `audio-cpp/audio.cpp-gguf`, which is mirrored on both |
 
 Two models were deliberately not installed, and the reasons matter:
 
@@ -86,16 +86,32 @@ to transcribe `达摩院` correctly while the offline path of the same model pro
 
 ## Model download
 
-| Route | Package | Result |
-|---|---|---|
-| `HF_ENDPOINT=https://hf-mirror.com` | `sensevoice_small_q8` | 254 MiB in 37 s |
-| `--source modelscope` | `qwen3_asr_0_6b_q8_0` | 1.15 GiB in 48 s |
-| `--source modelscope` | `sensevoice_small_q8` | **fails**: HTTP 404, that repo does not exist on ModelScope |
+Downloads go to the single endpoint in `download_mirror`. Measured on the
+reference machine:
 
-Both mirrors work, per package. A package's availability is a property of the
-package, not of the mirror: voiceime therefore reports the failing package id and
-the error text instead of silently falling back, and `models sizes <pkg>` answers
-"is it reachable" without downloading.
+| Endpoint | Package | Result |
+|---|---|---|
+| `https://hf-mirror.com` | `sensevoice_small_q8` | 254 MiB in 37 s |
+| `https://hf-mirror.com` | `audio-cpp/audio.cpp-gguf` (`qwen3_asr_0_6b_q8_0`) | reachable: a ranged request returns `206` |
+
+Two properties of the reference network are recorded because the default endpoint
+is chosen for them:
+
+* **`huggingface.co` is unreachable there without the local proxy**: a direct
+  `curl` fails with `Connection timed out after 20002 ms`, while `hf-mirror.com`
+  serves the same object. This is why the default is a mirror rather than the
+  upstream host, and why `download_mirror` is a URL: the usable host is a property
+  of the network, not of voiceime.
+* **`hf-mirror.com` is a real mirror**: it answers
+  `302 → https://cas-bridge.xethub.hf.co/...` - its own CDN bridge - and returns
+  bytes. An earlier reading of `308 → huggingface.co` was an artefact of the local
+  HTTP proxy (`https_proxy=http://127.0.0.1:7890`) and does not reproduce with
+  `--noproxy '*'`.
+
+A package's availability is a property of the endpoint *and* the package, so
+voiceime reports the failing package id and the error text instead of silently
+falling back, and `models sizes <pkg>` answers "is it reachable" without
+downloading.
 
 ## Integration constraints found by measurement
 

@@ -83,7 +83,7 @@ Settings that matter, and the reasoning a caller needs to pick values:
 | `refine_on_segment_end` | `true` | The pass that repairs window-boundary damage. |
 | `capture_rate` | `16000` | Must stay 16000 (models' VAD). Validation error otherwise. |
 | `capture_source` | `""` | PipeWire source name; empty uses the default input. |
-| `download_mirror` | `hf-mirror` | `hf-mirror`, `huggingface` or `modelscope`. |
+| `download_mirror` | `https://hf-mirror.com` | Endpoint downloads go through, written to `HF_ENDPOINT`. Any Hugging Face protocol host works: `https://huggingface.co`, a company cache, a LAN address. |
 | `session_options` / `request_options` | `{}` | Passed straight to `audiocpp_cli`. |
 
 Validate after changing anything:
@@ -101,12 +101,15 @@ voiceime models install <pkg>         # downloads into models_dir
 voiceime models installed --json      # what is present locally, no network
 ```
 
-Mirrors are per package, not global: `models sizes` reports the failure per
-package, so a caller that sees a 404 on one mirror can retry the same package
-after changing `download_mirror`. Recommended packages, measured on the reference
-machine, are printed by `models recommended`; the short version is
-`sensevoice_small_q8` for streaming (242 MiB, ~20x realtime on CPU) and
-`qwen3_asr_0_6b_q8_0` only if the machine can afford a repair slower than speech.
+Downloads go through the single endpoint in `download_mirror`, which must be an
+absolute `http(s)` URL; `config validate` rejects anything else, and the value is
+passed to the model manager as `HF_ENDPOINT`. Whether an endpoint works is a
+property of the endpoint *and* the package: `models sizes` reports the failure per
+package, so a caller that sees a 404 can set another endpoint and retry the same
+package. Recommended packages, measured on the reference machine, are printed by
+`models recommended`; the short version is `sensevoice_small_q8` for streaming
+(242 MiB, ~20x realtime on CPU) and `qwen3_asr_0_6b_q8_0` only if the machine can
+afford a repair slower than speech.
 
 ## Verify
 
@@ -206,7 +209,8 @@ Run the engine by hand (as above) to see the same log on stderr instead.
 |---|---|---|
 | `doctor` exits 3 with `audio_cpp` failing | `audiocpp_cli` not found | `voiceime config set audio_cpp_dir <checkout>` or `voiceime config set asr_bin <binary>` |
 | `no speech models found` | empty or wrong models directory | `voiceime models install sensevoice_small_q8` |
-| `models install` fails with 404 | that package is not on the configured mirror | `voiceime config set download_mirror huggingface` (or `--source modelscope`) and retry |
+| `models install` fails with 404 | that package is not on the configured endpoint | `voiceime config set download_mirror https://huggingface.co` (or any host that has it) and retry |
+| `doctor` fails `download_mirror` | the value is not an `http(s)` URL, e.g. a preset name from an older config | `voiceime config set download_mirror https://hf-mirror.com` |
 | Repair fails with `Silero VAD model path does not exist` | the CLI's bundled assets resolved relative to the working directory | voiceime already sets the working directory and disables chunking for repairs; if it recurs, set `audio_cpp_dir` correctly |
 | Text is corrupted and windows are short | `chunk_seconds` below 1.5 | `voiceime config set chunk_seconds 3` |
 | Model aborts with `only supports sample_rate=16000` | input is not 16 kHz | `voiceime config set capture_rate 16000` |

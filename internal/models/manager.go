@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -16,18 +17,26 @@ import (
 //
 // Delegating the download to that script is deliberate: it owns the package
 // registry, the pinned revisions per package and the mirror rules, and it is the
-// code path upstream tests against both HuggingFace and ModelScope. A second
-// implementation here would drift from the registry without anyone noticing.
-// voiceime's contribution is the *policy*: which mirror to use, which packages to
-// recommend, and a machine-readable result an agent can act on.
+// code path upstream tests against HuggingFace. A second implementation here
+// would drift from the registry without anyone noticing. voiceime's contribution
+// is the *policy*: which endpoint to use, which packages to recommend, and a
+// machine-readable result an agent can act on.
 type Manager struct {
 	Script    string
 	ModelsDir string
-	Mirror    string // hf-mirror, huggingface or modelscope
-	Python    string
+	// Endpoint is the HF-protocol host downloads go through, passed to the
+	// script as HF_ENDPOINT.
+	Endpoint string
+	Python   string
 }
 
-// NewManager resolves the script and the interpreter to run it with.
+// ErrBadEndpoint marks a download_mirror that is not a usable endpoint URL, so a
+// caller can offer the fix for that setting rather than for the surrounding
+// tooling.
+var ErrBadEndpoint = errors.New("download_mirror")
+
+// NewManager resolves the script, the interpreter to run it with and the
+// endpoint to download from.
 func NewManager(cfg *config.Config) (*Manager, error) {
 	script, err := cfg.FindModelManager()
 	if err != nil {
@@ -37,10 +46,14 @@ func NewManager(cfg *config.Config) (*Manager, error) {
 	if python == "" {
 		return nil, fmt.Errorf("python3 is required to run %s but was not found on PATH", script)
 	}
+	endpoint, err := cfg.DownloadEndpoint()
+	if err != nil {
+		return nil, fmt.Errorf("%w %v", ErrBadEndpoint, err)
+	}
 	return &Manager{
 		Script:    script,
 		ModelsDir: cfg.ResolvedModelsDir(),
-		Mirror:    cfg.DownloadMirror,
+		Endpoint:  endpoint,
 		Python:    python,
 	}, nil
 }
@@ -66,32 +79,16 @@ type Status struct {
 	RemoteRevision string `json:"remote_revision"`
 }
 
-// environment returns the extra environment the script needs. The mirror is
-// applied through HF_ENDPOINT, which is the same variable huggingface_hub reads,
-// so a mirror configured here also applies to anything else the user runs.
+// environment returns the extra environment the script needs. The endpoint is
+// always set explicitly rather than inherited: HF_ENDPOINT is the variable
+// huggingface_hub reads, so an ambient value would otherwise decide where
+// downloads come from and voiceime's configuration would stop being the single
+// source of truth for it.
 func (m *Manager) environment() []string {
-	environment := []string{}
-	switch m.Mirror {
-	case "hf-mirror":
-		environment = append(environment, "HF_ENDPOINT=https://hf-mirror.com")
-	case "huggingface":
-		// Explicitly clear it: the user may have one set globally.
-		environment = append(environment, "HF_ENDPOINT=")
-	}
-	return environment
+	return []string{"HF_ENDPOINT=" + m.Endpoint}
 }
 
-// sourceArgs maps the mirror setting onto the script's own source selection.
-// ModelScope is a different transport rather than a different endpoint, so it
-// takes an argument instead of an environment variable.
-func (m *Manager) sourceArgs() []string {
-	if m.Mirror == "modelscope" {
-		return []string{"--source", "modelscope"}
-	}
-	return nil
-}
-
-// command builds an exec.Cmd with the environment and source overrides applied.
+// command builds an exec.Cmd with the endpoint environment applied.
 func (m *Manager) command(ctx context.Context, args ...string) *exec.Cmd {
 	full := append([]string{m.Script}, args...)
 	cmd := exec.CommandContext(ctx, m.Python, full...)
@@ -135,7 +132,7 @@ func (m *Manager) Search(ctx context.Context, needle string) ([]Package, error) 
 // Sizes checks what the named packages would download (bytes and reachability)
 // without fetching them. Network access is required.
 func (m *Manager) Sizes(ctx context.Context, packages ...string) ([]Status, error) {
-	args := append([]string{"sizes", "--models-root", m.ModelsDir}, m.sourceArgs()...)
+	args := []string{"sizes", "--models-root", m.ModelsDir}
 	args = append(args, packages...)
 	output, err := m.command(ctx, args...).Output()
 	if err != nil {
@@ -180,7 +177,6 @@ type Progress struct {
 // and may be nil.
 func (m *Manager) Install(ctx context.Context, pkg string, progress func(Progress)) error {
 	args := []string{"install", pkg, "--models-root", m.ModelsDir, "--progress"}
-	args = append(args, m.sourceArgs()...)
 	cmd := m.command(ctx, args...)
 
 	stdout, err := cmd.StdoutPipe()
@@ -246,7 +242,7 @@ func consume(reader io.Reader, sink io.Writer, progress func(Progress)) {
 }
 
 // describeExecError adds the failing command's output to the error, because the
-// script explains most failures (404 on a mirror, repo not on ModelScope) in its
+// script explains most failures (404 on a mirror, repo renamed upstream) in its
 // output rather than in its exit status.
 func describeExecError(what string, err error) error {
 	if exit, ok := err.(*exec.ExitError); ok {

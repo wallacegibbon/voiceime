@@ -88,6 +88,8 @@ Settings that matter, and the reasoning a caller needs to pick values:
 | `refine_on_segment_end` | `true` | The pass that repairs window-boundary damage. |
 | `capture_rate` | `16000` | Must stay 16000 (models' VAD). Validation error otherwise. |
 | `capture_source` | `""` | PipeWire source name; empty uses the default input. |
+| `silence_rms_threshold` | `350` | **Floor**, not a fixed threshold: the detector adapts up to twice the noise floor it measures in the stream, and never below this value. Measure the room before changing it - see [measurements.md](measurements.md#endpointing-in-a-real-room). |
+| `endpoint_min_speech_ms` | `300` | Speech shorter than this is not an utterance. Raise it in a room with impulsive noise (keystrokes, chair); a short phrase is then committed when dictation stops instead of mid-stream. |
 | `download_mirror` | `https://hf-mirror.com` | Endpoint downloads go through, written to `HF_ENDPOINT`. Any Hugging Face protocol host works: `https://huggingface.co`, a company cache, a LAN address. |
 | `session_options` / `request_options` | `{}` | Passed straight to `audiocpp_cli`. |
 
@@ -145,7 +147,14 @@ voiceime stream --seconds 5                    # capture from the microphone (th
 Event kinds: `ready` (model loaded, with load time), `partial` (new text, with
 the audio position at which it arrived), `segment` (an utterance closed), `vad`
 (model-reported voice activity, when a family reports it), `repair` (offline
-re-decode of a segment, with its cost), `summary`.
+re-decode of a segment, with its cost), `skipped` (something was not done, with
+the reason - `no speech detected; nothing committed` is the common one), `commit`
+(text delivered), `summary`.
+
+Text is committed only when the endpointer closes an utterance. An open utterance
+is preedit, which applications render underlined, and pressing Escape discards it.
+So "the text stays underlined" always means "the detector has not found a boundary
+yet": check `silence_rms_threshold` and `endpoint_silence_ms` before anything else.
 
 With `--realtime`, the `fed_seconds` of a partial is also the time from the user
 speaking to that text appearing, which is the latency number to compare against
@@ -220,5 +229,7 @@ Run the engine by hand (as above) to see the same log on stderr instead.
 | Text is corrupted and windows are short | `chunk_seconds` below 1.5 | `voiceime config set chunk_seconds 3` |
 | Model aborts with `only supports sample_rate=16000` | input is not 16 kHz | `voiceime config set capture_rate 16000` |
 | `models list` shows unrelated files | the models directory is shared | expected; discovery filters to ASR models and reports the count it ignored |
+| Text stays underlined and never commits | the detector has not closed an utterance, so it is still preedit; Escape discards preedit | measure the room and set `silence_rms_threshold` / `endpoint_min_speech_ms` (see [measurements.md](measurements.md#endpointing-in-a-real-room)); `stream --events` shows whether a `segment` event happens |
+| Dictation produces nothing, and `stream --events` reports `no speech detected` | the threshold is above the speaker's voice | lower `silence_rms_threshold` and retry |
 | The service restarts forever with `status=203/EXEC` | the unit's `ExecStart` names a binary that no longer exists (the checkout was moved or renamed) | `voiceime hotkey install` then `voiceime doctor`; see [DEPLOY.md § Recovery](DEPLOY.md#recovery) |
 | `ibus list-engine` lists `voiceime` but dictation does nothing | the running engine process was started from an older binary, or the component file names a path that no longer exists | `ibus engine xkb:us::eng && pkill -f "voiceime ibus-engine" && ibus engine voiceime` |

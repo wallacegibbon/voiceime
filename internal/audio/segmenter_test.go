@@ -103,25 +103,116 @@ func TestSegmenterDoesNotSplitOnAPause(t *testing.T) {
 	}
 }
 
-func TestSegmenterAdaptsToANoisyRoom(t *testing.T) {
+// The production path never calls Calibrate: the daemon has no block of known
+// silence to hand over, and trusting the opening milliseconds would measure
+// speech as the noise floor for a user who starts talking immediately. The floor
+// is therefore learned from the stream itself, and this test pins that - the
+// previous version of this test called Calibrate, so it verified a path that
+// nothing in the pipeline ran, and the detector was left on the static threshold.
+// The helper's second argument is a sine *amplitude*, and the detector compares
+// RMS, which for a sine is amplitude/√2. The numbers below are chosen with that
+// in mind: the room tone has an RMS of ~212, the burst ~389 (above the configured
+// 350, which is what makes it a discriminator) and the speech ~4243.
+func TestSegmenterLearnsTheNoiseFloorFromTheStream(t *testing.T) {
 	segmenter := NewSegmenter(SegmenterConfig{
 		SilenceMS:   300,
 		MinSpeechMS: 100,
 		Threshold:   350,
 		Adaptive:    true,
 	})
-	// A room tone above the configured threshold: without adaptation this would
-	// be heard as continuous speech and no endpoint would ever fire.
-	roomTone := speech(1.0, 800)
-	segmenter.Calibrate(roomTone)
+
+	// A room tone below the configured threshold but well above half of it: the
+	// threshold must follow it up, because a noise floor that close to the
+	// threshold is what makes a detector flap and never close an utterance.
+	roomTone := speech(1.0, 300)
 	segmenter.Push(roomTone, 0)
-	events := segmenter.Push(roomTone, 16000)
+	threshold := segmenter.Threshold()
+	if threshold <= 350 {
+		t.Fatalf("Threshold() = %.0f, want the measured room tone to raise it above the configured 350", threshold)
+	}
+
+	// A burst that the static threshold would have called speech is silence once
+	// the floor is known. Without this, a noisy room produces segments out of
+	// nothing and the text never gets committed.
+	events := segmenter.Push(speech(1.0, 550), 16000)
 	for _, event := range events {
 		if event.Kind == SpeechStart {
-			t.Fatalf("room tone above the raw threshold was detected as speech: %+v", event)
+			t.Fatalf("noise below the adapted threshold was detected as speech: %+v", event)
 		}
 	}
+
+	// Real speech still gets through, and still ends: adapting upward must not
+	// turn the detector deaf.
+	segmenter.Push(speech(1.0, 6000), 32000)
+	events = segmenter.Push(Silence(0.5), 48000)
+	if len(events) != 1 || events[0].Kind != SpeechEnd {
+		t.Fatalf("events after real speech = %+v, want one speech_end", events)
+	}
+	if got := events[0].DurationSeconds(); got < 0.9 {
+		t.Errorf("segment duration = %.2fs, want about 1s", got)
+	}
+}
+
+// Adaptation must never lower the threshold: quiet speech below the configured
+// value has to stay speech, or the feature would lose words.
+func TestSegmenterNeverAdaptsBelowTheConfiguredThreshold(t *testing.T) {
+	segmenter := NewSegmenter(SegmenterConfig{
+		SilenceMS:   300,
+		MinSpeechMS: 100,
+		Threshold:   350,
+		Adaptive:    true,
+	})
+	segmenter.Push(Silence(1.0), 0)
+	if threshold := segmenter.Threshold(); threshold != 350 {
+		t.Fatalf("Threshold() = %.0f after a silent second, want the configured 350", threshold)
+	}
+	// Amplitude 700 is an RMS of ~495: above the configured threshold, so it must
+	// be heard even with adaptation enabled.
+	if events := segmenter.Push(speech(1.0, 700), 16000); len(events) != 1 || events[0].Kind != SpeechStart {
+		t.Fatalf("events for speech above the configured threshold = %+v, want one speech_start", events)
+	}
+}
+
+// An impulsive noise source must not extend an utterance. Before this rule, one
+// frame above the threshold reset the silence hangover, so a keystroke could hold
+// the detector in the speaking state and a silent room produced multi-second
+// utterances of hallucinated text (measured: 9.9s).
+func TestSegmenterIgnoresAClickInsideUtterance(t *testing.T) {
+	segmenter := NewSegmenter(SegmenterConfig{SilenceMS: 200, MinSpeechMS: 100, Threshold: 350})
+	segmenter.Push(speech(1.0, 6000), 0) // 16000 samples of speech
+	segmenter.Push(Silence(0.15), 16000)
+	// A 20ms click: loud, but far shorter than minInterruptMS.
+	segmenter.Push(speech(0.02, 20000), 18400)
+	events := segmenter.Push(Silence(0.15), 18720)
+
+	if len(events) != 1 || events[0].Kind != SpeechEnd {
+		t.Fatalf("events = %+v, want one speech_end: the click must not reset the hangover", events)
+	}
+	if events[0].EndSample != 16000 {
+		t.Errorf("speech end = %d, want 16000: the click is not speech and must not be repaired", events[0].EndSample)
+	}
+}
+
+// Flush ends an open utterance, but not one that never contained speech: the last
+// frames of a session are as likely to hold a keystroke as a word, and repairing
+// one commits whatever the recogniser hallucinated from it.
+func TestSegmenterFlushIgnoresAMereClick(t *testing.T) {
+	segmenter := NewSegmenter(SegmenterConfig{SilenceMS: 5000, MinSpeechMS: 300, Threshold: 350})
+	segmenter.Push(speech(0.02, 8000), 0)
+	if events := segmenter.Flush(); len(events) != 0 {
+		t.Fatalf("Flush() after a single click = %+v, want nothing", events)
+	}
+}
+
+func TestSegmenterCalibrateRaisesTheThreshold(t *testing.T) {
+	segmenter := NewSegmenter(SegmenterConfig{
+		SilenceMS:   300,
+		MinSpeechMS: 100,
+		Threshold:   350,
+		Adaptive:    true,
+	})
+	segmenter.Calibrate(speech(1.0, 800))
 	if threshold := segmenter.Threshold(); threshold <= 800 {
-		t.Errorf("Threshold() = %.0f, want it raised above the measured room tone", threshold)
+		t.Errorf("Threshold() = %.0f, want it raised above the calibrated floor", threshold)
 	}
 }

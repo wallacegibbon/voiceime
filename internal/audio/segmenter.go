@@ -60,6 +60,18 @@ const (
 	stateSpeaking
 )
 
+// minInterruptMS is how long speech must last before it interrupts the silence
+// hangover and extends the utterance.
+//
+// Without it, a single frame above the threshold resets the hangover counter, and
+// an impulsive noise source - a keystroke, a mouse click, a chair - is enough to
+// keep the detector in the speaking state indefinitely. Measured in the reference
+// room: the noise floor sits at RMS 309 with a 20 ms p99 of 7992 and a peak of
+// 23873, so clicks were resetting the 800 ms hangover about once a second and a
+// silent room produced 4-10 second "utterances" of hallucinated text. Clicks are
+// a few frames long; syllables are not.
+const minInterruptMS = 120
+
 // Segmenter turns an audio stream into SpeechStart/SpeechEnd events.
 //
 // It is energy-based rather than model-based on purpose. The ASR models do run a
@@ -75,12 +87,14 @@ type Segmenter struct {
 	speechStart      int64
 	lastSpeechSample int64
 	silenceSamples   int64
+	speechRun        int64
 	pos              int64
 
 	// noiseFloor tracks the quietest frame seen recently, which is what allows
-	// the threshold to adapt upward in a noisy room.
+	// the threshold to adapt upward in a noisy room. It follows the level down
+	// immediately and upward slowly, so one loud frame cannot desensitise the
+	// detector and a genuinely noisy room is still learned in a few seconds.
 	noiseFloor float64
-	calibrated bool
 	pending    []SegmentEvent
 	started    time.Time
 }
@@ -108,6 +122,12 @@ func NewSegmenter(cfg SegmenterConfig) *Segmenter {
 
 // Calibrate measures the noise floor from a block of known silence, which the
 // daemon supplies from the first milliseconds of capture.
+//
+// Not calling it is the normal case and is not a failure: the floor is tracked
+// from the stream itself (see frame), which is safer than trusting the opening
+// milliseconds - a user who starts talking immediately would otherwise measure
+// speech as their noise floor and the detector would then ignore everything.
+// Calibrate exists for a caller that does have a block of known silence.
 func (s *Segmenter) Calibrate(silence []byte) {
 	if len(silence) == 0 {
 		return
@@ -117,17 +137,21 @@ func (s *Segmenter) Calibrate(silence []byte) {
 		return
 	}
 	s.noiseFloor = level
-	s.calibrated = true
 }
 
-// Threshold is the RMS level currently treated as the speech boundary.
+// adaptiveFactor is how far above the measured noise floor speech must be. Two is
+// the smallest factor that separates a room's noise from normal speech in the
+// measurements recorded in docs/measurements.md.
+const adaptiveFactor = 2
+
+// Threshold is the RMS level currently treated as the speech boundary: twice the
+// measured noise floor, but never below the configured value. Adapting *downward*
+// would start treating quiet speech as silence, which loses words.
 func (s *Segmenter) Threshold() float64 {
-	if !s.cfg.Adaptive || !s.calibrated {
+	if !s.cfg.Adaptive {
 		return s.cfg.Threshold
 	}
-	// Twice the measured floor, but never below the configured value: adapting
-	// downward would start treating quiet speech as silence, which loses words.
-	if adaptive := s.noiseFloor * 2; adaptive > s.cfg.Threshold {
+	if adaptive := s.noiseFloor * adaptiveFactor; adaptive > s.cfg.Threshold {
 		return adaptive
 	}
 	return s.cfg.Threshold
@@ -151,9 +175,14 @@ func (s *Segmenter) Push(data []byte, startSample int64) []SegmentEvent {
 // Flush ends an utterance in progress, which is what a hotkey release or an
 // explicit stop should do: the user has finished speaking, so the provisional
 // text is committable even though no silence was captured.
+//
+// It applies the same minimum-speech rule as a normal boundary. Without it, a
+// single keystroke in the last frames of a session looked like an utterance and
+// committed whatever the recogniser hallucinated from it - measured as a 0.02s
+// "segment" and a committed "。".
 func (s *Segmenter) Flush() []SegmentEvent {
 	s.pending = s.pending[:0]
-	if s.state == stateSpeaking && s.lastSpeechSample > s.speechStart {
+	if s.state == stateSpeaking && s.lastSpeechSample > s.speechStart && s.speechLongEnough() {
 		s.pending = append(s.pending, s.endEvent(s.lastSpeechSample, 0))
 	}
 	return s.pending
@@ -162,9 +191,10 @@ func (s *Segmenter) Flush() []SegmentEvent {
 func (s *Segmenter) frame(frame []byte, sample int64) {
 	level := RMS(frame)
 	// Track the floor only while quiet, and only downward quickly / upward
-	// slowly, so a single loud frame cannot desensitise the detector.
+	// slowly, so a single loud frame cannot desensitise the detector. While
+	// speaking the floor is frozen: a long utterance would otherwise drag it up.
 	if s.state == stateQuiet {
-		if !s.calibrated || level < s.noiseFloor {
+		if level < s.noiseFloor {
 			s.noiseFloor = level
 		} else {
 			s.noiseFloor = s.noiseFloor*0.995 + level*0.005
@@ -180,6 +210,7 @@ func (s *Segmenter) frame(frame []byte, sample int64) {
 			s.speechStart = sample
 			s.lastSpeechSample = sample + frameSamples
 			s.silenceSamples = 0
+			s.speechRun = frameSamples
 			s.pending = append(s.pending, SegmentEvent{
 				Kind:        SpeechStart,
 				StartSample: sample,
@@ -190,9 +221,16 @@ func (s *Segmenter) frame(frame []byte, sample int64) {
 		}
 	case stateSpeaking:
 		if speech {
-			s.lastSpeechSample = sample + frameSamples
-			s.silenceSamples = 0
+			s.speechRun += frameSamples
+			// Only sustained speech counts as "the user is still talking": see
+			// minInterruptMS. Until it is sustained the frame is treated as
+			// neither speech nor silence, so the hangover keeps counting.
+			if s.speechRun >= minInterruptSamples() {
+				s.lastSpeechSample = sample + frameSamples
+				s.silenceSamples = 0
+			}
 		} else {
+			s.speechRun = 0
 			s.silenceSamples += frameSamples
 		}
 
@@ -229,8 +267,12 @@ func (s *Segmenter) endEvent(endSample int64, probability float64) SegmentEvent 
 	}
 	s.state = stateQuiet
 	s.silenceSamples = 0
+	s.speechRun = 0
 	return event
 }
+
+// minInterruptSamples is minInterruptMS as a sample count.
+func minInterruptSamples() int64 { return int64(SampleRate) * minInterruptMS / 1000 }
 
 // SpeechProbability is a convenience for logs: how far above the threshold the
 // current frame is, mapped through a soft saturating curve.

@@ -224,7 +224,19 @@ func (o Options) Run(ctx context.Context) (Result, error) {
 	}
 	// Goes through commitProvisional so the "already delivered" bookkeeping
 	// applies here too: the last utterance must not be sent twice.
-	pipeline.commitProvisional()
+	//
+	// But only if the endpointer heard speech at some point. Streaming ASR
+	// produces plausible text for almost any input - measured: twenty seconds of
+	// an empty room committed "被。。。。。。嗯。" - so committing the provisional text
+	// of a session that never contained speech types hallucinated words into the
+	// application for no reason. A user whose speech is too quiet to cross the
+	// threshold sees nothing rather than nonsense; `voiceime doctor` and
+	// `stream --events` show which of the two happened.
+	if pipeline.segments.Load() > 0 {
+		pipeline.commitProvisional()
+	} else if notify.Skipped != nil {
+		notify.Skipped("no speech detected; nothing committed")
+	}
 
 	summary := Result{
 		StreamText: result.Text,
@@ -250,6 +262,10 @@ type session struct {
 
 	partials atomic.Int64
 	audioFed atomic.Int64
+	// segments counts utterances the endpointer accepted. A session that ends
+	// without one contains no speech the detector could find, and committing its
+	// provisional text would deliver the recogniser's hallucination.
+	segments atomic.Int64
 
 	repairQueue   chan repairJob
 	repairResults chan repairResult
@@ -348,6 +364,7 @@ func (s *session) waitForRepairs() { s.repairDone.Wait() }
 // onSegmentEnd closes an utterance: queue its repair, or commit straight away
 // when repair is off.
 func (s *session) onSegmentEnd(event audio.SegmentEvent, buffer *audio.RollingBuffer, options Options) {
+	s.segments.Add(1)
 	if s.notify.Segment != nil {
 		s.notify.Segment(float64(event.StartSample)/audio.SampleRate,
 			float64(event.EndSample)/audio.SampleRate, event.DurationSeconds())

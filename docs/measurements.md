@@ -113,6 +113,73 @@ voiceime reports the failing package id and the error text instead of silently
 falling back, and `models sizes <pkg>` answers "is it reachable" without
 downloading.
 
+## Endpointing in a real room
+
+The detector decides when text becomes committable, so its behaviour was measured
+against the reference machine's own microphone rather than only against synthetic
+audio. All figures are 20 ms frame RMS, the same frame the detector uses.
+
+| Audio | p10 | p50 | p90 | p99 | max |
+|---|---:|---:|---:|---:|---:|
+| 20s of the idle room (nobody speaking) | 231 | 309 | 436 | 7992 | 23873 |
+| 8s of continuous speech (16 kHz reference clip) | 180 | 3883 | 7495 | 9625 | 10716 |
+
+Two things follow, and both were bugs:
+
+* **The room is not quiet, it is *spiky*.** Its median is 309 while 1% of frames
+  reach 7992 and the peak is 23873 - keystrokes and chair noise. The configured
+  threshold was 350, which sits inside the room's own distribution, and *any*
+  single frame above the threshold reset the silence hangover, so the 800 ms of
+  continuous silence required to end an utterance almost never accumulated. A
+  silent room produced "utterances" of 4.28 s, 9.90 s and 1.30 s.
+* **The adaptive noise floor was dead code.** `session.go` passed
+  `Adaptive: true`, but `Threshold()` only used the measured floor when
+  `Calibrate()` had been called, and nothing in the pipeline calls it. The
+  detector therefore ran on the static 350 the whole time.
+
+Replaying the *same* 20s recording is what makes these numbers comparable - it
+removes the room's run-to-run variation:
+
+| Build | threshold | phantom segments | committed text |
+|---|---|---:|---|
+| before the fixes | 350 | 3 (0-4.28, 7.82-17.72, 18.68-19.98s) | `被。`, `。。`, `嗯。` |
+| after the fixes, default threshold | 350 | 3 (0.38, 1.10, 2.30s) | `被。。。。`, `嗯。`, `。嗯。` |
+| after the fixes, tuned for this room | 800 | 0 | nothing (`skipped: no speech detected`) |
+
+The same recording through the tuned settings still recognises speech: the
+reference clip is segmented once (0.04-8.00 s) and repaired normally. The tunings
+applied to the reference machine are `silence_rms_threshold = 800` (above the
+room's p90 of 436, and well below speech's p50 of 3883) and
+`endpoint_min_speech_ms = 500` (longer than the 340 ms transient that survived the
+threshold change).
+
+To measure a different room, the same way:
+
+```bash
+parec --format=s16le --rate=16000 --channels=1 --raw --latency-msec=40 | head -c 640000 > /tmp/room.raw
+python3 - <<'PY'
+import struct
+data = open('/tmp/room.raw','rb').read()
+s = struct.unpack('<%dh' % (len(data)//2), data)
+frame = 320                      # 20 ms at 16 kHz, the detector's frame
+rms = sorted((sum(x*x for x in s[i:i+frame])/frame) ** 0.5 for i in range(0, len(s)-frame, frame))
+p = lambda q: rms[int(len(rms)*q/100)]
+print("p10=%.0f p50=%.0f p90=%.0f p99=%.0f max=%.0f" % (p(10), p(50), p(90), p(99), rms[-1]))
+PY
+```
+
+Set `silence_rms_threshold` above the idle p90, then confirm the other direction
+with the same command while speaking: the empty room must produce no `segment`
+event, and a sentence must produce one.
+
+**Only a boundary commits.** On the sandbox bus with `dbus-monitor`, activating
+the engine over an 8 s clip of unbroken speech emitted 6 `UpdatePreeditText` and
+**one** `CommitText` - at the end, because no boundary was ever found. The same
+clip with two seconds of silence in the middle emitted **two** `CommitText`, one
+per utterance. So text stays underlined (preedit) for exactly as long as the
+detector considers the utterance open, and "it never commits" and "it never ends"
+are the same sentence.
+
 ## Integration constraints found by measurement
 
 These are the findings that changed the implementation, so they are recorded
@@ -160,9 +227,13 @@ Stated plainly so nobody mistakes an assumption for a result:
   session has not been run.
 * **Confucius4-R2T2**, i.e. the append-only long-context streaming family. Its
   viability on this CPU is an inference from a sibling model, not a result.
-* **Endpointing against real speech.** The detector is covered by synthetic tests
-  (speech between silence, short bursts, sub-hangover pauses, a noisy room); its
-  thresholds have not been tuned against a human speaking into this microphone.
+* **Endpointing against a human voice in this room.** The detector is covered by
+  synthetic tests (speech between silence, short bursts, sub-hangover pauses, a
+  noisy room) and its thresholds are now tuned against a 20 s recording of this
+  room plus a 16 kHz speech clip - but not against a person speaking into this
+  microphone. The reference clip's speech sits at p50 RMS 3883 against a room p90
+  of 436, so the current threshold of 800 has margin on both sides; a quiet
+  speaker at a distance is the case that would need it lowered.
 * **Concurrency between streaming and repair.** They compete for the same four
   threads; the figures above were taken with both active, but the split has not
   been studied. A GPU backend would remove the contention entirely.

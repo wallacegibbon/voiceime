@@ -161,8 +161,8 @@ is pinned down.
 
 **Consequence.** Thresholds are configuration, and the detector raises its
 threshold above a measured noise floor so a noisy room does not read as continuous
-speech. Its defaults have not yet been tuned against a human talking into this
-microphone; that is listed as unmeasured.
+speech. The reference machine's room has since been measured and the defaults
+tuned for it; see D16 for what that measurement found and fixed.
 
 ## D9 — Model discovery asks audio.cpp, and caches the answer.
 
@@ -327,3 +327,47 @@ no query string or fragment) and never resolved over the network, so `doctor` an
 the mirror, so an ambient value cannot silently decide where downloads come from.
 The default stays `https://hf-mirror.com` because it is the endpoint measured to
 work from a network where huggingface.co is unreachable.
+
+## D16 — The detector must learn from the stream, and an utterance must be earned.
+
+**Decision.** Four rules, all of them consequences of one measurement session in
+the reference machine's own room (`docs/measurements.md` has the numbers):
+
+1. The noise floor is learned from the audio stream itself. `Calibrate()` is not a
+   prerequisite for adaptation.
+2. A noise burst shorter than `minInterruptMS` (120 ms) does not interrupt the
+   silence hangover and does not extend an utterance.
+3. `Flush()` applies the same minimum-speech rule as a normal boundary.
+4. A session that produced no *segment* commits nothing when it stops.
+
+**Why.** Each rule was a live bug, not a precaution.
+
+1. `session.go` had passed `Adaptive: true` since the detector was written, but
+   `Threshold()` used the measured floor only after `Calibrate()`, and no code
+   path in the pipeline calls it - a test called it, so the tests passed while the
+   feature was dead. The detector ran on the static `silence_rms_threshold` of
+   350, which in the reference room sits *inside* the noise distribution
+   (idle p50 = 309, p90 = 436).
+2. Any single frame above the threshold reset the hangover counter, and that room
+   is spiky rather than merely loud: 1% of idle frames reach RMS 7992 (keystrokes,
+   chair, fan) against a peak of 23873. One click per second was enough to keep
+   the detector "speaking" indefinitely, which is how 20 s of an empty room
+   produced 4.28 s, 9.90 s and 1.30 s utterances and committed `被。` and `嗯。`.
+3. The last frames of a session are as likely to hold a keystroke as a word: a
+   0.02 s "segment" was observed at the tail of a recording, and repairing it
+   delivered the recogniser's hallucination from a click.
+4. Streaming ASR produces plausible text for almost any input. Even with the
+   endpointer silent, the *streaming* session hallucinates partials out of room
+   noise, and the final commit used to deliver them: 20 s of an empty room
+   committed `被。。。。。。嗯。`. Text the endpointer never heard is not text the
+   user said.
+
+**Consequence.** "It never commits" and "it never ends" are the same failure, and
+`docs/measurements.md` now records how to measure a room in one command so the
+threshold can be set from data rather than by guessing. A session with no detected
+speech now reports `skipped: no speech detected; nothing committed` instead of
+typing nonsense, so a threshold set too high shows up as silence rather than as
+wrong words - the honest failure. The residual known gap is text that arrives
+before the *first* boundary in a genuinely noisy room: it still belongs to a real
+segment's commit. Removing it needs per-sample speech regions in the transcript, a
+larger change than this fix.

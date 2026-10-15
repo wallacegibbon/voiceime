@@ -141,17 +141,42 @@ microphone, replay a file at real time: `"$BIN" stream --file speech.wav --realt
 
 Measured behaviour worth knowing before you judge the output: a quiet room is not
 digital silence, and the recogniser can emit a short hallucination when the noise
-floor crosses the threshold - a six-second capture in a silent room produced
-`被。` and `嗯。` here, and `transcribe` on a file of pure silence produced `我。`
-too. That is the recogniser, not the pipeline, and the knobs are:
+floor crosses the threshold. That happened here, and it turned out to be a detector
+bug rather than a model quirk - the adaptive noise floor was never actually active,
+so the threshold sat inside the room's own noise distribution and utterances never
+ended. Both are fixed, and the numbers are in
+[measurements.md](measurements.md#endpointing-in-a-real-room).
+
+Set the threshold from data, not by guessing, because the room's *spikiness* is
+what matters rather than its average:
 
 ```sh
-"$BIN" config set endpoint_min_speech_ms 500   # ignore short noise bursts (default 300)
-"$BIN" config set silence_rms_threshold 500    # for a room with a high noise floor (default 350)
+# 1. Measure the idle room (20s, nobody speaking).
+parec --format=s16le --rate=16000 --channels=1 --raw --latency-msec=40 | head -c 640000 > /tmp/room.raw
+python3 - <<'PY'
+import struct
+data = open('/tmp/room.raw','rb').read()
+s = struct.unpack('<%dh' % (len(data)//2), data)
+frame = 320
+rms = sorted((sum(x*x for x in s[i:i+frame])/frame) ** 0.5 for i in range(0, len(s)-frame, frame))
+p = lambda q: rms[int(len(rms)*q/100)]
+print("p10=%.0f p50=%.0f p90=%.0f p99=%.0f max=%.0f" % (p(10), p(50), p(90), p(99), rms[-1]))
+PY
+
+# 2. Put silence_rms_threshold above the idle p90, and endpoint_min_speech_ms
+#    above the longest noise burst (a keystroke is 20-100ms, a word is not).
+"$BIN" config set silence_rms_threshold 800
+"$BIN" config set endpoint_min_speech_ms 500
+
+# 3. Confirm both directions with the same command.
+"$BIN" stream --seconds 10 --events     # silent room -> no `segment`, `skipped: no speech detected`
+"$BIN" stream --seconds 10 --events     # one sentence -> one `segment` and one `commit`
 ```
 
-Raise one at a time and re-run `stream --seconds 6 --events` to see the effect:
-what you want is no `segment` event at all while the room is quiet.
+If a sentence produces no `segment`, the threshold is above your voice: lower it
+and repeat step 3. That failure is deliberately silent rather than wrong - the
+engine commits nothing it did not hear, so a mis-set threshold shows up as no text
+instead of hallucinated words.
 
 ## 7. Register the IBus engine
 

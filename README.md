@@ -50,6 +50,9 @@ make help         # every target
 program is. `make measure AUDIO=speech.wav` replays a recording at real time and
 prints the latency and repair numbers.
 
+**Getting from a checkout to dictating: [docs/DEPLOY.md](docs/DEPLOY.md)** — the
+whole procedure, step by step, with what to assert after each step.
+
 Requires an audio.cpp installation (the CLI binary is what does the inference) and
 Go 1.24 or newer. Nothing else: capture is a subprocess, so there is no audio
 library, no development headers and no cgo — which is why the same source
@@ -109,6 +112,7 @@ internal/audio      PCM helpers, capture, endpointing, rolling buffer
 internal/asr        the streaming adapter, the transcript model, the repair pass
 internal/models     discovery through `--inspect`, the model manager wrapper
 docs/AGENT.md       the operational surface, for agents
+docs/DEPLOY.md      deploy on a new machine, step by step, with assertions
 docs/ibus-protocol.md  the IBus engine protocol, established by experiment
 docs/decisions.md   why each choice was made, and what would change it
 docs/measurements.md  every number, with the command that produced it

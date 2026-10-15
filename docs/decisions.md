@@ -198,50 +198,6 @@ one endpoint does not carry is reported with its id and the error text rather th
 falling back silently, and `models sizes <pkg>` answers reachability without
 downloading.
 
-## D15 — One configurable download endpoint, and no preset names.
-
-**Decision.** `download_mirror` holds an absolute `http(s)` URL, passed to the
-model manager as `HF_ENDPOINT`. The former preset values (`hf-mirror`,
-`huggingface`, `modelscope`) and the `--source modelscope` override are removed.
-
-**Why.** Three reasons, in order of weight.
-
-1. *ModelScope was never load-bearing here.* All 373 packages in audio.cpp's
-   registry declare `download.kind = huggingface_snapshot`; not one declares
-   `modelscope_snapshot`. `--source modelscope` therefore never made an
-   unreachable package reachable - it re-hosted the same Hugging Face spec on
-   another server, and it does not work for the package voiceime actually
-   recommends: `FunAudioLLM/SenseVoiceSmall-GGUF-audiocpp` does not exist on
-   ModelScope ("record not found"), while the aggregate repository
-   `audio-cpp/audio.cpp-gguf` does. The script keeps its ModelScope transport for
-   the day a spec declares it; what was removed is an override no package needed.
-2. *Preset names were the only thing making this an enum.* Two of the three values
-   were nothing but two URLs, so the setting may as well hold a URL - which is
-   strictly more capable, lets a caller point at a company cache or a LAN address,
-   and makes `https://huggingface.co` a value rather than a special case.
-3. *Fewer hosts, less drift.* The endpoint is part of an install's identity: the
-   package manifest records source-specific etags, and the script's own help warns
-   that cross-source checks may report updates. One endpoint per machine keeps
-   `models installed` honest.
-
-**Also decided, and why.** Old preset values are *not* aliased, and the key was
-*not* renamed. An alias means one key with two spellings plus a table of magic
-strings to maintain, test and document - the ambiguity this decision exists to
-remove. Renaming the key was rejected for a measured reason: `config.Load` rejects
-unknown keys before any command runs, so a renamed key makes *every* command fail,
-including the `config set` that would repair it, leaving hand-editing as the only
-way out. A rejected *value* keeps the file loadable, so `doctor` reports it with a
-fix and `config set` applies that fix. Both properties are pinned by tests in
-`internal/config/config_test.go`.
-
-**Consequence.** The value is validated syntactically (`http` or `https`, a host,
-no query string or fragment) and never resolved over the network, so `doctor` and
-`config validate` keep working offline; reachability remains a question for
-`models sizes`. `HF_ENDPOINT` is now always set explicitly rather than only for
-the mirror, so an ambient value cannot silently decide where downloads come from.
-The default stays `https://hf-mirror.com` because it is the endpoint measured to
-work from a network where huggingface.co is unreachable.
-
 ## D11 — While the engine is active, voiceime dictates.
 
 **Decision.** Activation starts the dictation session; deactivation stops it and
@@ -327,3 +283,47 @@ working in every application with no explanation.
 **Consequence.** Stopping the listener releases the user's key, at the cost of the
 daemon still holding a combination nobody can press. Only a daemon restart clears
 the slot, which is why uninstall does it and why the listener says what it did.
+
+## D15 — One configurable download endpoint, and no preset names.
+
+**Decision.** `download_mirror` holds an absolute `http(s)` URL, passed to the
+model manager as `HF_ENDPOINT`. The former preset values (`hf-mirror`,
+`huggingface`, `modelscope`) and the `--source modelscope` override are removed.
+
+**Why.** Three reasons, in order of weight.
+
+1. *ModelScope was never load-bearing here.* All 373 packages in audio.cpp's
+   registry declare `download.kind = huggingface_snapshot`; not one declares
+   `modelscope_snapshot`. `--source modelscope` therefore never made an
+   unreachable package reachable - it re-hosted the same Hugging Face spec on
+   another server, and it does not work for the package voiceime actually
+   recommends: `FunAudioLLM/SenseVoiceSmall-GGUF-audiocpp` does not exist on
+   ModelScope ("record not found"), while the aggregate repository
+   `audio-cpp/audio.cpp-gguf` does. The script keeps its ModelScope transport for
+   the day a spec declares it; what was removed is an override no package needed.
+2. *Preset names were the only thing making this an enum.* Two of the three values
+   were nothing but two URLs, so the setting may as well hold a URL - which is
+   strictly more capable, lets a caller point at a company cache or a LAN address,
+   and makes `https://huggingface.co` a value rather than a special case.
+3. *Fewer hosts, less drift.* The endpoint is part of an install's identity: the
+   package manifest records source-specific etags, and the script's own help warns
+   that cross-source checks may report updates. One endpoint per machine keeps
+   `models installed` honest.
+
+**Also decided, and why.** Old preset values are *not* aliased, and the key was
+*not* renamed. An alias means one key with two spellings plus a table of magic
+strings to maintain, test and document - the ambiguity this decision exists to
+remove. Renaming the key was rejected for a measured reason: `config.Load` rejects
+unknown keys before any command runs, so a renamed key makes *every* command fail,
+including the `config set` that would repair it, leaving hand-editing as the only
+way out. A rejected *value* keeps the file loadable, so `doctor` reports it with a
+fix and `config set` applies that fix. Both properties are pinned by tests in
+`internal/config/config_test.go`.
+
+**Consequence.** The value is validated syntactically (`http` or `https`, a host,
+no query string or fragment) and never resolved over the network, so `doctor` and
+`config validate` keep working offline; reachability remains a question for
+`models sizes`. `HF_ENDPOINT` is now always set explicitly rather than only for
+the mirror, so an ambient value cannot silently decide where downloads come from.
+The default stays `https://hf-mirror.com` because it is the endpoint measured to
+work from a network where huggingface.co is unreachable.

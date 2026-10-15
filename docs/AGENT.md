@@ -7,6 +7,11 @@ derived from the code, so it is the authoritative version if the two disagree.
 
 ## Building and installing
 
+Deploying on a new machine end to end — prerequisites, configuration, model,
+engine registration, shortcut listener, and what to assert at each step — is
+[docs/DEPLOY.md](DEPLOY.md). This document is the command reference; that one is
+the procedure.
+
 The Makefile is the intended interface; every target is non-interactive.
 
 ```
@@ -133,7 +138,7 @@ answerable without a human listening:
 ```
 voiceime transcribe speech.wav --model <path> --json
 voiceime stream --file speech.wav --realtime --chunk 3 --json
-voiceime stream --seconds 5 --mic            # capture from the microphone
+voiceime stream --seconds 5                    # capture from the microphone (the default source)
 ```
 
 `stream` accepts `--events` for one JSON object per event instead of human text.
@@ -215,3 +220,5 @@ Run the engine by hand (as above) to see the same log on stderr instead.
 | Text is corrupted and windows are short | `chunk_seconds` below 1.5 | `voiceime config set chunk_seconds 3` |
 | Model aborts with `only supports sample_rate=16000` | input is not 16 kHz | `voiceime config set capture_rate 16000` |
 | `models list` shows unrelated files | the models directory is shared | expected; discovery filters to ASR models and reports the count it ignored |
+| The service restarts forever with `status=203/EXEC` | the unit's `ExecStart` names a binary that no longer exists (the checkout was moved or renamed) | `voiceime hotkey install` then `voiceime doctor`; see [DEPLOY.md § Recovery](DEPLOY.md#recovery) |
+| `ibus list-engine` lists `voiceime` but dictation does nothing | the running engine process was started from an older binary, or the component file names a path that no longer exists | `ibus engine xkb:us::eng && pkill -f "voiceime ibus-engine" && ibus engine voiceime` |

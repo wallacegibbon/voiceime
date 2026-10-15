@@ -13,6 +13,8 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/wallacegibbon/voiceime/internal/config"
+	"github.com/wallacegibbon/voiceime/internal/gnome"
 	"github.com/wallacegibbon/voiceime/internal/ibus"
 )
 
@@ -29,7 +31,7 @@ func cmdHotkey() *Command {
 	return &Command{
 		Name:    "hotkey",
 		Summary: "Listen for a global shortcut and switch to voiceime while it is held",
-		Usage:   "voiceime hotkey <run|install|uninstall|status> [--keys <combo>]",
+		Usage:   "voiceime hotkey <run|toggle|install|uninstall|status> [--keys <combo>]",
 		Flags: func(set *flag.FlagSet) {
 			set.StringVar(&spec, "keys", "", "shortcut to hold, e.g. <Control>apostrophe (default: from config)")
 			set.StringVar(&keyspec, "engine", "", "engine to switch to while held (default: from config)")
@@ -45,6 +47,8 @@ func cmdHotkey() *Command {
 			switch action {
 			case "run":
 				return runHotkey(ctx, spec, quiet, logEvents)
+			case "toggle":
+				return toggleHotkey(ctx)
 			case "install":
 				return installHotkeyService(ctx, spec)
 			case "uninstall":
@@ -278,12 +282,155 @@ WantedBy=default.target
 			applied = true
 		}
 	}
+	// The IBus registration only fires where a component honours it, which in
+	// this project means Wayland: there the compositor grabs the key and echoes
+	// the event back. On X11 nothing grabs it - measured: ibus-daemon has no
+	// display connection at all, and the desktop's ibus integration never reads
+	// the property - so an X11 session also gets a GNOME keybinding, because
+	// gsd-media-keys does grab keys there. Both are installed on X11: the unit is
+	// harmless and keeps working if the session ever moves to Wayland.
+	session := sessionType()
+	mechanisms := []string{"ibus-global-shortcut"}
+	var keybinding any
+	switch session {
+	case "x11":
+		mechanisms = append(mechanisms, "gnome-keybinding")
+		keybinding = installGnomeKeybinding(ctx, hotkeySpec(ctx, spec), binary)
+	case "wayland":
+		// Converge rather than only add: a machine that once ran X11 may still
+		// have the GNOME keybinding, and on Wayland the IBus shortcut works too,
+		// so two consumers would fight over one key.
+		removeStaleGnomeKeybinding(ctx)
+	}
+
 	return ctx.Emit("hotkey install", map[string]any{
-		"unit":     path,
-		"commands": commands,
-		"applied":  applied,
-		"keys":     hotkeySpec(ctx, spec),
+		"unit":          path,
+		"commands":      commands,
+		"applied":       applied,
+		"keys":          hotkeySpec(ctx, spec),
+		"session":       session,
+		"mechanisms":    mechanisms,
+		"gnome_binding": keybinding,
 	})
+}
+
+// removeStaleGnomeKeybinding clears a keybinding a previous X11 install left
+// behind, so switching a machine to Wayland does not leave two things grabbing
+// the shortcut.
+func removeStaleGnomeKeybinding(ctx *Context) {
+	if !gnome.Available() {
+		return
+	}
+	registered, _, _, err := gnome.Status(gnome.KeybindingPath)
+	if err != nil || !registered {
+		return
+	}
+	if err := gnome.Remove(gnome.KeybindingPath); err == nil {
+		ctx.Print("removed the leftover GNOME keybinding; the IBus shortcut works on this session")
+	}
+}
+
+// sessionType names the display server the command runs under. It is the one
+// thing this deployment branches on, because it decides which component can grab
+// the global shortcut. XDG_SESSION_TYPE is authoritative when the session set
+// it; the two display variables cover a shell that did not inherit it (a plain
+// login shell, or another user's environment).
+func sessionType() string {
+	if value := strings.ToLower(strings.TrimSpace(os.Getenv("XDG_SESSION_TYPE"))); value != "" {
+		return value
+	}
+	if os.Getenv("WAYLAND_DISPLAY") != "" {
+		return "wayland"
+	}
+	if os.Getenv("DISPLAY") != "" {
+		return "x11"
+	}
+	return ""
+}
+
+// installGnomeKeybinding adds the X11-only trigger and returns what happened, so
+// the JSON result says whether the shortcut will actually fire rather than
+// leaving a silent ineffective install.
+func installGnomeKeybinding(ctx *Context, spec, binary string) map[string]any {
+	info := map[string]any{"path": gnome.KeybindingPath, "installed": false}
+	accelerator, err := ibus.GTKAccelerator(spec)
+	if err != nil {
+		info["error"] = fmt.Sprintf("cannot express %q as a GNOME accelerator: %v", spec, err)
+		ctx.Print("note: no GNOME keybinding (%v)", err)
+		return info
+	}
+	info["binding"] = accelerator
+	if !gnome.Available() {
+		info["error"] = "GNOME custom keybindings are not available (gsettings or the schema is missing)"
+		ctx.Print("note: no GNOME keybinding; on X11 the shortcut will not fire")
+		return info
+	}
+	// The keybinding's command is split by a shell-style parser, so the binary
+	// path (which can contain spaces) is quoted with the same helper the unit
+	// uses.
+	command := shellQuote(binary) + " hotkey toggle"
+	if err := gnome.Install(gnome.KeybindingPath, "voiceime dictation", command, accelerator); err != nil {
+		info["error"] = err.Error()
+		ctx.Print("note: could not add the GNOME keybinding: %v", err)
+		return info
+	}
+	info["installed"] = true
+	info["command"] = command
+	ctx.Print("bound %s to `%s` through GNOME (the IBus shortcut does not fire on X11)", accelerator, command)
+	return info
+}
+
+// toggleHotkey turns dictation on or off in one shot. A platform keybinding runs
+// a command on a key press, so the persistent-listener design cannot be reused
+// there; the engine the user was on before is remembered so the second press
+// returns to it.
+func toggleHotkey(ctx *Context) error {
+	address, err := ibus.ResolveAddress(ibus.Ping)
+	if err != nil {
+		return PreconditionError("ibus restart", "%v", err)
+	}
+	target := ctx.Config.IBusEngineName
+	current, err := ibus.CurrentEngine(address)
+	if err != nil {
+		return FailureError("%v", err)
+	}
+	statePath := filepath.Join(config.CacheDir(), "hotkey-previous")
+
+	if current == target {
+		previous := firstLineOfFile(statePath)
+		if previous == "" {
+			previous = "xkb:us::eng"
+		}
+		if err := ibus.SetEngine(address, previous); err != nil {
+			return FailureError("%v", err)
+		}
+		_ = os.Remove(statePath)
+		ctx.Print("dictation off; back to %s", previous)
+		return ctx.Emit("hotkey toggle", map[string]any{
+			"dictation": false, "engine": previous, "previous": previous,
+		})
+	}
+
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err == nil {
+		_ = os.WriteFile(statePath, []byte(current+"\n"), 0o644)
+	}
+	if err := ibus.SetEngine(address, target); err != nil {
+		return FailureError("%v", err)
+	}
+	ctx.Print("dictation on (was %s)", current)
+	return ctx.Emit("hotkey toggle", map[string]any{
+		"dictation": true, "engine": target, "previous": current,
+	})
+}
+
+// firstLineOfFile reads the engine the toggle should return to. A missing file is
+// normal: the first press on a machine that has never dictated has no history.
+func firstLineOfFile(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(strings.SplitN(string(data), "\n", 2)[0])
 }
 
 func shellQuote(value string) string {
@@ -294,6 +441,16 @@ func shellQuote(value string) string {
 }
 
 func uninstallHotkeyService(ctx *Context) error {
+	// The GNOME keybinding goes first: on X11 it is the one that actually grabs
+	// the key, so removing it is what stops the shortcut firing, and doing it
+	// before the unit means a failure here cannot leave a key wired to a command
+	// that no longer exists.
+	keybindingRemoved := false
+	if gnome.Available() {
+		if err := gnome.Remove(gnome.KeybindingPath); err == nil {
+			keybindingRemoved = true
+		}
+	}
 	// The restart is part of the uninstall, not a nicety: the daemon keeps the
 	// shortcut registration alive (it cannot be cleared while it runs), so the key
 	// stays swallowed until it is restarted.
@@ -313,7 +470,11 @@ func uninstallHotkeyService(ctx *Context) error {
 		}
 		_ = runCommand("systemctl --user daemon-reload")
 	}
-	return ctx.Emit("hotkey uninstall", map[string]any{"unit": path, "removed": true})
+	return ctx.Emit("hotkey uninstall", map[string]any{
+		"unit":                  path,
+		"removed":               true,
+		"gnome_binding_removed": keybindingRemoved,
+	})
 }
 
 func hotkeyStatus(ctx *Context, spec string) error {
@@ -342,12 +503,39 @@ func hotkeyStatus(ctx *Context, spec string) error {
 		state["current_engine"] = firstLine(current)
 	}
 
+	// Which mechanism can actually fire is a property of the session, so it is
+	// reported rather than left for the user to discover: on X11 the IBus
+	// registration is stored but never grabbed, and the GNOME keybinding is the
+	// one that works.
+	session := sessionType()
+	state["session"] = session
+	mechanisms := []string{"ibus-global-shortcut"}
+	if registered, binding, command, err := gnome.Status(gnome.KeybindingPath); err == nil && registered {
+		mechanisms = append(mechanisms, "gnome-keybinding")
+		state["gnome_binding"] = map[string]any{
+			"path":    gnome.KeybindingPath,
+			"binding": binding,
+			"command": command,
+		}
+	}
+	state["mechanisms"] = mechanisms
+
 	ctx.Print("shortcut: %s (keyval=%d modifiers=%d)", spec, key.Keyval, key.State)
 	ctx.Print("engine while dictating: %s", ctx.Config.IBusEngineName)
+	ctx.Print("session: %s", session)
 	if active, _ := state["service_active"].(bool); active {
 		ctx.Print("listener: active")
 	} else {
 		ctx.Print("listener: not running (voiceime hotkey install)")
+	}
+	if session == "x11" {
+		if _, ok := state["gnome_binding"]; ok {
+			ctx.Print("trigger: GNOME keybinding - the IBus shortcut is not grabbed on X11")
+		} else {
+			ctx.Print("trigger: none - on X11 the IBus shortcut is inert; run `voiceime hotkey install`")
+		}
+	} else {
+		ctx.Print("trigger: IBus global shortcut")
 	}
 	ctx.Print("note: IBus keeps one global shortcut registration; another consumer's")
 	ctx.Print("      registration does not include ours, and vice versa.")

@@ -301,12 +301,26 @@ stdout is discarded). To see it, run the engine by hand as described in
 ## 8. Start the shortcut listener
 
 ```sh
-"$BIN" hotkey install           # writes ~/.config/systemd/user/voiceime-hotkey.service
+"$BIN" hotkey install           # unit, plus a GNOME keybinding on X11
 "$BIN" hotkey status --json     # assert: data.service_active == true
+                                # on X11 assert too: data.gnome_binding.installed == true
 ```
 
 `hotkey install` also runs `systemctl --user daemon-reload` and
 `enable --now`, and is idempotent. The default trigger is `<F9>`.
+
+**Which mechanism it installs depends on the session, and the choice is
+automatic.** The listener registers the shortcut through IBus
+(`org.freedesktop.IBus.GlobalShortcutKeys`), which the compositor honours on
+**Wayland**. On **X11** nothing grabs the key - `ibus-daemon` has no display
+connection at all, and a passive grab on the key is free for anyone to take - so
+the key would just reach the focused application. `hotkey install` therefore also
+writes a **GNOME custom keybinding** (executed by `gsd-media-keys`, which does
+grab keys on X11) bound to `voiceime hotkey toggle`, and on Wayland it removes
+that keybinding if a previous X11 install left one, so two consumers never fight
+over one key. `hotkey status --json` reports `data.session`, `data.mechanisms`
+and `data.gnome_binding`, so the effective trigger is visible rather than
+assumed; `hotkey uninstall` removes both.
 
 Two constraints are built into this step, both measured (`docs/decisions.md`
 D13/D14):

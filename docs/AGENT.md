@@ -235,10 +235,19 @@ to stop), or run the shortcut listener so one key does it:
 
 ```
 voiceime config set hotkey "<F9>"     # a tap toggles dictation
-voiceime hotkey install               # systemd --user unit, starts at login
-voiceime hotkey status --json
+voiceime hotkey install               # systemd --user unit, starts at login;
+                                      # on X11 also a GNOME keybinding (see below)
+voiceime hotkey status --json         # data.session, data.mechanisms, data.gnome_binding
+voiceime hotkey toggle                # the one-shot toggle the keybinding runs
 voiceime hotkey run --log-events      # foreground, prints every event the daemon sends
 ```
+
+`hotkey install` picks the mechanism the session can actually use: IBus's global
+shortcut on Wayland (where the compositor grabs the key), and on X11 a GNOME
+custom keybinding to `voiceime hotkey toggle`, because on X11 nothing grabs the
+IBus shortcut - `ibus-daemon` has no display connection and a passive grab on the
+key is free. `hotkey status` reports which one is live, and `hotkey uninstall`
+removes both.
 
 Use a function key, not a modifier combination: IBus consumes the release of the
 keys it grabs, so Ctrl+' leaves Ctrl latched in the focused application until it is

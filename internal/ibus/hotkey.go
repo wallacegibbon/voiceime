@@ -214,6 +214,81 @@ func functionKeyNumber(name string) (uint32, bool) {
 	return uint32(number), true
 }
 
+// gdkKeyNames is the canonical GTK/GDK name for the non-printable keyvals
+// keyvalFor accepts. It is a table rather than a reverse of keyvalFor's map
+// because that map spells several keyvals two ways (Return/enter, Escape/escape)
+// and a reverse lookup over it would pick between them at random.
+var gdkKeyNames = map[uint32]string{
+	0x0027: "apostrophe",
+	0x0060: "grave",
+	0x0020: "space",
+	0x002e: "period",
+	0x002c: "comma",
+	0x003b: "semicolon",
+	0x002f: "slash",
+	0x005c: "backslash",
+	0x002d: "minus",
+	0x003d: "equal",
+	0x005b: "bracketleft",
+	0x005d: "bracketright",
+	0xff0d: "Return",
+	0xff1b: "Escape",
+	0xff09: "Tab",
+	0xff08: "BackSpace",
+	0xffff: "Delete",
+}
+
+// KeyName is the inverse of keyvalFor for everything ParseShortcut can produce,
+// in the spelling GTK uses. It returns "" when there is no name to give.
+func KeyName(keyval uint32) string {
+	if keyval >= 0xffbe && keyval <= 0xffbe+34 {
+		return fmt.Sprintf("F%d", keyval-0xffbe+1)
+	}
+	if name, ok := gdkKeyNames[keyval]; ok {
+		return name
+	}
+	if keyval >= 0x20 && keyval < 0x7f {
+		return string(rune(keyval))
+	}
+	return ""
+}
+
+// GTKAccelerator rewrites a shortcut in the form a GNOME keybinding expects.
+//
+// The two spellings overlap but are not the same, and the default shortcut sits
+// exactly in the difference: voiceime reads "<F9>" as the F9 key, while GTK
+// reads the same string as a key with a modifier named F9, which is not valid.
+// So a bare bracketed key has to lose its brackets - this is a conversion, not
+// a reformat.
+func GTKAccelerator(spec string) (string, error) {
+	key, err := ParseShortcut(spec)
+	if err != nil {
+		return "", err
+	}
+	name := KeyName(key.Keyval)
+	if name == "" {
+		return "", fmt.Errorf("no GTK key name for keyval 0x%04x in %q", key.Keyval, spec)
+	}
+	var builder strings.Builder
+	if key.State&ModControl != 0 {
+		builder.WriteString("<Control>")
+	}
+	if key.State&ModShift != 0 {
+		builder.WriteString("<Shift>")
+	}
+	if key.State&ModMod1 != 0 {
+		builder.WriteString("<Alt>")
+	}
+	if key.State&ModMod4 != 0 {
+		builder.WriteString("<Super>")
+	}
+	if key.State&ModLock != 0 {
+		builder.WriteString("<Lock>")
+	}
+	builder.WriteString(name)
+	return builder.String(), nil
+}
+
 // ShortcutEvent is one press or release of a registered shortcut.
 type ShortcutEvent struct {
 	Type     byte

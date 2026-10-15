@@ -3,6 +3,7 @@ package ibus
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/wallacegibbon/voiceime/internal/config"
@@ -79,5 +80,61 @@ func TestComponentExecRejectsAnEmptyCommand(t *testing.T) {
 	}
 	if _, err := ComponentExec(path); err == nil {
 		t.Error("a component with an empty <exec> was accepted; nothing would ever start")
+	}
+}
+
+// voiceime's shortcut spelling and GTK's overlap except exactly where the
+// default lives: "<F9>" is "the F9 key" to voiceime and "modifier F9" (which GTK
+// rejects) to GTK. That is why the conversion exists, and why it is not a no-op.
+func TestGTKAccelerator(t *testing.T) {
+	cases := []struct{ spec, want string }{
+		{"<F9>", "F9"},
+		{"F9", "F9"},
+		{"<F12>", "F12"},
+		{"<Control>apostrophe", "<Control>apostrophe"},
+		{"Control+apostrophe", "<Control>apostrophe"},
+		{"Control+space", "<Control>space"},
+		{"<Super>period", "<Super>period"},
+		{"<Control><Shift>space", "<Control><Shift>space"},
+		{"apostrophe", "apostrophe"},
+	}
+	for _, testCase := range cases {
+		got, err := GTKAccelerator(testCase.spec)
+		if err != nil {
+			t.Errorf("GTKAccelerator(%q): %v", testCase.spec, err)
+			continue
+		}
+		if got != testCase.want {
+			t.Errorf("GTKAccelerator(%q) = %q, want %q", testCase.spec, got, testCase.want)
+		}
+	}
+	if _, err := GTKAccelerator("no-such-key"); err == nil {
+		t.Error("a shortcut that is not a key name was accepted")
+	}
+}
+
+func TestKeyNameInvertsKeyvalFor(t *testing.T) {
+	// Every name keyvalFor accepts must round-trip through KeyName, or the GNOME
+	// keybinding would silently disagree with the configured shortcut.
+	names := []string{
+		"apostrophe", "grave", "space", "period", "comma", "semicolon", "slash",
+		"backslash", "minus", "equal", "bracketleft", "bracketright", "Return",
+		"Escape", "Tab", "BackSpace", "Delete",
+	}
+	for _, name := range names {
+		keyval, err := keyvalFor(name)
+		if err != nil {
+			t.Fatalf("keyvalFor(%q): %v", name, err)
+		}
+		if got := KeyName(keyval); got == "" {
+			t.Errorf("KeyName(0x%04x) from %q is empty", keyval, name)
+		}
+	}
+	for number := 1; number <= 35; number++ {
+		name := "F" + strconv.Itoa(number)
+		keyval, _ := keyvalFor(name)
+		if got := KeyName(keyval); got != name {
+			t.Errorf("KeyName(F%d) = %q, want %q", number, got, name)
+		}
 	}
 }

@@ -458,7 +458,9 @@ func (c *Config) Set(key, raw string) error {
 
 // FindASRBinary locates audiocpp_cli. Order: explicit setting, environment, the
 // checkout's build tree (a source build may hold several backends and the
-// configured one is preferred), then PATH.
+// configured one is preferred), a checkout found in a conventional location, then
+// PATH. Everything before the last resort expresses intent, and a deliberate
+// choice always wins over a guess.
 func (c *Config) FindASRBinary() (string, error) {
 	var candidates []string
 	if c.ASRBin != "" {
@@ -469,8 +471,8 @@ func (c *Config) FindASRBinary() (string, error) {
 			candidates = append(candidates, Expand(value))
 		}
 	}
-	if root := c.AudioCPPDirPath(); root != "" {
-		matches, _ := filepath.Glob(filepath.Join(root, "build", "*", "bin", "audiocpp_cli"))
+	for _, root := range c.checkoutRoots() {
+		matches, _ := filepath.Glob(filepath.Join(root, filepath.FromSlash(audioCPPBuildGlob)))
 		sort.Strings(matches)
 		var preferred []string
 		for _, match := range matches {
@@ -492,6 +494,28 @@ func (c *Config) FindASRBinary() (string, error) {
 	return "", errors.New("audiocpp_cli not found: set asr_bin or audio_cpp_dir, or put it on PATH")
 }
 
+// checkoutRoots returns the audio.cpp directories to look inside: the configured
+// one first, then a located one when it is somewhere else. The second is what
+// makes an unconfigured machine work when the checkout is in an obvious place.
+func (c *Config) checkoutRoots() []string {
+	var roots []string
+	if configured := c.AudioCPPDirPath(); configured != "" {
+		roots = append(roots, configured)
+	}
+	if located := LocateAudioCPP(c); located != "" {
+		duplicate := false
+		for _, existing := range roots {
+			if existing == located {
+				duplicate = true
+			}
+		}
+		if !duplicate {
+			roots = append(roots, located)
+		}
+	}
+	return roots
+}
+
 // FindModelManager locates audio.cpp's model manager script. Downloads are
 // delegated to it on purpose: it already knows the registry, the pinned
 // revisions and the mirror rules, and it is the code path upstream tests.
@@ -501,8 +525,8 @@ func (c *Config) FindModelManager() (string, error) {
 	if c.ModelManager != "" {
 		candidates = append(candidates, Expand(c.ModelManager))
 	}
-	if root := c.AudioCPPDirPath(); root != "" {
-		candidates = append(candidates, filepath.Join(root, "tools", "model_manager_v2.py"))
+	for _, root := range c.checkoutRoots() {
+		candidates = append(candidates, filepath.Join(root, filepath.FromSlash(audioCPPManagerMarker)))
 	}
 	for _, candidate := range candidates {
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {

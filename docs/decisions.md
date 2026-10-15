@@ -438,3 +438,47 @@ gone, and `engine_process` / `hotkey_process` warn when a running process is not
 the binary running `doctor`. That last one is also the honest way to run the
 development loop: `doctor` from the checkout against a deployment in
 `~/.local/bin` reports the difference instead of pretending they are the same.
+
+## D18 — Machine-specific values are discovered, reported or advised, never guessed silently.
+
+**Decision.** Three mechanisms, each for a different kind of value.
+
+1. **Discovered** when it can be derived: the audio.cpp checkout (`~/audio.cpp`,
+   `~/src/audio.cpp` and similar, plus the ancestor of any named `audiocpp_cli`),
+   the ASR binary, the model manager script, the default capture source, and the
+   model itself (by inspecting what is installed and ranking it).
+2. **Reported** at `config init`, which writes the discovery result into the file
+   and prints a `review` list of the settings that are the development machine's
+   rather than voiceime's: `audio_cpp_dir`, `threads`, `backend`, `language`,
+   `silence_rms_threshold`, `download_mirror`.
+3. **Advised** by `doctor`, for the two the machine can be asked about: `threads`
+   warns when it exceeds the physical core count, `backend` fails when the local
+   binary was not built with it and warns when a GPU driver is present while the
+   setting says `cpu`. Both carry a runnable fix.
+
+**Why.** Every value in `Default()` is a measurement or a path from the machine
+voiceime was developed in (`~/playground/audio.cpp`, `threads = 4` on an 8-core CPU,
+`language = zh`, `silence_rms_threshold` from one room, an endpoint chosen because
+huggingface.co is unreachable from one network). Most of them are fine anywhere -
+the capture rate is a hard constraint and the window policy is model behaviour - but
+before this, an agent deploying on another machine had no way to tell which ones
+were portable and which were the reference machine's.
+
+**Why not auto-tune.** The obvious alternative - pick `threads` from the core count
+and `backend` from the hardware - was rejected because both would be guesses
+dressed as configuration. No GPU backend has been measured for this project, and the
+split of four threads between streaming and repair has not been studied
+(docs/measurements.md, "Not measured yet"), so writing `backend = vulkan` on a
+machine with a render node would be a claim nobody has tested. A wrong guess also
+fails in the direction that is hard to notice: the machine keeps working, just
+slower or with a repair that lags. Discovery is restricted to the same principle -
+it only ever fills in a path, and only where a checkout must be for voiceime to work
+at all, and it reports what it found.
+
+**Consequence.** A machine whose `audio_cpp_dir` is wrong is no longer a dead end:
+the binary and the model manager are also looked for on `PATH` and in conventional
+locations, and `doctor` reports the path it actually used. The review list is
+deliberately short and bounded - six keys, each with a reason - because a list of
+everything is a list nobody reads. Values that need a measurement stay in the
+documented procedure rather than in a default: `silence_rms_threshold` is the
+working example, and `docs/DEPLOY.md` step 6 is the procedure.

@@ -14,15 +14,27 @@ import (
 // so an agent never has to generate TOML by hand: `config set` validates the
 // type, writes atomically, and reports what the new config validates to.
 func cmdConfig() *Command {
+	// --force and --yes are declared here rather than read out of the positional
+	// arguments, which is what the rest of this file used to do: the flag parser
+	// rejects an undeclared flag before the command ever runs, so
+	// `config init --force` - the documented way to overwrite a config - failed
+	// with "flag provided but not defined" and could never work.
+	var force, yes bool
 	return &Command{
 		Name:    "config",
 		Summary: "Inspect and edit the configuration file",
 		Usage:   "voiceime config <path|show|init|get|set|validate> [args]",
-		Run:     runConfig,
+		Flags: func(set *flag.FlagSet) {
+			set.BoolVar(&force, "force", false, "config init: overwrite an existing file")
+			set.BoolVar(&yes, "yes", false, "accepted and ignored; keeps scripts uniform")
+		},
+		Run: func(ctx *Context, args []string) error {
+			return runConfig(ctx, args, force)
+		},
 	}
 }
 
-func runConfig(ctx *Context, args []string) error {
+func runConfig(ctx *Context, args []string, force bool) error {
 	if len(args) == 0 {
 		return UsageError("config needs an action: path, show, init, get, set or validate")
 	}
@@ -49,19 +61,10 @@ func runConfig(ctx *Context, args []string) error {
 		})
 
 	case "init":
-		// Writing over an existing file needs an explicit flag: the command has
-		// to be safe to run blind from a setup script.
-		force := false
-		for _, arg := range rest {
-			switch arg {
-			case "--force":
-				force = true
-			case "--yes", "-y":
-				// Accepted for symmetry with the rest of the surface; init has
-				// nothing to confirm besides --force.
-			default:
-				return UsageError("config init: unexpected argument %q", arg)
-			}
+		// Writing over an existing file needs an explicit flag (--force, declared
+		// on the command): init has to be safe to run blind from a setup script.
+		if len(rest) > 0 {
+			return UsageError("config init: unexpected argument %q", rest[0])
 		}
 		existed := fileExists(ctx.ConfigPath)
 		if existed && !force {
@@ -72,14 +75,43 @@ func runConfig(ctx *Context, args []string) error {
 				"note":    "already exists; pass --force to overwrite",
 			})
 		}
+		// The default audio_cpp_dir is the reference machine's layout. Writing a
+		// discovered checkout into the file is reported, not silent, and only ever
+		// replaces the *default* - never a value someone chose.
+		located := config.LocateAudioCPP(ctx.Config)
+		discovered := ""
+		if located != "" && config.Expand(ctx.Config.AudioCPPDir) != located {
+			ctx.Config.AudioCPPDir = located
+			discovered = located
+		}
 		if err := config.Save(ctx.Config, ctx.ConfigPath); err != nil {
 			return FailureError("cannot write %s: %v", ctx.ConfigPath, err)
 		}
 		ctx.Print("wrote %s", ctx.ConfigPath)
+		if discovered != "" {
+			ctx.Print("discovered an audio.cpp checkout at %s", discovered)
+		}
+		// Every default in this file is a measurement or a path from the machine
+		// voiceime was developed on. The ones that are not portable are listed
+		// rather than left for an agent to notice.
+		facts := detectHardware()
+		reviews := config.ReviewDefaults(ctx.Config, config.ReviewFacts{
+			AudioCPPCheckout: located,
+			Cores:            facts.Cores(),
+			GPUs:             facts.GPUDrivers,
+		})
+		for _, review := range reviews {
+			ctx.Print("review %-22s %v  (%s)", review.Key, review.Value, review.Why)
+			if review.Fix != "" {
+				ctx.Print("       fix: %s", review.Fix)
+			}
+		}
 		return ctx.Emit("config init", map[string]any{
-			"path":    ctx.ConfigPath,
-			"written": true,
-			"existed": existed,
+			"path":       ctx.ConfigPath,
+			"written":    true,
+			"existed":    existed,
+			"discovered": map[string]any{"audio_cpp_dir": discovered},
+			"review":     reviews,
 		})
 
 	case "get":

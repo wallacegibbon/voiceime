@@ -76,12 +76,43 @@ its location, `~/.config/voiceime/config.toml` by default).
 
 ```sh
 "$BIN" config init                    # idempotent; refuses to overwrite without --force
-"$BIN" config set audio_cpp_dir ~/playground/audio.cpp
-"$BIN" config set models_dir ~/models
-"$BIN" config set language zh         # your language; empty asks the model to detect
-"$BIN" config set threads 4           # physical cores is a good starting point
 "$BIN" config validate --json         # exit 0, or exit 3 with a fix per issue
 ```
+
+`config init` prints what to look at before you trust the defaults, and discovers
+an audio.cpp checkout when it can find one - the default `audio_cpp_dir` is the
+layout of the machine voiceime was developed on, so a fresh install would otherwise
+start with a path that does not exist:
+
+```
+$ voiceime config init
+wrote /home/u/.config/voiceime/config.toml
+discovered an audio.cpp checkout at /home/u/src/audio.cpp
+review audio_cpp_dir          ~/playground/audio.cpp  (the default names the checkout voiceime was developed in, ...)
+review threads                4  (this machine has 8 physical cores; more threads than cores contend ...)
+review language               zh  (the reference user's language; ...)
+review backend                cpu  (...)
+review silence_rms_threshold  600  (the reference room's noise level; measure yours - see step 6)
+review download_mirror        https://hf-mirror.com  (...)
+```
+
+The list is also in `--json` under `data.review`. Only the entries that are
+genuinely machine-specific are on it; everything else in the file is either a hard
+constraint (`capture_rate`) or policy that is the same everywhere.
+
+Then set what the list flagged, plus anything you know better than it does:
+
+```sh
+"$BIN" config set language zh         # your language; empty asks the model to detect
+"$BIN" config set threads 8           # physical cores; `nproc` counts threads, not cores
+"$BIN" config set audio_cpp_dir ~/src/audio.cpp   # only if discovery did not find it
+"$BIN" config set models_dir ~/models
+"$BIN" config validate --json         # exit 0, or exit 3 with a fix per issue
+```
+
+If `audio_cpp_dir` is wrong, `doctor` still works: `audiocpp_cli` is looked for on
+`PATH` and in a checkout found in a conventional location, so the check reports what
+it found rather than failing on the configured path.
 
 Two settings are deliberate and normally left alone:
 

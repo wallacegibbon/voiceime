@@ -258,3 +258,8 @@ Stated plainly so nobody mistakes an assumption for a result:
 * **Concurrency between streaming and repair.** They compete for the same four
   threads; the figures above were taken with both active, but the split has not
   been studied. A GPU backend would remove the contention entirely.
+* **Thread count and backend choice.** `doctor` compares `threads` with the
+  machine's physical core count and `backend` with the list the local binary
+  reports, and says so - but neither comparison has been benchmarked: every figure
+  above was taken at `threads = 4` on CPU, and the advice that "more threads than
+  cores contend" is reasoning about the workload, not a measurement.

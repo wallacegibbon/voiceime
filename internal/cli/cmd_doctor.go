@@ -207,7 +207,10 @@ func runDoctor(ctx *Context, refresh bool) []Check {
 		report(Check{ID: "feedback", Status: "ok", Detail: "notifications and sound cues available"})
 	}
 
-	// 9. Installed artifacts: the paths baked into the component file and the
+	// 9. The settings whose right value is a property of the machine.
+	hardwareChecks(ctx, report)
+
+	// 10. Installed artifacts: the paths baked into the component file and the
 	// systemd unit, and whether the running processes came from this binary. A
 	// moved checkout breaks all three silently (see install_check.go).
 	installChecks(ctx, report)

@@ -61,6 +61,25 @@ voiceime capabilities --json          # commands, flags, settings, detected envi
 voiceime config show --json           # current values plus each key's description
 ```
 
+`config init` writes the defaults, **discovers** an audio.cpp checkout when it finds
+one (writing the real path into the file, and saying so), and then prints the
+settings a new machine should look at rather than accept:
+
+```
+$ voiceime config init
+wrote /home/u/.config/voiceime/config.toml
+discovered an audio.cpp checkout at /home/u/src/audio.cpp
+review audio_cpp_dir          ~/playground/audio.cpp  (the default names the checkout voiceime was developed in; ...)
+review threads                4  (this machine has 8 physical cores; ...)
+fix: voiceime config set threads 8
+review language               zh  (the reference user's language; ...)
+...
+```
+
+The same list is in `--json` under `data.review`, with a `fix` for the entries that
+have one. Nothing is changed silently: a value is only written when the file did
+not exist or `--force` was given.
+
 Set keys with the generic setter — it converts types, writes atomically and
 reports the new config's validity:
 
@@ -77,10 +96,10 @@ Settings that matter, and the reasoning a caller needs to pick values:
 | Key | Default | Notes |
 |---|---|---|
 | `models_dir` | `~/models` | Scanned for models; downloads land here. May contain unrelated models. |
-| `audio_cpp_dir` | `~/playground/audio.cpp` | Locates `audiocpp_cli` and the model manager. |
+| `audio_cpp_dir` | `~/playground/audio.cpp` | Locates `audiocpp_cli` and the model manager. The default is the reference machine's layout, so it is usually wrong elsewhere - discovery covers that: a checkout is also looked for in `~/audio.cpp`, `~/src/audio.cpp` and similar, and derived from `VOICEIME_ASR_BIN`/`AUDIOCPP_CLI`. |
 | `asr_bin` | `""` | Explicit CLI path; empty means discover. |
-| `backend` | `cpu` | `audio.cpp` backend: cpu, cuda, vulkan, hip, metal. |
-| `threads` | `4` | Worker threads for both the streaming engine and repairs. |
+| `backend` | `cpu` | `audio.cpp` backend: cpu, cuda, vulkan, hip, metal. `doctor` fails when the local `audiocpp_cli` was not built with it, and warns when a GPU driver is present while this says `cpu`. |
+| `threads` | `4` | Worker threads for both the streaming engine and repairs. The default is the reference machine's 8-core setting; `doctor` warns when it exceeds this machine's physical cores, because the two passes compete for the same ones. |
 | `streaming_model` | `""` | Empty means pick automatically. |
 | `refine_model` | `""` | Empty means reuse the streaming model (fastest). |
 | `language` | `zh` | Passed to the model; empty asks it to auto-detect. |
@@ -146,7 +165,9 @@ voiceime devices --json               # capture sources and the default one
 
 `doctor` covers: the config file, the `audiocpp_cli` binary and its version, the
 model manager script, the models directory, model selection for streaming and
-repair, capture tooling and default source, IBus engine registration, the installed
+repair, capture tooling and default source, IBus engine registration, the settings
+that are properties of the machine (`threads` against the physical core count,
+`backend` against what the local binary was built with), the installed
 artifacts (the component file's `<exec>` and the systemd unit's `ExecStart`, both of
 which record an absolute path), whether the running engine and listener are the
 binary running `doctor`, and optional notification/sound tooling. Exit code 3 means

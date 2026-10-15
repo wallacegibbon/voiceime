@@ -14,15 +14,25 @@ import (
 // "refresh button in the UI": listing, refreshing, sizing and installing are
 // subcommands, and the refresh cost is bounded by the inspection cache.
 func cmdModels() *Command {
+	// --all is a declared flag for the same reason config's --force is: reading it
+	// out of the positional arguments never worked, so `models list --all` - the
+	// documented way to see the non-ASR GGUF files in a shared models directory -
+	// failed with "flag provided but not defined".
+	var all bool
 	return &Command{
 		Name:    "models",
 		Summary: "List, refresh, size and install model packages",
 		Usage:   "voiceime models <list|refresh|installed|sizes|install|uninstall|search|recommended> [args]",
-		Run:     runModels,
+		Flags: func(set *flag.FlagSet) {
+			set.BoolVar(&all, "all", false, "list: include files that are not speech models")
+		},
+		Run: func(ctx *Context, args []string) error {
+			return runModels(ctx, args, all)
+		},
 	}
 }
 
-func runModels(ctx *Context, args []string) error {
+func runModels(ctx *Context, args []string, showAllModels bool) error {
 	if len(args) == 0 {
 		return UsageError("models needs an action: list, refresh, installed, sizes, install, uninstall, search or recommended")
 	}
@@ -41,12 +51,7 @@ func runModels(ctx *Context, args []string) error {
 		}
 		scanned := models.ASRModels(everything)
 		ignored := len(everything) - len(scanned)
-		showAll := false
-		for _, arg := range rest {
-			if arg == "--all" {
-				showAll = true
-			}
-		}
+		showAll := showAllModels
 		if showAll {
 			scanned = everything
 			ignored = 0

@@ -63,6 +63,7 @@ The stripped binary is 3.1 MB, 1.4 MB compressed, plus the documentation.
 ## Use
 
 ```
+voiceime config init             # write defaults, discover audio.cpp, list what to review
 voiceime doctor                  # check the machine, each finding carries a fix
 voiceime models recommended      # what to install and why
 voiceime models install sensevoice_small_q8

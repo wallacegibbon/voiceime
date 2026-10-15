@@ -190,6 +190,24 @@ func (s *Service) connect(address string) error {
 	}
 	s.conn = conn
 
+	// Export the objects *before* claiming the well-known name. Claiming the name
+	// is what makes this process visible to ibus-daemon, and the daemon calls
+	// CreateEngine on the name the moment it appears; if the factory is not
+	// exported yet, that call fails with
+	//   UnknownInterface: Object does not implement the interface
+	//   'org.freedesktop.IBus.Factory'
+	// The daemon does not retry, so the first `ibus engine voiceime` of a session
+	// (or the first F9 tap, which the listener turns into the same call) would do
+	// nothing and the second would work - reproduced deterministically on a
+	// private daemon before this change, gone after it. Exporting first costs
+	// nothing, because godbus registers the handlers locally.
+	if err := conn.Export(&factoryObject{service: s}, FactoryPath, ifaceIBusFactory); err != nil {
+		return fmt.Errorf("export the factory: %w", err)
+	}
+	if err := conn.Export(&serviceObject{service: s}, FactoryPath, ifaceIBusService); err != nil {
+		return fmt.Errorf("export the service interface: %w", err)
+	}
+
 	// The daemon looks for the engine process under the component name, so this
 	// name is not a formatting choice: it is what makes the engine reachable.
 	reply, err := conn.RequestName(s.Component.Name, dbus.NameFlagDoNotQueue)
@@ -198,13 +216,6 @@ func (s *Service) connect(address string) error {
 	}
 	if reply != dbus.RequestNameReplyPrimaryOwner {
 		return fmt.Errorf("the name %s is already taken (reply %v)", s.Component.Name, reply)
-	}
-
-	if err := conn.Export(&factoryObject{service: s}, FactoryPath, ifaceIBusFactory); err != nil {
-		return fmt.Errorf("export the factory: %w", err)
-	}
-	if err := conn.Export(&serviceObject{service: s}, FactoryPath, ifaceIBusService); err != nil {
-		return fmt.Errorf("export the service interface: %w", err)
 	}
 
 	// The daemon closes its side when it exits; noticing that is better than

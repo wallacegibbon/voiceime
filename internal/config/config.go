@@ -121,7 +121,14 @@ func Default() *Config {
 		MaxUtteranceSeconds: 60,
 		EndpointSilenceMS:   800,
 		EndpointMinSpeechMS: 300,
-		SilenceRMSThreshold: 350,
+		// 800 is the floor, not a fixed threshold: the detector raises its
+		// threshold to twice the noise floor it measures in the stream. The value
+		// is the measured one for the reference room, whose idle noise reaches a
+		// 20ms-frame p90 of 436 RMS (docs/measurements.md) - the older 350 sat
+		// inside that distribution, which is what "it never stops listening"
+		// looked like. Lower it for a quiet speaker at a distance; the failure
+		// mode then is that quiet speech is heard as silence.
+		SilenceRMSThreshold: 800,
 		CaptureRate:         TargetRate,
 		DownloadMirror:      DefaultDownloadEndpoint,
 		// A function key, not a modifier combination: IBus's global-shortcut

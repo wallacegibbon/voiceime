@@ -143,7 +143,7 @@ removes the room's run-to-run variation:
 | Build | threshold | phantom segments | committed text |
 |---|---|---:|---|
 | before the fixes | 350 | 3 (0-4.28, 7.82-17.72, 18.68-19.98s) | `被。`, `。。`, `嗯。` |
-| after the fixes, default threshold | 350 | 3 (0.38, 1.10, 2.30s) | `被。。。。`, `嗯。`, `。嗯。` |
+| after the fixes, at the 350 that was the default then | 350 | 3 (0.38, 1.10, 2.30s) | `被。。。。`, `嗯。`, `。嗯。` |
 | after the fixes, tuned for this room | 800 | 0 | nothing (`skipped: no speech detected`) |
 
 The same recording through the tuned settings still recognises speech: the
@@ -151,7 +151,8 @@ reference clip is segmented once (0.04-8.00 s) and repaired normally. The tuning
 applied to the reference machine are `silence_rms_threshold = 800` (above the
 room's p90 of 436, and well below speech's p50 of 3883) and
 `endpoint_min_speech_ms = 500` (longer than the 340 ms transient that survived the
-threshold change).
+threshold change). Both are the shipped defaults now: 800 replaced the 350 that the
+third row above shows sitting inside this room's own noise.
 
 To measure a different room, the same way:
 
@@ -220,11 +221,11 @@ rather than left in commit history:
 
 Stated plainly so nobody mistakes an assumption for a result:
 
-* **The IBus engine.** Not implemented, so nothing about injection latency,
-  preedit behaviour or per-application compatibility has been measured.
-* **Microphone capture end to end.** `voiceime devices` reads the source list and
-  `parec` is present with a default source configured, but a captured dictation
-  session has not been run.
+* **GPU backends.** Nothing here has been measured on a GPU: `backend` accepts
+  cuda/vulkan/hip/metal and passes it through to audio.cpp, but every figure in
+  this document is from the CPU backend. The model recommendation for a GPU machine
+  in [DEPLOY.md](DEPLOY.md#4-install-a-model) is an inference from the CPU
+  measurement (the repair cost is dominated by weight loading), not a result.
 * **Confucius4-R2T2**, i.e. the append-only long-context streaming family. Its
   viability on this CPU is an inference from a sibling model, not a result.
 * **Endpointing against a human voice in this room.** The detector is covered by

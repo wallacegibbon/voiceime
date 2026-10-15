@@ -108,7 +108,7 @@ func NewSegmenter(cfg SegmenterConfig) *Segmenter {
 		cfg.MinSpeechMS = 300
 	}
 	if cfg.Threshold <= 0 {
-		cfg.Threshold = 350
+		cfg.Threshold = 800
 	}
 	if cfg.MaxUtteranceSeconds <= 0 {
 		cfg.MaxUtteranceSeconds = 60

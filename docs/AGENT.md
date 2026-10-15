@@ -88,7 +88,7 @@ Settings that matter, and the reasoning a caller needs to pick values:
 | `refine_on_segment_end` | `true` | The pass that repairs window-boundary damage. |
 | `capture_rate` | `16000` | Must stay 16000 (models' VAD). Validation error otherwise. |
 | `capture_source` | `""` | PipeWire source name; empty uses the default input. |
-| `silence_rms_threshold` | `350` | **Floor**, not a fixed threshold: the detector adapts up to twice the noise floor it measures in the stream, and never below this value. Measure the room before changing it - see [measurements.md](measurements.md#endpointing-in-a-real-room). |
+| `silence_rms_threshold` | `800` | **Floor**, not a fixed threshold: the detector adapts up to twice the noise floor it measures in the stream, and never below this value. It is the measured idle-room p90 on the reference machine; lower it for a quiet speaker, and measure the room first - see [measurements.md](measurements.md#endpointing-in-a-real-room). |
 | `endpoint_min_speech_ms` | `300` | Speech shorter than this is not an utterance. Raise it in a room with impulsive noise (keystrokes, chair); a short phrase is then committed when dictation stops instead of mid-stream. |
 | `download_mirror` | `https://hf-mirror.com` | Endpoint downloads go through, written to `HF_ENDPOINT`. Any Hugging Face protocol host works: `https://huggingface.co`, a company cache, a LAN address. |
 | `session_options` / `request_options` | `{}` | Passed straight to `audiocpp_cli`. |
@@ -113,10 +113,28 @@ absolute `http(s)` URL; `config validate` rejects anything else, and the value i
 passed to the model manager as `HF_ENDPOINT`. Whether an endpoint works is a
 property of the endpoint *and* the package: `models sizes` reports the failure per
 package, so a caller that sees a 404 can set another endpoint and retry the same
-package. Recommended packages, measured on the reference machine, are printed by
-`models recommended`; the short version is `sensevoice_small_q8` for streaming
-(242 MiB, ~20x realtime on CPU) and `qwen3_asr_0_6b_q8_0` only if the machine can
-afford a repair slower than speech.
+package.
+
+Packages to install, by machine (measured on the reference machine; see
+[measurements.md](measurements.md) for the numbers and
+[DEPLOY.md](DEPLOY.md#4-install-a-model) for the commands):
+
+| Machine | `streaming_model` | `refine_model` | Package ids |
+|---|---|---|---|
+| **CPU only** | `sensevoice_small_q8` | empty - reuses the streaming model | `sensevoice_small_q8` |
+| **With a GPU** | `sensevoice_small_q8` | `qwen3_asr_0_6b_q8_0` | both |
+
+* `sensevoice_small_q8` (242 MiB) is the streaming model on both: multilingual,
+  ~21x realtime on CPU, 0.3 s to load per session. On CPU it is also the repair
+  model, because it repairs a finished sentence in 0.55 s.
+* `qwen3_asr_0_6b_q8_0` (1.07 GiB) is the more accurate offline reader and the
+  only reason to add a second model. On CPU a repair with it costs 5.66 s for a
+  4.24 s sentence, which does not keep up with speech, so `doctor` reports it as
+  advice instead of selecting it.
+* Because the streaming model is what loads on every activation, `streaming_model`
+  should stay `""` (empty means "pick the best installed streaming model") unless a
+  caller deliberately wants to pin a choice. `models recommended` prints the same
+  candidates with their sizes.
 
 ## Verify
 

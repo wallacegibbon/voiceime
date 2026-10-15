@@ -330,7 +330,7 @@ func modelChecks(ctx *Context, refresh bool, report func(Check)) {
 			report(Check{
 				ID:     "refine_model_advice",
 				Status: "warn",
-				Detail: fmt.Sprintf("%s (%s, %s) is installed and more accurate; on CPU it costs roughly 1.3x real time to decode a segment, so repairs would lag behind speech",
+				Detail: fmt.Sprintf("%s (%s, %s) is installed and is the more accurate reader; on CPU one repair costs ~1.3x real time, mostly loading the weights, so repairs would lag behind speech. With a GPU backend it is the recommended repair model",
 					better.Path, better.Family, models.Sizes(better.SizeBytes)),
 				Fix: "voiceime config set refine_model " + better.Path,
 			})

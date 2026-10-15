@@ -98,18 +98,60 @@ If you need a non-default endpoint:
 
 ## 4. Install a model
 
+Two models are in use on the reference machine. Which you need depends on whether
+the machine has a working GPU. The numbers are measured on the reference machine
+(`docs/measurements.md`); the one inference is called out below.
+
+| Machine | Package | Role | Measured |
+|---|---|---|---|
+| **CPU only** | `sensevoice_small_q8` | streaming **and** repair | 242 MiB on disk, 428 MiB RSS; decode RTF 0.047 (~21x realtime, Chinese); one process per dictation session with a ~0.3 s load; repair 0.55 s for a 4.2 s utterance |
+| **CPU only** | *nothing else* | — | Leave `refine_model` empty so repairs reuse the streaming model. Adding `qwen3_asr_0_6b_q8_0` here makes every repair cost ~5.7 s for a 4.2 s utterance - slower than the person speaking |
+| **With a GPU** | `sensevoice_small_q8` | streaming | same model, same reason: see below |
+| **With a GPU** | `qwen3_asr_0_6b_q8_0` | repair (`refine_model`) | 1.07 GiB on disk, 2110 MiB RSS; decode RTF 0.28 (3.5x realtime); its offline decode of the reference Chinese sample matched the reference transcript exactly where the streaming model produced one wrong character |
+
+CPU only:
+
 ```sh
-"$BIN" models recommended --json                       # what to install, and why
-"$BIN" models sizes sensevoice_small_q8 --json         # reachability + size, downloads nothing
-"$BIN" models install sensevoice_small_q8              # ~254 MiB into models_dir
-"$BIN" models installed --json                         # local state, no network
+"$BIN" models install sensevoice_small_q8
+"$BIN" config set streaming_model ""     # empty: pick the best installed streaming model
+"$BIN" config set refine_model ""        # empty: reuse the streaming model for repair
 ```
 
-`sensevoice_small_q8` is the measured default: multilingual streaming, about 20x
-realtime on a laptop CPU (`docs/measurements.md`). On a machine where a repair pass
-slower than speech is acceptable, add `qwen3_asr_0_6b_q8_0` and point
-`refine_model` at it; otherwise leave `refine_model` empty so repairs reuse the
-streaming model.
+With a GPU:
+
+```sh
+"$BIN" config set backend vulkan         # or cuda / hip / metal; your audio.cpp build must have it
+"$BIN" models install sensevoice_small_q8
+"$BIN" models install qwen3_asr_0_6b_q8_0
+"$BIN" config set refine_model ~/models/Qwen3-ASR-0.6B-GGUF/qwen3-asr-0.6b-q8_0.gguf
+```
+
+Why the roles are split that way:
+
+* **Streaming stays SenseVoice either way.** It is the smaller model, it loads in
+  ~0.3 s on every activation where Qwen3 needs about 5 s, and live text is bounded
+  by `chunk_seconds` rather than by throughput - a faster decoder does not make the
+  next window arrive any sooner. Qwen3 does declare a streaming mode; it is simply
+  not the better streaming choice here.
+* **Repair is where accuracy is worth paying for**, because it re-reads a finished
+  utterance with the whole utterance as context. That is exactly the difference
+  measured above: the sentence split and the wrong character, repaired.
+* **On CPU that accuracy is unaffordable**: 5.66 s for a 4.24 s segment, most of it
+  loading a 1.07 GiB checkpoint once per segment. The repair would still be running
+  when the user starts the next sentence, so `doctor` reports it as advice rather
+  than switching to it.
+
+**The GPU half of this table is an inference, not a measurement.** No GPU backend
+has been benchmarked for this project (`docs/measurements.md`, "Not measured yet");
+what is measured is that the repair cost on CPU is dominated by weight loading,
+which is the part a GPU shortens along with the decode. Verify it on your own
+machine by watching the `repair` event:
+
+```sh
+"$BIN" stream --file speech.wav --events | grep repair     # prints took_seconds
+```
+
+Anything below the length of the utterance keeps up with speech.
 
 A 404 from `models install` is a property of the endpoint and the package: set
 another `download_mirror` and retry the same package.

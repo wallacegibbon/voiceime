@@ -257,7 +257,8 @@ func describeExecError(what string, err error) error {
 
 // RecommendedPackages is the short list voiceime suggests to a user who has no
 // model yet, in the order it suggests them. The ids are real registry ids, and
-// the reasons are measured on a CPU-only machine; see docs/measurements.md.
+// the reasons are measured on a CPU-only machine; see docs/measurements.md and
+// DEPLOY.md#4-install-a-model for the CPU/GPU split the first two entries encode.
 //
 // Note what is absent: Audio8-ASR is not offered even though it looks ideal on
 // paper, because its spec declares the download as unsupported (the checkpoint
@@ -270,8 +271,8 @@ func RecommendedPackages() []struct {
 		ID     string
 		Reason string
 	}{
-		{"sensevoice_small_q8", "254 MiB, multilingual streaming, ~20x realtime on CPU - the default choice"},
-		{"qwen3_asr_0_6b_q8_0", "1.1 GiB, best offline accuracy and punctuation measured here - use as the repair model"},
+		{"sensevoice_small_q8", "242 MiB; ~21x realtime streaming on CPU and 0.55s to repair a finished sentence - the streaming model on every machine, CPU or GPU"},
+		{"qwen3_asr_0_6b_q8_0", "1.07 GiB; the more accurate offline reader. Add it as refine_model only with a GPU backend: on CPU one repair costs ~5.7s for a 4.2s sentence"},
 		{"kroko_asr_community_q8_0", "160 MiB, native streaming, one language per package (de/en/es/fr/it/he/nl/pt/sv/tr)"},
 		{"moonshine_streaming_tiny_q8_0", "58 MiB, English-only streaming, useful for testing latency"},
 	}

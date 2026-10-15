@@ -74,6 +74,30 @@ voiceime stream --seconds 5      # dictate for five seconds, watch it transcribe
 time and prints per-partial latency plus what the repair pass changed — that is
 where the numbers in [docs/measurements.md](docs/measurements.md) came from.
 
+## Models
+
+Two models matter, and which you need depends on the machine. Numbers are measured
+on the reference machine ([details](docs/measurements.md)).
+
+| Machine | `streaming_model` | `refine_model` |
+|---|---|---|
+| **CPU only** | `sensevoice_small_q8` (242 MiB, ~21x realtime) | empty — repairs reuse the streaming model (0.55 s per sentence) |
+| **With a GPU** | `sensevoice_small_q8` | `qwen3_asr_0_6b_q8_0` (1.07 GiB, the more accurate offline reader) |
+
+```
+voiceime models install sensevoice_small_q8          # every machine
+voiceime models install qwen3_asr_0_6b_q8_0          # only with a GPU backend
+voiceime config set refine_model ~/models/Qwen3-ASR-0.6B-GGUF/qwen3-asr-0.6b-q8_0.gguf
+```
+
+Streaming stays SenseVoice with or without a GPU: it loads in ~0.3 s per dictation
+session and live text is bounded by `chunk_seconds`, not by decode speed. Qwen3 is
+worth adding only as the repair model, where the whole sentence is re-read with
+context — and on CPU that repair costs 5.66 s for a 4.24 s sentence, which does not
+keep up with speech, so it is a GPU-only recommendation (an inference: no GPU
+backend has been benchmarked here). [docs/DEPLOY.md](docs/DEPLOY.md) has the
+commands for both cases.
+
 ## How it works
 
 ```

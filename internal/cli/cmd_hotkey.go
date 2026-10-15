@@ -85,8 +85,6 @@ func runHotkey(ctx *Context, spec string, quiet, logEvents bool) error {
 	if err != nil {
 		return FailureError("%v", err)
 	}
-	defer listener.Close()
-
 	// The listener is a long-running command, so --json emits one object per event
 	// rather than a single document: an agent watching it needs the transitions as
 	// they happen, and the process does not end.
@@ -176,7 +174,7 @@ func runHotkey(ctx *Context, spec string, quiet, logEvents bool) error {
 		return err
 	}
 
-	return listener.Listen(runCtx, func(event ibus.ShortcutEvent) {
+	deliver := func(event ibus.ShortcutEvent) {
 		if logEvents {
 			logf("event type=%d pressed=%v backward=%v", event.Type, event.Pressed, event.Backward)
 		}
@@ -200,7 +198,21 @@ func runHotkey(ctx *Context, spec string, quiet, logEvents bool) error {
 			return
 		}
 		held = false
-	})
+	}
+
+	// Close is what releases the user's key, and it can fail: the daemon aborts on
+	// an empty key list, so the listener hands the slot to an inert combination
+	// instead, and that write is the only thing standing between the user and a
+	// key that stays swallowed. Reporting the failure - with the command that
+	// clears the registration outright - is the difference between a confusing
+	// bug and a one-line fix.
+	listenErr := listener.Listen(runCtx, deliver)
+	listener.Close()
+	if closeErr := listener.CloseError(); closeErr != nil {
+		emit("log", map[string]any{"message": fmt.Sprintf(
+			"could not release %s: %v; `ibus restart` clears the registration", hotkeySpec(ctx, spec), closeErr)})
+	}
+	return listenErr
 }
 
 // servicePath is the systemd --user unit that keeps the listener alive across

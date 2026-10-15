@@ -32,16 +32,6 @@ func firstLine(text string) string {
 	return strings.TrimSpace(text)
 }
 
-// containsLine reports whether any line of text matches trimmed exactly.
-func containsLine(text, want string) bool {
-	for _, line := range strings.Split(text, "\n") {
-		if strings.TrimSpace(line) == want {
-			return true
-		}
-	}
-	return false
-}
-
 // listEngineContains reports whether `ibus list-engine` lists an engine name.
 //
 // The listing is a tree with a language header per group, and each engine is one

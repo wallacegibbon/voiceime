@@ -16,8 +16,8 @@ The Makefile is the intended interface; every target is non-interactive.
 
 ```
 make build                     # bin/voiceime, version stamped from git describe
-make check                     # gofmt check, go vet, unit tests
-make install PREFIX=~/.local   # DESTDIR is honoured for packaging
+make check                     # gofmt, go vet, unit tests, unreachable-code check
+make install                   # ~/.local/bin (the default PREFIX); DESTDIR honoured
 make measure AUDIO=speech.wav CHUNK=3
 ```
 
@@ -88,7 +88,7 @@ Settings that matter, and the reasoning a caller needs to pick values:
 | `refine_on_segment_end` | `true` | The pass that repairs window-boundary damage. |
 | `capture_rate` | `16000` | Must stay 16000 (models' VAD). Validation error otherwise. |
 | `capture_source` | `""` | PipeWire source name; empty uses the default input. |
-| `silence_rms_threshold` | `800` | **Floor**, not a fixed threshold: the detector adapts up to twice the noise floor it measures in the stream, and never below this value. It is the measured idle-room p90 on the reference machine; lower it for a quiet speaker, and measure the room first - see [measurements.md](measurements.md#endpointing-in-a-real-room). |
+| `silence_rms_threshold` | `600` | **Floor**, not a fixed threshold: the detector adapts up to twice the noise floor it measures in the stream, and never below this value. 600 clears the reference room's idle noise (20ms p90 = 436 RMS) and stays under normal speech; too high a value makes quiet speech silently ignored, so measure before raising it - see [measurements.md](measurements.md#endpointing-in-a-real-room). |
 | `endpoint_min_speech_ms` | `300` | Speech shorter than this is not an utterance. Raise it in a room with impulsive noise (keystrokes, chair); a short phrase is then committed when dictation stops instead of mid-stream. |
 | `download_mirror` | `https://hf-mirror.com` | Endpoint downloads go through, written to `HF_ENDPOINT`. Any Hugging Face protocol host works: `https://huggingface.co`, a company cache, a LAN address. |
 | `session_options` / `request_options` | `{}` | Passed straight to `audiocpp_cli`. |
@@ -146,9 +146,12 @@ voiceime devices --json               # capture sources and the default one
 
 `doctor` covers: the config file, the `audiocpp_cli` binary and its version, the
 model manager script, the models directory, model selection for streaming and
-repair, capture tooling and default source, IBus engine registration, and optional
-notification/sound tooling. Exit code 3 means at least one check failed; the
-`fix` of each failure is the next command to run. Loop until it exits 0.
+repair, capture tooling and default source, IBus engine registration, the installed
+artifacts (the component file's `<exec>` and the systemd unit's `ExecStart`, both of
+which record an absolute path), whether the running engine and listener are the
+binary running `doctor`, and optional notification/sound tooling. Exit code 3 means
+at least one check failed; the `fix` of each failure is the next command to run.
+Loop until it exits 0.
 
 ## Exercise the pipeline
 

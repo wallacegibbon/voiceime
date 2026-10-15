@@ -2,8 +2,6 @@ package cli
 
 import (
 	"strings"
-
-	"github.com/wallacegibbon/voiceime/internal/config"
 )
 
 // Source is one capture device as reported by the sound server.
@@ -83,17 +81,4 @@ func defaultSource() string {
 		return ""
 	}
 	return strings.TrimSpace(output)
-}
-
-// defaultSourceChecked is used by the daemon: an empty default is a real error
-// there, whereas a status report can live with it.
-func defaultSourceChecked() (string, error) {
-	if source := defaultSource(); source != "" {
-		return source, nil
-	}
-	if config.FindExecutable("pactl") == "" {
-		return "", PreconditionError("sudo apt install pulseaudio-utils", "pactl is required to resolve the default capture source")
-	}
-	return "", PreconditionError("voiceime config set capture_source <name from `voiceime devices`>",
-		"no default capture source is configured")
 }

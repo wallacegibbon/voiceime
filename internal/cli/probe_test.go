@@ -41,14 +41,3 @@ func TestListEngineContainsRejectsAbsentAndPartialNames(t *testing.T) {
 		}
 	}
 }
-
-// containsLine is still the right helper for single-value probes such as
-// `ibus engine`, where the whole line is the answer.
-func TestContainsLineStaysExact(t *testing.T) {
-	if !containsLine("xkb:us::eng\n", "xkb:us::eng") {
-		t.Error("containsLine missed an exact line")
-	}
-	if containsLine("  xkb:us::eng - English (US)\n", "xkb:us::eng") {
-		t.Error("containsLine accepted a description-bearing line; that is listEngineContains's job")
-	}
-}

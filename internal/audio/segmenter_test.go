@@ -16,14 +16,14 @@ func speech(seconds float64, amplitude int16) []byte {
 	return SamplesToBytes(samples)
 }
 
-func TestSegmenterFindsSpeechBetweenSilence(t *testing.T) {
+func TestSegmenterFindsSpeechBetweensilence(t *testing.T) {
 	segmenter := NewSegmenter(SegmenterConfig{
 		SilenceMS:   200,
 		MinSpeechMS: 100,
 		Threshold:   350,
 	})
 
-	segmenter.Push(Silence(0.5), 0)
+	segmenter.Push(silence(0.5), 0)
 	events := segmenter.Push(speech(1.0, 6000), 8000)
 	if len(events) != 1 || events[0].Kind != SpeechStart {
 		t.Fatalf("events after speech began = %+v, want one speech_start", events)
@@ -35,7 +35,7 @@ func TestSegmenterFindsSpeechBetweenSilence(t *testing.T) {
 	// The end fires once the silence hangover has elapsed, and it must report the
 	// last speech sample rather than the end of the silence: the repair pass uses
 	// that position to know what audio to re-decode.
-	events = segmenter.Push(Silence(0.5), 24000)
+	events = segmenter.Push(silence(0.5), 24000)
 	if len(events) != 1 || events[0].Kind != SpeechEnd {
 		t.Fatalf("events after silence = %+v, want one speech_end", events)
 	}
@@ -54,7 +54,7 @@ func TestSegmenterIgnoresShortBursts(t *testing.T) {
 		Threshold:   350,
 	})
 	segmenter.Push(speech(0.1, 8000), 0)
-	events := segmenter.Push(Silence(0.5), 1600)
+	events := segmenter.Push(silence(0.5), 1600)
 
 	for _, event := range events {
 		if event.Kind == SpeechEnd {
@@ -63,7 +63,7 @@ func TestSegmenterIgnoresShortBursts(t *testing.T) {
 	}
 	// After a rejected burst the detector must be ready for real speech again.
 	segmenter.Push(speech(1.0, 8000), 9600)
-	if events := segmenter.Push(Silence(0.5), 25600); len(events) == 0 || events[0].Kind != SpeechEnd {
+	if events := segmenter.Push(silence(0.5), 25600); len(events) == 0 || events[0].Kind != SpeechEnd {
 		t.Errorf("real speech after a rejected burst produced %+v, want a segment", events)
 	}
 }
@@ -90,11 +90,11 @@ func TestSegmenterDoesNotSplitOnAPause(t *testing.T) {
 	// A 300ms pause is shorter than the 800ms hangover, so it must not end the
 	// utterance: splitting there would cut a sentence in half and force the user
 	// to watch two repairs fight over one sentence.
-	if events := segmenter.Push(Silence(0.3), 16000); len(events) != 0 {
+	if events := segmenter.Push(silence(0.3), 16000); len(events) != 0 {
 		t.Errorf("a 300ms pause ended the utterance: %+v", events)
 	}
 	segmenter.Push(speech(1.0, 6000), 20800)
-	events := segmenter.Push(Silence(1.0), 36800)
+	events := segmenter.Push(silence(1.0), 36800)
 	if len(events) != 1 || events[0].Kind != SpeechEnd {
 		t.Fatalf("events after the real end = %+v, want one speech_end", events)
 	}
@@ -144,7 +144,7 @@ func TestSegmenterLearnsTheNoiseFloorFromTheStream(t *testing.T) {
 	// Real speech still gets through, and still ends: adapting upward must not
 	// turn the detector deaf.
 	segmenter.Push(speech(1.0, 6000), 32000)
-	events = segmenter.Push(Silence(0.5), 48000)
+	events = segmenter.Push(silence(0.5), 48000)
 	if len(events) != 1 || events[0].Kind != SpeechEnd {
 		t.Fatalf("events after real speech = %+v, want one speech_end", events)
 	}
@@ -162,7 +162,7 @@ func TestSegmenterNeverAdaptsBelowTheConfiguredThreshold(t *testing.T) {
 		Threshold:   350,
 		Adaptive:    true,
 	})
-	segmenter.Push(Silence(1.0), 0)
+	segmenter.Push(silence(1.0), 0)
 	if threshold := segmenter.Threshold(); threshold != 350 {
 		t.Fatalf("Threshold() = %.0f after a silent second, want the configured 350", threshold)
 	}
@@ -180,10 +180,10 @@ func TestSegmenterNeverAdaptsBelowTheConfiguredThreshold(t *testing.T) {
 func TestSegmenterIgnoresAClickInsideUtterance(t *testing.T) {
 	segmenter := NewSegmenter(SegmenterConfig{SilenceMS: 200, MinSpeechMS: 100, Threshold: 350})
 	segmenter.Push(speech(1.0, 6000), 0) // 16000 samples of speech
-	segmenter.Push(Silence(0.15), 16000)
+	segmenter.Push(silence(0.15), 16000)
 	// A 20ms click: loud, but far shorter than minInterruptMS.
 	segmenter.Push(speech(0.02, 20000), 18400)
-	events := segmenter.Push(Silence(0.15), 18720)
+	events := segmenter.Push(silence(0.15), 18720)
 
 	if len(events) != 1 || events[0].Kind != SpeechEnd {
 		t.Fatalf("events = %+v, want one speech_end: the click must not reset the hangover", events)
@@ -201,18 +201,5 @@ func TestSegmenterFlushIgnoresAMereClick(t *testing.T) {
 	segmenter.Push(speech(0.02, 8000), 0)
 	if events := segmenter.Flush(); len(events) != 0 {
 		t.Fatalf("Flush() after a single click = %+v, want nothing", events)
-	}
-}
-
-func TestSegmenterCalibrateRaisesTheThreshold(t *testing.T) {
-	segmenter := NewSegmenter(SegmenterConfig{
-		SilenceMS:   300,
-		MinSpeechMS: 100,
-		Threshold:   350,
-		Adaptive:    true,
-	})
-	segmenter.Calibrate(speech(1.0, 800))
-	if threshold := segmenter.Threshold(); threshold <= 800 {
-		t.Errorf("Threshold() = %.0f, want it raised above the calibrated floor", threshold)
 	}
 }

@@ -2,6 +2,21 @@ package asr
 
 import "testing"
 
+// chunksForTest reads the transcript's chunks directly.
+//
+// The transcript used to expose a Chunks() accessor "for logs and tests", but no
+// shipped code ever called it, which is the pattern that hid a real bug once
+// already (Segmenter.Calibrate was the only caller of the adaptive threshold, and
+// it too was test-only). Tests live in this package, so they can read the field
+// and the production type keeps only the API the pipeline uses.
+func chunksForTest(transcript *Transcript) []Chunk {
+	transcript.mu.Lock()
+	defer transcript.mu.Unlock()
+	out := make([]Chunk, len(transcript.chunks))
+	copy(out, transcript.chunks)
+	return out
+}
+
 // The transcript model is where "correct the words already shown" is decided, so
 // its rules are pinned down by tests: repair replaces provisional text only, and
 // committing is a one-way door.
@@ -9,7 +24,7 @@ func TestRepairReplacesProvisionalOnly(t *testing.T) {
 	transcript := NewTranscript()
 	transcript.AppendStream("第一段。", 0, 16000)
 	transcript.AppendStream("第二段。", 16000, 32000)
-	transcript.Commit()
+	transcript.CommitProvisional()
 
 	// A repair that arrives after a commit must not touch committed text.
 	transcript.Repair(0, 32000, "不该出现的修复")
@@ -30,8 +45,8 @@ func TestRepairReplacesOverlappingChunks(t *testing.T) {
 	if got := transcript.ProvisionalText(); got != "欢迎大家来体验达摩院推出的语音识别模型。" {
 		t.Errorf("ProvisionalText() = %q", got)
 	}
-	if chunks := transcript.Chunks(); len(chunks) != 1 || chunks[0].Source != "repair" {
-		t.Errorf("Chunks() = %+v, want a single repair chunk", chunks)
+	if chunks := chunksForTest(transcript); len(chunks) != 1 || chunks[0].Source != "repair" {
+		t.Errorf("chunks = %+v, want a single repair chunk", chunks)
 	}
 }
 
@@ -56,8 +71,8 @@ func TestCommitProvisionalReturnsDeliveredText(t *testing.T) {
 	if got := transcript.ProvisionalText(); got != "" {
 		t.Errorf("ProvisionalText() after commit = %q, want empty", got)
 	}
-	if got := transcript.CommittedText(); got != "第一段。" {
-		t.Errorf("CommittedText() = %q", got)
+	if got := transcript.Text(); got != "第一段。" {
+		t.Errorf("Text() = %q, want the committed text to still be the transcript", got)
 	}
 	// Repair after a commit has nothing to act on.
 	transcript.Repair(0, 16000, "改写")
@@ -99,7 +114,7 @@ func TestAppendStreamDropsAWindowThatOverlapsDeliveredText(t *testing.T) {
 func TestSetSnapshotReplacesProvisional(t *testing.T) {
 	transcript := NewTranscript()
 	transcript.AppendStream("committed", 0, 16000)
-	transcript.Commit()
+	transcript.CommitProvisional()
 	transcript.AppendStream("provisional one", 16000, 32000)
 	transcript.AppendStream("provisional two", 32000, 48000)
 
@@ -112,25 +127,11 @@ func TestSetSnapshotReplacesProvisional(t *testing.T) {
 	}
 }
 
-func TestProvisionalRange(t *testing.T) {
-	transcript := NewTranscript()
-	transcript.AppendStream("done", 0, 16000)
-	transcript.Commit()
-	if _, _, ok := transcript.ProvisionalRange(); ok {
-		t.Error("ProvisionalRange() reported a range with nothing provisional")
-	}
-	transcript.AppendStream("pending", 16000, 64000)
-	start, end, ok := transcript.ProvisionalRange()
-	if !ok || start != 16000 || end != 64000 {
-		t.Errorf("ProvisionalRange() = %d, %d, %v; want 16000, 64000, true", start, end, ok)
-	}
-}
-
 func TestEmptyRepairKeepsStreamText(t *testing.T) {
 	transcript := NewTranscript()
 	transcript.AppendStream("", 0, 16000)
-	if len(transcript.Chunks()) != 0 {
-		t.Errorf("Chunks() = %+v, want no chunks for empty text", transcript.Chunks())
+	if chunks := chunksForTest(transcript); len(chunks) != 0 {
+		t.Errorf("chunks = %+v, want no chunks for empty text", chunks)
 	}
 
 	// An empty decode is indistinguishable from "nothing there", and dropping
@@ -141,15 +142,15 @@ func TestEmptyRepairKeepsStreamText(t *testing.T) {
 	if got := transcript.Text(); got != "real" {
 		t.Errorf("Text() = %q, want the stream text kept when a repair returns nothing", got)
 	}
-	if chunks := transcript.Chunks(); len(chunks) != 1 || chunks[0].Source != "stream" {
-		t.Errorf("Chunks() = %+v, want the stream chunk untouched", chunks)
+	if chunks := chunksForTest(transcript); len(chunks) != 1 || chunks[0].Source != "stream" {
+		t.Errorf("chunks = %+v, want the stream chunk untouched", chunks)
 	}
 }
 
 func TestRepairWithNoProvisionalTextIsANoOp(t *testing.T) {
 	transcript := NewTranscript()
 	transcript.AppendStream("delivered", 0, 16000)
-	transcript.Commit()
+	transcript.CommitProvisional()
 
 	// A repair that finishes after the user paused and the text was delivered
 	// must not append its text a second time.
@@ -168,9 +169,9 @@ func TestRepairKeepsOrderWhenNewerTextExists(t *testing.T) {
 	// provisional text that arrived while the decode was running.
 	transcript.Repair(0, 16000, "corrected older")
 
-	chunks := transcript.Chunks()
+	chunks := chunksForTest(transcript)
 	if len(chunks) != 2 {
-		t.Fatalf("Chunks() = %+v, want two chunks", chunks)
+		t.Fatalf("chunks = %+v, want two chunks", chunks)
 	}
 	if chunks[0].Source != "repair" || chunks[0].Text != "corrected older" {
 		t.Errorf("first chunk = %+v, want the repair result", chunks[0])

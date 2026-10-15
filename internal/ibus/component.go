@@ -1,6 +1,7 @@
 package ibus
 
 import (
+	"encoding/xml"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -118,6 +119,33 @@ func ComponentDir() string { return filepath.Join(config.DataDir(), "component")
 
 // ComponentPath is the file `voiceime engine install` writes.
 func ComponentPath() string { return filepath.Join(ComponentDir(), "voiceime.xml") }
+
+// ComponentExec reads an installed component file and returns the executable its
+// <exec> element names, which is the first field of the command ibus-daemon
+// spawns when the engine is activated.
+//
+// It exists so a check can ask the question that matters after a checkout is
+// moved or renamed: does the command the daemon will run still exist? The
+// component file records an absolute path, and nothing else notices when that
+// path goes away - the engine keeps running from the deleted binary, so
+// activation appears to work until the process is finally restarted.
+func ComponentExec(path string) (string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	var parsed struct {
+		Exec string `xml:"exec"`
+	}
+	if err := xml.Unmarshal(raw, &parsed); err != nil {
+		return "", fmt.Errorf("parse %s: %w", path, err)
+	}
+	fields := strings.Fields(parsed.Exec)
+	if len(fields) == 0 {
+		return "", fmt.Errorf("%s: <exec> is empty", path)
+	}
+	return fields[0], nil
+}
 
 // InstallPaths is the value IBUS_COMPONENT_PATH must have for the daemon to find
 // our component *and* keep the system engines.

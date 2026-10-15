@@ -146,14 +146,6 @@ func (t *Transcript) Repair(startSample, endSample int64, text string) {
 	t.chunks = kept
 }
 
-// Commit marks every provisional chunk as delivered.
-func (t *Transcript) Commit() string {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.committed = len(t.chunks)
-	return t.textLocked()
-}
-
 // CommitProvisional returns the text that is about to become committed, which is
 // what the caller needs to hand to the application, and then commits it.
 func (t *Transcript) CommitProvisional() string {
@@ -171,17 +163,6 @@ func (t *Transcript) Text() string {
 	return t.textLocked()
 }
 
-// CommittedText is what the application has already been given.
-func (t *Transcript) CommittedText() string {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	var builder strings.Builder
-	for index := 0; index < t.committed && index < len(t.chunks); index++ {
-		builder.WriteString(t.chunks[index].Text)
-	}
-	return builder.String()
-}
-
 // ProvisionalText is text decoded but not yet delivered - the part a repair can
 // still change and, if the application supports preedit, the part shown as an
 // in-progress composition.
@@ -189,36 +170,6 @@ func (t *Transcript) ProvisionalText() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.provisionalTextLocked()
-}
-
-// Chunks returns a copy of the chunk list, for logs and tests.
-func (t *Transcript) Chunks() []Chunk {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	out := make([]Chunk, len(t.chunks))
-	copy(out, t.chunks)
-	return out
-}
-
-// Reset forgets everything, for a new dictation session.
-func (t *Transcript) Reset() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.chunks = nil
-	t.committed = 0
-}
-
-// ProvisionalRange returns the audio span the provisional text covers, which is
-// what a repair pass should re-decode.
-func (t *Transcript) ProvisionalRange() (int64, int64, bool) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.committed >= len(t.chunks) {
-		return 0, 0, false
-	}
-	start := t.chunks[t.committed].StartSample
-	end := t.chunks[len(t.chunks)-1].EndSample
-	return start, end, true
 }
 
 // deliveredEndLocked is the end of the audio the application has already been

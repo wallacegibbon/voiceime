@@ -86,19 +86,3 @@ func newRepairer(ctx *Context, model, binary string, threads int, language strin
 		SessionOptions: ctx.Config.SessionOptions,
 	}
 }
-
-// newEngineConfig builds the streaming engine configuration the same way, so
-// `stream`, `dictate` and the daemon all launch the CLI identically.
-func newEngineConfig(ctx *Context, model, binary string) asr.EngineConfig {
-	return asr.EngineConfig{
-		Binary:         binary,
-		WorkDir:        ctx.Config.AudioCPPDirPath(),
-		Model:          model,
-		Backend:        ctx.Config.Backend,
-		Threads:        ctx.Config.Threads,
-		Language:       ctx.Config.Language,
-		ChunkSeconds:   ctx.Config.ChunkSeconds,
-		SessionOptions: ctx.Config.SessionOptions,
-		RequestOptions: ctx.Config.RequestOptions,
-	}
-}

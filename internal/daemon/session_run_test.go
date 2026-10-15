@@ -54,13 +54,13 @@ func writeFakeEngine(t *testing.T, dir, repairBehaviour string) string {
 // so the endpoint detector opens and closes one utterance.
 func speechWAV(t *testing.T, dir string) string {
 	t.Helper()
-	room := audio.Silence(0.2)
+	room := silence(0.2)
 	spoken := make([]int16, int(0.6*audio.SampleRate))
 	frequency := 2 * math.Pi * 220 / audio.SampleRate
 	for i := range spoken {
 		spoken[i] = int16(6000 * math.Sin(frequency*float64(i)))
 	}
-	payload := append(append(room, audio.SamplesToBytes(spoken)...), audio.Silence(0.5)...)
+	payload := append(append(room, audio.SamplesToBytes(spoken)...), silence(0.5)...)
 	path := filepath.Join(dir, "speech.wav")
 	if err := audio.WriteWAV(path, payload, audio.SampleRate, 1); err != nil {
 		t.Fatalf("write wav: %v", err)
@@ -187,4 +187,10 @@ func TestSessionCanRunTwiceWithAFactory(t *testing.T) {
 	if len(sink.commits()) <= first {
 		t.Errorf("second run delivered nothing new: %v", sink.events)
 	}
+}
+
+// silence builds a block of digital silence for the synthetic sessions. It is
+// local because audio.Silence existed only for tests.
+func silence(seconds float64) []byte {
+	return make([]byte, int(seconds*audio.SampleRate)*audio.BytesPerSample)
 }

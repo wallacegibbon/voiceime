@@ -75,26 +75,6 @@ func RMS(data []byte) float64 {
 	return math.Sqrt(total / float64(len(samples)))
 }
 
-// Peak returns the largest absolute amplitude in a block.
-func Peak(data []byte) int {
-	best := 0
-	for _, sample := range BytesToSamples(data) {
-		value := int(sample)
-		if value < 0 {
-			value = -value
-		}
-		if value > best {
-			best = value
-		}
-	}
-	return best
-}
-
-// Silence returns a block of silence of the given duration.
-func Silence(seconds float64) []byte {
-	return make([]byte, int(seconds*SampleRate)*BytesPerSample)
-}
-
 // Resample linearly resamples 16-bit PCM. It exists for files that are not
 // already at 16 kHz (a user's recording, a test fixture); live capture uses
 // PipeWire's converter instead, which is both better and cheaper.

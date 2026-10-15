@@ -47,24 +47,27 @@ export BIN="$REPO/bin/voiceime"
 
 ```sh
 make build          # -> built bin/voiceime (<git describe>)
-make check          # exactly what CI runs: gofmt, vet, tests
+make check          # what CI runs: gofmt, vet, tests, unreachable-code check
 ```
 
 ## 2. Put the binary somewhere permanent
 
 **This step matters more than it looks.** The IBus component file and the systemd
-unit both embed the *absolute path* of the binary. If you move or rename either the
-binary or the checkout afterwards, dictation and the shortcut silently break - see
-[Recovery](#recovery). Pick one location and stay there.
+unit both embed the *absolute path* of the binary, so it has to live somewhere that
+outlives a rebuild and a moved checkout. `make install` puts it in
+`~/.local/bin`, which needs no root:
 
 ```sh
-# either use it in place
-"$BIN" --help
-
-# or install it system-wide
-sudo make install                     # -> /usr/local/bin/voiceime
-export BIN=/usr/local/bin/voiceime
+make install                          # -> ~/.local/bin/voiceime
+export BIN="$HOME/.local/bin/voiceime"
 ```
+
+Running it straight from the checkout (`"$REPO/bin/voiceime"`) works too, and is
+the normal development loop, but it has two consequences worth knowing: every
+`make build` replaces the file under any running process, and moving or renaming
+the checkout invalidates both installed artifacts. `voiceime doctor` reports both
+(`engine_process`, `component_exec`, `hotkey_unit`), which is how they were found
+here.
 
 ## 3. Configure
 
@@ -207,7 +210,9 @@ PY
 
 # 2. Put silence_rms_threshold above the idle p90, and endpoint_min_speech_ms
 #    above the longest noise burst (a keystroke is 20-100ms, a word is not).
-"$BIN" config set silence_rms_threshold 800
+#    600 is the shipped default: it cleared this room's p90 of 436 in the sweep
+#    recorded in measurements.md, and a higher value silently drops quiet speech.
+"$BIN" config set silence_rms_threshold 600
 "$BIN" config set endpoint_min_speech_ms 500
 
 # 3. Confirm both directions with the same command.
@@ -218,7 +223,9 @@ PY
 If a sentence produces no `segment`, the threshold is above your voice: lower it
 and repeat step 3. That failure is deliberately silent rather than wrong - the
 engine commits nothing it did not hear, so a mis-set threshold shows up as no text
-instead of hallucinated words.
+instead of hallucinated words. Getting this backwards is the common mistake: a
+threshold that is too *high* looks like a broken input method, while one that is
+too low only adds occasional junk, so prefer the lower value when in doubt.
 
 ## 7. Register the IBus engine
 
@@ -321,8 +328,10 @@ voiceime-hotkey.service: Main process exited, code=exited, status=203/EXEC
 `203/EXEC` means the executable named in the unit does not exist. Both the
 component file and the unit recorded the *old* absolute path, and a process that
 was already running keeps working from its old in-memory path - so activation
-appears to succeed until it is restarted. Fix by re-running the installers from the
-new location, in this order:
+appears to succeed until it is restarted. `voiceime doctor` reports this as a
+failing `component_exec` / `hotkey_unit`, and a moved checkout as a failing
+`engine_process`. Fix by re-running the installers from the new location, in this
+order:
 
 ```sh
 "$BIN" engine install --apply      # rewrites <exec> with the current path
@@ -342,8 +351,10 @@ ibus list-engine | grep voiceime
 
 ### A stale engine process holds the old code
 
-A running engine keeps running the binary it was started from. After rebuilding,
-end it and let the daemon respawn it:
+A running engine keeps running the binary it was started from, so a rebuild does
+not take effect until it is restarted. `voiceime doctor` reports it as a `warn` on
+`engine_process` ("still running the previous build"); the fix is the same command
+either way:
 
 ```sh
 ibus engine xkb:us::eng
@@ -370,7 +381,7 @@ the problem is capture (`voiceime devices`) or the model (`voiceime doctor`).
 ```sh
 "$BIN" hotkey uninstall              # stops the listener and restarts IBus, releasing the key
 "$BIN" engine uninstall              # removes the component file
-sudo make uninstall                  # removes /usr/local/bin/voiceime, if installed there
+make uninstall                       # removes ~/.local/bin/voiceime
 "$BIN" models uninstall sensevoice_small_q8
 ```
 

@@ -391,3 +391,50 @@ wrong words - the honest failure. The residual known gap is text that arrives
 before the *first* boundary in a genuinely noisy room: it still belongs to a real
 segment's commit. Removing it needs per-sample speech regions in the transcript, a
 larger change than this fix.
+
+## D17 — A test is not a caller, and installed artifacts are checked.
+
+**Decision.** Three rules, adopted after a session in which four separate bugs —
+all of them invisible to the test suite — each cost real debugging time.
+
+1. **Code that only tests call does not live in a shipped package.** `make check`
+   runs `deadcode` over `cmd/` and `internal/` and fails on anything `main` cannot
+   reach.
+2. **Test fixtures belong to tests.** Where two packages need the same one, each
+   declares its own rather than exporting it from the production package.
+3. **`doctor` checks the installed artifacts**, not just the prerequisites:
+   whether the component file's `<exec>` and the systemd unit's `ExecStart` still
+   name an existing binary, and whether the running processes came from the binary
+   that is running `doctor`.
+4. **`make install` defaults to `$(HOME)/.local`**, because those artifacts record
+   an absolute path and a per-user prefix needs no root.
+
+**Why.** The bugs, in the order they were found:
+
+* `Segmenter.Calibrate` was the only caller of the adaptive threshold, and nothing
+  in the pipeline called it: the tests passed while the feature was dead code, and
+  the visible symptom was that dictation never committed anything.
+* `cli.containsLine` was called only by its own test. Production used it anyway
+  until it was replaced, and it could never match the real `ibus list-engine`
+  format — so `doctor` reported a correctly registered engine as missing.
+* The component file and the systemd unit both named a binary from a checkout that
+  had been renamed. The engine appeared to work from the already-running process
+  while the listener looped on `status=203/EXEC`; nothing reported either.
+* After every rebuild the running engine kept the old binary, so fixed code looked
+  broken. Same class, different cause.
+
+The common thread is that none of these are reachable from a unit test, because
+they are properties of *how the program is installed and started* rather than of
+what it computes.
+
+**Consequence.** The deadcode check needs a pinned tool, and the newest release of
+that tool requires a newer Go than this project does, so the Makefile installs
+`golang.org/x/tools/cmd/deadcode@v0.36.0` into a throwaway GOBIN instead of adding
+it to `go.mod` — a check should not raise the project's own toolchain floor.
+
+The install checks are offline and cheap, and they now catch the two failures that
+used to be guesswork: `component_exec` / `hotkey_unit` fail when a recorded path is
+gone, and `engine_process` / `hotkey_process` warn when a running process is not
+the binary running `doctor`. That last one is also the honest way to run the
+development loop: `doctor` from the checkout against a deployment in
+`~/.local/bin` reports the difference instead of pretending they are the same.

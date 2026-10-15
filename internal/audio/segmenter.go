@@ -1,9 +1,6 @@
 package audio
 
-import (
-	"math"
-	"time"
-)
+import "time"
 
 // SegmentKind names an endpoint event.
 type SegmentKind string
@@ -108,35 +105,14 @@ func NewSegmenter(cfg SegmenterConfig) *Segmenter {
 		cfg.MinSpeechMS = 300
 	}
 	if cfg.Threshold <= 0 {
-		cfg.Threshold = 800
+		cfg.Threshold = 600
 	}
 	if cfg.MaxUtteranceSeconds <= 0 {
 		cfg.MaxUtteranceSeconds = 60
 	}
-	segmenter := &Segmenter{cfg: cfg, started: time.Now()}
-	// Seed the noise floor with the configured threshold so a stream that never
-	// calibrates still behaves like the plain threshold detector.
-	segmenter.noiseFloor = cfg.Threshold
-	return segmenter
-}
-
-// Calibrate measures the noise floor from a block of known silence, which the
-// daemon supplies from the first milliseconds of capture.
-//
-// Not calling it is the normal case and is not a failure: the floor is tracked
-// from the stream itself (see frame), which is safer than trusting the opening
-// milliseconds - a user who starts talking immediately would otherwise measure
-// speech as their noise floor and the detector would then ignore everything.
-// Calibrate exists for a caller that does have a block of known silence.
-func (s *Segmenter) Calibrate(silence []byte) {
-	if len(silence) == 0 {
-		return
-	}
-	level := RMS(silence)
-	if level <= 0 {
-		return
-	}
-	s.noiseFloor = level
+	// Seeding the floor with the configured threshold is what keeps a stream that
+	// has not measured anything yet behaving like the plain threshold detector.
+	return &Segmenter{cfg: cfg, noiseFloor: cfg.Threshold, started: time.Now()}
 }
 
 // adaptiveFactor is how far above the measured noise floor speech must be. Two is
@@ -273,13 +249,3 @@ func (s *Segmenter) endEvent(endSample int64, probability float64) SegmentEvent 
 
 // minInterruptSamples is minInterruptMS as a sample count.
 func minInterruptSamples() int64 { return int64(SampleRate) * minInterruptMS / 1000 }
-
-// SpeechProbability is a convenience for logs: how far above the threshold the
-// current frame is, mapped through a soft saturating curve.
-func (s *Segmenter) SpeechProbability(level float64) float64 {
-	threshold := s.Threshold()
-	if threshold <= 0 {
-		return math.NaN()
-	}
-	return 1 - math.Exp(-level/threshold)
-}

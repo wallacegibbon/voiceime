@@ -1,6 +1,12 @@
 package ibus
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/wallacegibbon/voiceime/internal/config"
+)
 
 func TestParseShortcutSpellings(t *testing.T) {
 	cases := []struct {
@@ -44,5 +50,34 @@ func TestParseShortcutRejectsBadInput(t *testing.T) {
 		if _, err := ParseShortcut(spec); err == nil {
 			t.Errorf("ParseShortcut(%q) was accepted, want an error", spec)
 		}
+	}
+}
+
+// The component file records an absolute path that ibus-daemon will exec, which
+// is the thing a moved checkout breaks. ComponentExec reads it back so doctor can
+// ask whether it still exists.
+func TestComponentExecRoundTrips(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "voiceime.xml")
+	component := DefaultComponent(config.Default(), "/home/u/.local/bin/voiceime ibus-engine --ibus")
+	if err := os.WriteFile(path, []byte(component.XML()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ComponentExec(path)
+	if err != nil {
+		t.Fatalf("ComponentExec: %v", err)
+	}
+	if want := "/home/u/.local/bin/voiceime"; got != want {
+		t.Errorf("ComponentExec = %q, want %q", got, want)
+	}
+}
+
+func TestComponentExecRejectsAnEmptyCommand(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "broken.xml")
+	if err := os.WriteFile(path, []byte("<component><name>x</name><exec></exec></component>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ComponentExec(path); err == nil {
+		t.Error("a component with an empty <exec> was accepted; nothing would ever start")
 	}
 }

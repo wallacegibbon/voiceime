@@ -39,8 +39,8 @@ side of that boundary is measured.
 
 ```
 make build        # bin/voiceime, version stamped from git describe
-make check        # gofmt check, go vet, unit tests
-make install      # PREFIX=/usr/local by default, DESTDIR honoured
+make check        # gofmt, go vet, unit tests, unreachable-code check
+make install      # ~/.local/bin, no root needed; DESTDIR honoured
 make cross        # linux/amd64, linux/arm64, windows/amd64, darwin/arm64
 make dist         # tarball with the binary and the docs
 make help         # every target

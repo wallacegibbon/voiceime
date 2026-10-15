@@ -144,15 +144,21 @@ removes the room's run-to-run variation:
 |---|---|---:|---|
 | before the fixes | 350 | 3 (0-4.28, 7.82-17.72, 18.68-19.98s) | `被。`, `。。`, `嗯。` |
 | after the fixes, at the 350 that was the default then | 350 | 3 (0.38, 1.10, 2.30s) | `被。。。。`, `嗯。`, `。嗯。` |
-| after the fixes, tuned for this room | 800 | 0 | nothing (`skipped: no speech detected`) |
+| after the fixes, tuned for this room | 800 -> 600 | 0 | nothing (`skipped: no speech detected`) |
 
 The same recording through the tuned settings still recognises speech: the
 reference clip is segmented once (0.04-8.00 s) and repaired normally. The tunings
 applied to the reference machine are `silence_rms_threshold = 800` (above the
 room's p90 of 436, and well below speech's p50 of 3883) and
 `endpoint_min_speech_ms = 500` (longer than the 340 ms transient that survived the
-threshold change). Both are the shipped defaults now: 800 replaced the 350 that the
-third row above shows sitting inside this room's own noise.
+threshold change). Sweeping the threshold over the same recording settled the
+default: 450, 500, 600, 700 and 800 all produced zero phantom segments on it (the
+min-speech rule rejects the transients), and all produced the same single repaired
+segment for the speech clip. Since the three values are indistinguishable on noise
+but not on quiet speech, the default is the lowest that keeps real margin above the
+room: **600**, not the 800 first tried, and not the 350 that the third row above
+shows sitting inside the room's own noise. A speaker quiet enough to be missed at
+600 should lower it further and re-run the check above.
 
 To measure a different room, the same way:
 
@@ -247,7 +253,8 @@ Stated plainly so nobody mistakes an assumption for a result:
   room plus a 16 kHz speech clip - but not against a person speaking into this
   microphone. The reference clip's speech sits at p50 RMS 3883 against a room p90
   of 436, so the current threshold of 800 has margin on both sides; a quiet
-  speaker at a distance is the case that would need it lowered.
+  speaker at a distance is the case that would need it lowered - as one did at
+  800 on the reference machine, which is why the default is 600.
 * **Concurrency between streaming and repair.** They compete for the same four
   threads; the figures above were taken with both active, but the split has not
   been studied. A GPU backend would remove the contention entirely.

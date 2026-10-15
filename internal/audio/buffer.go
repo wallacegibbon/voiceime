@@ -54,12 +54,3 @@ func (b *RollingBuffer) Slice(startSample, endSample int64) ([]byte, bool) {
 	to := int(endSample-b.startSample) * BytesPerSample
 	return b.data[from:to], true
 }
-
-// Reset forgets everything.
-func (b *RollingBuffer) Reset() {
-	b.data = b.data[:0]
-	b.startSample = 0
-}
-
-// HeldSeconds is how much audio the buffer currently holds.
-func (b *RollingBuffer) HeldSeconds() float64 { return DurationSeconds(b.data) }

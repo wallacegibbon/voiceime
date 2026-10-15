@@ -25,18 +25,18 @@ func TestSampleRoundTrip(t *testing.T) {
 }
 
 func TestRMSAndPeak(t *testing.T) {
-	silence := Silence(0.1)
-	if level := RMS(silence); level != 0 {
+	quiet := silence(0.1)
+	if level := RMS(quiet); level != 0 {
 		t.Errorf("RMS(silence) = %v, want 0", level)
 	}
 	tone := SamplesToBytes([]int16{1000, -1000, 1000, -1000})
 	if level := RMS(tone); math.Abs(level-1000) > 0.001 {
 		t.Errorf("RMS(square) = %v, want 1000", level)
 	}
-	if peak := Peak(tone); peak != 1000 {
+	if peak := peak(tone); peak != 1000 {
 		t.Errorf("Peak = %d, want 1000", peak)
 	}
-	if got := DurationSeconds(Silence(1)); math.Abs(got-1) > 1e-9 {
+	if got := DurationSeconds(silence(1)); math.Abs(got-1) > 1e-9 {
 		t.Errorf("DurationSeconds(1s of silence) = %v", got)
 	}
 }
@@ -99,8 +99,8 @@ func TestReadWAVRejectsNonPCM(t *testing.T) {
 
 func TestRollingBufferSlice(t *testing.T) {
 	buffer := NewRollingBuffer(1) // one second
-	buffer.Append(Silence(0.5), 0)
-	buffer.Append(Silence(0.5), 8000)
+	buffer.Append(silence(0.5), 0)
+	buffer.Append(silence(0.5), 8000)
 
 	if _, ok := buffer.Slice(0, 16000); !ok {
 		t.Error("Slice(0, 16000) failed for a range that is fully held")
@@ -114,9 +114,9 @@ func TestRollingBufferSlice(t *testing.T) {
 
 	// Appending past the limit drops the oldest audio, and the reported start
 	// moves with it, so a later slice of the newest audio still works.
-	buffer.Append(Silence(0.5), 16000)
-	if held := buffer.HeldSeconds(); held > 1.0001 {
-		t.Errorf("HeldSeconds() = %v, want at most 1", held)
+	buffer.Append(silence(0.5), 16000)
+	if held := DurationSeconds(buffer.data); held > 1.0001 {
+		t.Errorf("held audio = %v, want at most 1", held)
 	}
 	if _, ok := buffer.Slice(16000, 24000); !ok {
 		t.Error("Slice of the newest audio failed after the buffer wrapped")
@@ -125,14 +125,36 @@ func TestRollingBufferSlice(t *testing.T) {
 
 func TestRollingBufferRestartsAfterAGap(t *testing.T) {
 	buffer := NewRollingBuffer(5)
-	buffer.Append(Silence(0.1), 0)
+	buffer.Append(silence(0.1), 0)
 	// A dropped chunk means the buffer can no longer describe a contiguous
 	// range; it must restart rather than silently splice unrelated audio.
-	buffer.Append(Silence(0.1), 16000)
+	buffer.Append(silence(0.1), 16000)
 	if _, ok := buffer.Slice(0, 8000); ok {
 		t.Error("Slice spanning a dropped block succeeded, want failure")
 	}
 	if _, ok := buffer.Slice(16000, 17600); !ok {
 		t.Error("Slice of post-gap audio failed")
 	}
+}
+
+// silence builds a block of digital silence, and peak measures the loudest
+// sample in one. Both live here rather than in format.go: they are fixtures, and
+// a production package should not carry functions that only its tests call - that
+// is how the adaptive noise floor came to be dead code for months.
+func silence(seconds float64) []byte {
+	return make([]byte, int(seconds*SampleRate)*BytesPerSample)
+}
+
+func peak(data []byte) int {
+	best := 0
+	for _, sample := range BytesToSamples(data) {
+		value := int(sample)
+		if value < 0 {
+			value = -value
+		}
+		if value > best {
+			best = value
+		}
+	}
+	return best
 }

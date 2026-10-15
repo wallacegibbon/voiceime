@@ -143,7 +143,14 @@ func runningBinaryChecks(ctx *Context, report func(Check)) {
 		if !ok {
 			continue
 		}
-		report(Check{ID: kind.id, Status: status, Detail: detail, Fix: kind.fix})
+		check := Check{ID: kind.id, Status: status, Detail: detail}
+		// The fix is only offered when something is wrong: printing a restart
+		// command under an ok finding invites an agent to restart a healthy
+		// process, which would drop the user's current dictation session.
+		if status != "ok" {
+			check.Fix = kind.fix
+		}
+		report(check)
 	}
 }
 

@@ -39,24 +39,50 @@ type Transcript struct {
 func NewTranscript() *Transcript { return &Transcript{} }
 
 // AppendStream adds a provisional chunk decoded from the window that just ended.
-func (t *Transcript) AppendStream(text string, startSample, endSample int64) {
+//
+// A window that starts inside audio already delivered to the application is
+// dropped rather than kept. A window is decoded as one unit, so its text is a
+// reading of audio the application already has, and there is no way to split that
+// text at the delivered boundary; keeping it showed the same words again as
+// preedit and then committed them a second time. Reproduced on the wire: after a
+// segment closed at 4.50s, the next window covered [3.14s, 6.14s] and its text
+// re-entered the transcript, so the committed sentence appeared underlined again
+// and was delivered twice. Whether that window arrives before or after the commit
+// is a race - it depends on how fast the repair lands - which is why this is
+// enforced here rather than by ordering the calls.
+//
+// The return value says whether the chunk was kept, so a caller can report a drop
+// instead of losing it silently. An empty decode returns false as well, and there
+// is nothing to report about that.
+func (t *Transcript) AppendStream(text string, startSample, endSample int64) bool {
 	if text == "" {
-		return
+		return false
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if startSample < t.deliveredEndLocked() {
+		return false
+	}
 	t.chunks = append(t.chunks, Chunk{
 		Text:        text,
 		StartSample: startSample,
 		EndSample:   endSample,
 		Source:      "stream",
 	})
+	return true
 }
 
 // SetSnapshot replaces the provisional text with a whole-transcript hypothesis.
 // Only revision-capable models emit one, but when they do, replacing is the only
 // correct response: the hypothesis is the model's current best reading of
 // everything still provisional.
+//
+// Known gap: a snapshot is a reading of the whole transcript, so one that arrives
+// after a commit describes delivered audio too, and it is unlike AppendStream in
+// that no part of it can be attributed to a sample range. No family voiceime
+// selects has been observed to emit snapshots, so this is left as-is and recorded
+// rather than guessed at: a snapshot-emitting family needs its hypothesis trimmed
+// to the provisional range before it can be trusted after a commit.
 func (t *Transcript) SetSnapshot(text string, startSample, endSample int64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -193,6 +219,19 @@ func (t *Transcript) ProvisionalRange() (int64, int64, bool) {
 	start := t.chunks[t.committed].StartSample
 	end := t.chunks[len(t.chunks)-1].EndSample
 	return start, end, true
+}
+
+// deliveredEndLocked is the end of the audio the application has already been
+// given: the furthest sample covered by a committed chunk.
+func (t *Transcript) deliveredEndLocked() int64 {
+	var end int64
+	committed := min(t.committed, len(t.chunks))
+	for index := 0; index < committed; index++ {
+		if t.chunks[index].EndSample > end {
+			end = t.chunks[index].EndSample
+		}
+	}
+	return end
 }
 
 func (t *Transcript) textLocked() string {

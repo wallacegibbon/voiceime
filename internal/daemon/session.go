@@ -163,8 +163,13 @@ func (o Options) Run(ctx context.Context) (Result, error) {
 				if end < previousPartial {
 					end = previousPartial
 				}
-				pipeline.transcript.AppendStream(event.Text, previousPartial, end)
+				accepted := pipeline.transcript.AppendStream(event.Text, previousPartial, end)
 				previousPartial = end
+				if !accepted && notify.Skipped != nil {
+					// The window started inside text that was already delivered.
+					// Saying so is better than looking like a lost partial.
+					notify.Skipped("a window overlapping already-delivered text was dropped")
+				}
 				if notify.Partial != nil {
 					notify.Partial(event.Text, event.FedSeconds)
 				}

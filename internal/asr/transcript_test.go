@@ -66,6 +66,36 @@ func TestCommitProvisionalReturnsDeliveredText(t *testing.T) {
 	}
 }
 
+// A window that starts inside delivered audio is dropped. Reproduced on the wire:
+// after a segment was committed at 4.50s, the next window covered [3.14s, 6.14s]
+// and its text re-entered the transcript, so the committed sentence appeared
+// underlined again as preedit and was then delivered a second time. A window is
+// decoded as a unit, so its text cannot be split at the delivered boundary.
+func TestAppendStreamDropsAWindowThatOverlapsDeliveredText(t *testing.T) {
+	transcript := NewTranscript()
+	transcript.AppendStream("第一句。", 0, 48000) // window 1: [0, 3.0s]
+	transcript.Repair(0, 45000, "第一句，修好了。")   // segment re-decoded: [0, 2.8s]
+	if got := transcript.CommitProvisional(); got != "第一句，修好了。" {
+		t.Fatalf("committed %q, want the repaired text", got)
+	}
+
+	// Window 2 covers [1.96s, 3.84s] and so straddles the delivered end at 2.8s.
+	if transcript.AppendStream("又出现了一遍。", 31400, 61400) {
+		t.Error("a window overlapping delivered text was accepted")
+	}
+	if got := transcript.ProvisionalText(); got != "" {
+		t.Errorf("ProvisionalText() = %q, want nothing: delivered words must not return as preedit", got)
+	}
+
+	// Window 3 starts after the delivered end: kept, it is new speech.
+	if !transcript.AppendStream("第二句。", 61400, 91400) {
+		t.Error("a window after the delivered text was dropped")
+	}
+	if got := transcript.ProvisionalText(); got != "第二句。" {
+		t.Errorf("ProvisionalText() = %q, want the new window", got)
+	}
+}
+
 func TestSetSnapshotReplacesProvisional(t *testing.T) {
 	transcript := NewTranscript()
 	transcript.AppendStream("committed", 0, 16000)

@@ -181,6 +181,19 @@ per utterance. So text stays underlined (preedit) for exactly as long as the
 detector considers the utterance open, and "it never commits" and "it never ends"
 are the same sentence.
 
+The other half of that experiment is what a *late* window does. Replaying 4.5 s of
+speech followed by 2 s of silence: the segment commits at 4.50 s, and the next
+window - which covers [3.14 s, 6.16 s] and therefore starts inside audio the
+application already has - arrived after the commit. Before the fix the transcript
+read `... we meet at a time when it.` + `We meet at a time when it is.` + `Is easy
+...`, i.e. the delivered sentence came back as preedit and was committed twice; the
+fix drops that window and the transcript reads `... we meet at a time when.` +
+`Is easy to confuse noise with strength and speed with.`, with the drop reported as
+`skipped: a window overlapping already-delivered text was dropped`. The missing
+few words are the ones the dropped window held *after* the delivered boundary; the
+next segment's repair re-decodes that audio, which is why the second sentence still
+appears.
+
 ## Integration constraints found by measurement
 
 These are the findings that changed the implementation, so they are recorded

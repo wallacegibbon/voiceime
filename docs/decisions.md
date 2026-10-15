@@ -146,6 +146,26 @@ Repairs are conservative: an empty decode, or a range containing no provisional
 text, is a no-op, so a decode that finishes late can neither duplicate nor delete
 text the user has already seen.
 
+**Refinement (measured later).** The rule needs one more clause at the *stream*
+boundary, not the repair boundary: a window whose audio starts inside text that
+has already been delivered is dropped instead of kept. A window is decoded as one
+unit, so its text is a reading of audio the application already has, and there is
+no way to split that text at the delivered boundary. Reproduced on the wire: after
+a segment committed at 4.50 s, the next window covered [3.14 s, 6.16 s] and its
+text re-entered the transcript, so the sentence the user had already seen appeared
+underlined again as preedit and was delivered a second time - the transcript read
+`... we meet at a time when it.We meet at a time when it is.Is easy ...`. Whether
+that window arrives before or after the commit is a race, so the rule is enforced
+in the transcript rather than by ordering calls in the session, and the drop is
+reported as `skipped: a window overlapping already-delivered text was dropped`
+rather than being silent.
+
+**Known gap in the same area.** A whole-transcript *snapshot* (which only
+revision-capable models emit) describes delivered audio too and carries no sample
+range to attribute it to, so it is not filtered. No family voiceime selects has
+been observed to emit one; a snapshot-emitting family needs its hypothesis trimmed
+to the provisional range before it can be trusted after a commit.
+
 ## D8 — Endpointing lives in voiceime, not in the model.
 
 **Decision.** A small energy-based detector with noise-floor adaptation decides

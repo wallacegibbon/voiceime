@@ -169,8 +169,7 @@ func runEngineStatus(ctx *Context) error {
 		"detail":              detail,
 	}
 	if listing, err := probe("ibus", "list-engine"); err == nil {
-		state["engine_visible"] = containsLine(listing, ctx.Config.IBusEngineName) ||
-			strings.Contains(listing, ctx.Config.IBusEngineName)
+		state["engine_visible"] = listEngineContains(listing, ctx.Config.IBusEngineName)
 	}
 	if current, err := probe("ibus", "engine"); err == nil {
 		state["current_engine"] = firstLine(current)
@@ -189,7 +188,7 @@ func engineRegistered(ctx *Context) (bool, string) {
 	if err != nil {
 		return false, "ibus list-engine failed: " + err.Error()
 	}
-	if strings.Contains(listing, ctx.Config.IBusEngineName) {
+	if listEngineContains(listing, ctx.Config.IBusEngineName) {
 		return true, ""
 	}
 	return false, "not listed by ibus: run `voiceime engine install` and restart IBus"

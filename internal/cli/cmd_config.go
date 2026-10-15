@@ -336,7 +336,7 @@ func ibusState(ctx *Context) map[string]any {
 	state["component_path"] = ibusComponentPath()
 	state["component_installed"] = fileExists(ibusComponentPath())
 	if listing, err := probe("ibus", "list-engine"); err == nil {
-		state["engine_registered"] = containsLine(listing, ctx.Config.IBusEngineName)
+		state["engine_registered"] = listEngineContains(listing, ctx.Config.IBusEngineName)
 	} else {
 		state["engine_registered"] = false
 	}

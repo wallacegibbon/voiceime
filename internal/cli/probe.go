@@ -41,3 +41,29 @@ func containsLine(text, want string) bool {
 	}
 	return false
 }
+
+// listEngineContains reports whether `ibus list-engine` lists an engine name.
+//
+// The listing is a tree with a language header per group, and each engine is one
+// indented line of the form "<name> - <description>":
+//
+//	language: English
+//	  xkb:us::eng - English (US)
+//	  voiceime - Voiceime (speech)
+//
+// so an exact whole-line match never succeeds, and a substring search would take
+// "voiceime-probe" for "voiceime" (the probe component docs/ibus-protocol.md
+// describes). The name is therefore the part before the " - " separator, which
+// also skips the "language: ..." headers: they carry no engine.
+func listEngineContains(text, name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, line := range strings.Split(text, "\n") {
+		listed, _, found := strings.Cut(strings.TrimSpace(line), " - ")
+		if found && strings.TrimSpace(listed) == name {
+			return true
+		}
+	}
+	return false
+}

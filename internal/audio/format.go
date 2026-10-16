@@ -110,10 +110,11 @@ type WAV struct {
 	Channels int
 }
 
-// WriteWAV writes a canonical 16-bit PCM WAV file. The offline path of the CLI
-// takes a real container (raw PCM is only accepted on stdin), so the repair pass
-// has to hand it one.
-func WriteWAV(path string, data []byte, rate, channels int) error {
+// EncodeWAV renders canonical 16-bit PCM WAV bytes. The offline paths take a
+// real container (raw PCM is only accepted on the streaming stdin route), so both
+// repair routes need one: the CLI writes it to a file, and a resident server
+// uploads the same bytes as a request body.
+func EncodeWAV(data []byte, rate, channels int) []byte {
 	if channels < 1 {
 		channels = 1
 	}
@@ -136,11 +137,15 @@ func WriteWAV(path string, data []byte, rate, channels int) error {
 	buffer.WriteString("data")
 	writeUint32(&buffer, uint32(frames*blockAlign))
 
-	payload := append([]byte(buffer.String()), data[:frames*blockAlign]...)
+	return append([]byte(buffer.String()), data[:frames*blockAlign]...)
+}
+
+// WriteWAV writes a canonical 16-bit PCM WAV file.
+func WriteWAV(path string, data []byte, rate, channels int) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, payload, 0o644)
+	return os.WriteFile(path, EncodeWAV(data, rate, channels), 0o644)
 }
 
 func writeUint32(buffer *strings.Builder, value uint32) {

@@ -311,7 +311,7 @@ func runIBusEngine(ctx *Context, options engineRunOptions) error {
 		ctx.Print("engine started on %s (diagnostic commit only)", address)
 		handler = &diagnosticHandler{text: commitOnEnable, out: ctx.Stdout}
 	default:
-		pipeline, err := newPipelineHandler(ctx, logf, audioFile, repairModel)
+		pipeline, err := newPipelineHandler(runCtx, ctx, logf, audioFile, repairModel)
 		if err != nil {
 			return err
 		}
@@ -328,7 +328,7 @@ func runIBusEngine(ctx *Context, options engineRunOptions) error {
 // newPipelineHandler assembles the dictation pipeline the engine runs: the
 // streaming model for live text, the repair model for finished utterances, and
 // either the microphone or a file as the audio source.
-func newPipelineHandler(ctx *Context, logf func(string, ...any), audioFile, repairModel string) (*daemon.EngineHandler, error) {
+func newPipelineHandler(runCtx context.Context, ctx *Context, logf func(string, ...any), audioFile, repairModel string) (*daemon.EngineHandler, error) {
 	binary, err := ctx.Config.FindASRBinary()
 	if err != nil {
 		return nil, PreconditionError("voiceime config set audio_cpp_dir /path/to/audio.cpp", "%v", err)
@@ -350,6 +350,12 @@ func newPipelineHandler(ctx *Context, logf func(string, ...any), audioFile, repa
 		RepairModel: repair,
 		Log:         logf,
 	}
+
+	// The repair route is chosen once, at engine start: a server that is down
+	// should be reported here rather than discovered on the first utterance.
+	transcriber, note := repairTranscriber(runCtx, ctx.Config)
+	handler.Transcriber = transcriber
+	logf("%s", repairRouteDescription(ctx.Config, transcriber, note))
 	if audioFile != "" {
 		// Validated here rather than at first use: a typo in the path should fail
 		// when the engine starts, not silently later.

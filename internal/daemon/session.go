@@ -59,6 +59,11 @@ type Options struct {
 	// run, and a microphone should be reopened per activation rather than shared
 	// across sessions.
 	NewCapture func() (audio.Capture, error)
+	// Transcriber overrides the offline decode the repair pass runs. Nil builds
+	// the CLI Repairer from the fields above; a resident server passes its own
+	// implementation. The session treats them identically: both take one
+	// utterance's PCM and return its text.
+	Transcriber asr.Transcriber
 	// MinRepairSeconds is the shortest segment worth an offline re-decode. A
 	// repair costs a process start and a model load, so a cough is not worth one.
 	MinRepairSeconds float64
@@ -331,19 +336,22 @@ func (s *session) startRepairWorker(ctx context.Context, options Options, engine
 	if !options.Config.RefineOnSegmentEnd {
 		return
 	}
-	model := options.RepairModel
-	if model == "" {
-		model = options.Model
-	}
-	repairer := asr.Repairer{
-		Binary:         options.Binary,
-		WorkDir:        options.Config.AudioCPPDirPath(),
-		Model:          model,
-		Backend:        engineConfig.Backend,
-		Threads:        options.Config.Threads,
-		Language:       options.Config.Language,
-		RequestOptions: engineConfig.RequestOptions,
-		SessionOptions: engineConfig.SessionOptions,
+	transcriber := options.Transcriber
+	if transcriber == nil {
+		model := options.RepairModel
+		if model == "" {
+			model = options.Model
+		}
+		transcriber = asr.Repairer{
+			Binary:         options.Binary,
+			WorkDir:        options.Config.AudioCPPDirPath(),
+			Model:          model,
+			Backend:        engineConfig.Backend,
+			Threads:        options.Config.Threads,
+			Language:       options.Config.Language,
+			RequestOptions: engineConfig.RequestOptions,
+			SessionOptions: engineConfig.SessionOptions,
+		}
 	}
 
 	// One worker, buffered: repairs run off the audio path but stay ordered, so
@@ -358,7 +366,7 @@ func (s *session) startRepairWorker(ctx context.Context, options Options, engine
 		defer close(s.repairResults)
 		for job := range s.repairQueue {
 			started := time.Now()
-			text, err := repairer.Transcribe(ctx, job.pcm)
+			text, err := transcriber.Transcribe(ctx, job.pcm)
 			s.repairResults <- repairResult{job: job, text: text, took: time.Since(started), err: err}
 		}
 	}()

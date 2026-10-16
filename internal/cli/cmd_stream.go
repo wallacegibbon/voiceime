@@ -197,11 +197,16 @@ func runStream(ctx *Context, options streamOptions) error {
 	}
 
 	started := time.Now()
+	transcriber, note := repairTranscriber(runCtx, &cfg)
+	if line := repairRouteDescription(&cfg, transcriber, note); line != "" {
+		out.write("repair_route", map[string]any{"detail": line})
+	}
 	session := daemon.Options{
 		Config:      &cfg,
 		Binary:      binary,
 		Model:       target,
 		RepairModel: options.refineModel,
+		Transcriber: transcriber,
 		NewCapture:  newCapture,
 		Sink:        streamSink{emitter: out},
 		Observer: daemon.Observer{

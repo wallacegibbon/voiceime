@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wallacegibbon/voiceime/internal/asr"
 	"github.com/wallacegibbon/voiceime/internal/audio"
 	"github.com/wallacegibbon/voiceime/internal/config"
 	"github.com/wallacegibbon/voiceime/internal/ibus"
@@ -21,6 +22,9 @@ type EngineHandler struct {
 	Binary      string
 	Model       string
 	RepairModel string
+	// Transcriber overrides the offline decode the repair pass runs. Nil builds
+	// the CLI Repairer; a resident server passes its own implementation.
+	Transcriber asr.Transcriber
 	Log         func(format string, args ...any)
 
 	// AudioFile replays a WAV instead of using the microphone, for the diagnostic
@@ -71,6 +75,7 @@ func (h *EngineHandler) Enable(control ibus.Control) {
 		Binary:           h.Binary,
 		Model:            h.Model,
 		RepairModel:      h.RepairModel,
+		Transcriber:      h.Transcriber,
 		Sink:             control,
 		MinRepairSeconds: h.MinRepairSeconds,
 		Observer: Observer{

@@ -305,3 +305,70 @@ func TestSessionCommitsWhenSpeechStartsImmediately(t *testing.T) {
 		t.Fatalf("a session that began with speech committed nothing: %v", sink.events)
 	}
 }
+
+// fakeTranscriber stands in for a resident server: it is handed the utterance's
+// PCM and answers with text of the test's choosing.
+type fakeTranscriber struct {
+	text  string
+	err   error
+	calls int
+	audio []byte
+}
+
+func (f *fakeTranscriber) Transcribe(_ context.Context, pcm []byte) (string, error) {
+	f.calls++
+	f.audio = append([]byte(nil), pcm...)
+	return f.text, f.err
+}
+
+// The offline decode belongs to whatever Transcriber the session is handed, which
+// is what lets a resident server replace the process-per-utterance route without
+// the session knowing. If the injected one were ignored, configuring a server
+// would keep spawning the CLI and the only symptom would be the per-utterance
+// model load the server exists to remove - a silent, expensive no-op.
+func TestSessionRepairsWithTheInjectedTranscriber(t *testing.T) {
+	options, sink := sessionOptions(t, t.TempDir(),
+		`echo "task=asr"; echo "text_output=命令行解码的句子。"`, true)
+	injected := &fakeTranscriber{text: "服务器解码的句子。"}
+	options.Transcriber = injected
+	runSession(t, options)
+
+	got := strings.Join(sink.commits(), "")
+	if !strings.Contains(got, "服务器解码的句子") {
+		t.Fatalf("committed %q, want the injected transcriber's text", got)
+	}
+	if strings.Contains(got, "命令行解码的句子") {
+		t.Error("the CLI repairer ran even though a transcriber was injected")
+	}
+	if injected.calls == 0 {
+		t.Fatal("the injected transcriber was never called, so the repair pass did not run")
+	}
+	if len(injected.audio) == 0 {
+		t.Error("the transcriber was handed no audio: the utterance's PCM must reach it")
+	}
+}
+
+// A transcriber that fails must release the utterance exactly as a failed CLI
+// repair does, or the text stays provisional and the user sees it never arrive.
+func TestSessionReleasesTextWhenTheInjectedTranscriberFails(t *testing.T) {
+	options, sink := sessionOptions(t, t.TempDir(), `echo "should not run"`, true)
+	options.Transcriber = &fakeTranscriber{err: fmt.Errorf("server repair: 503 Service Unavailable")}
+	errorSeen := make(chan error, 4)
+	options.Observer = Observer{Error: func(err error) { errorSeen <- err }}
+	runSession(t, options)
+
+	if len(sink.commits()) == 0 {
+		t.Fatalf("a failed server repair left the text undelivered: %v", sink.events)
+	}
+	if got := strings.Join(sink.commits(), ""); !strings.Contains(got, "片段") {
+		t.Errorf("committed %q, want the stream text as the fallback", got)
+	}
+	select {
+	case err := <-errorSeen:
+		if !strings.Contains(err.Error(), "503") {
+			t.Errorf("reported %v, want the server's reason", err)
+		}
+	default:
+		t.Error("the failure was not reported to the user")
+	}
+}

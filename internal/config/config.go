@@ -75,6 +75,14 @@ type Config struct {
 	RefineOnSegmentEnd  bool    `toml:"refine_on_segment_end" desc:"Re-transcribe a completed segment with the offline path."`
 	MaxUtteranceSeconds float64 `toml:"max_utterance_seconds" desc:"Force a segment boundary after this many seconds."`
 
+	// Offline decode via a resident audio.cpp server. Empty asr_server_url keeps
+	// the process-per-utterance route, which needs no daemon and is fast enough
+	// for a small model; a server pays the model load once instead of per
+	// utterance, which is what a large refine model needs.
+	ASRServerURL       string `toml:"asr_server_url" desc:"Resident audiocpp_server root, e.g. http://127.0.0.1:8080; empty starts a process per utterance."`
+	ASRServerModel     string `toml:"asr_server_model" desc:"Model id the server config gave the offline model; must not be the streaming model's id."`
+	ASRServerTimeoutMS int    `toml:"asr_server_timeout_ms" desc:"Deadline for one server-side repair decode."`
+
 	// Endpointing.
 	EndpointSilenceMS   int `toml:"endpoint_silence_ms" desc:"Silence after speech before a segment is closed."`
 	EndpointMinSpeechMS int `toml:"endpoint_min_speech_ms" desc:"Speech shorter than this is treated as noise."`
@@ -119,6 +127,10 @@ func Default() *Config {
 		ChunkSeconds:        3.0,
 		RefineOnSegmentEnd:  true,
 		MaxUtteranceSeconds: 60,
+		// 30s is generous for one utterance: the point of a deadline here is to
+		// abandon a repair that has stopped being worth waiting for, not to bound
+		// a decode that is running normally.
+		ASRServerTimeoutMS:  30000,
 		EndpointSilenceMS:   800,
 		EndpointMinSpeechMS: 300,
 		// This is a floor, not a fixed threshold: the detector raises its

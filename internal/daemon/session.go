@@ -64,6 +64,19 @@ type Options struct {
 	// implementation. The session treats them identically: both take one
 	// utterance's PCM and return its text.
 	Transcriber asr.Transcriber
+	// PreferredRepair, when set, is called once per session to bring up the route a
+	// repair prefers - a resident server, say. It runs in the background as the
+	// session starts, so the first repair does not have to wait for a model to
+	// load, and whatever it returns is stopped when the session ends: a process it
+	// owns lives exactly as long as the dictation that needs it.
+	//
+	// It is a function rather than a value because of that lifetime. An engine
+	// handler serves every activation, and a route that had already been brought up
+	// and stopped once would be a server that is gone.
+	PreferredRepair func(ctx context.Context) (asr.Transcriber, error)
+	// PreferredWait bounds how long a repair waits for PreferredRepair before
+	// using the fallback. Zero uses a default.
+	PreferredWait time.Duration
 	// MinRepairSeconds is the shortest segment worth an offline re-decode. A
 	// repair costs a process start and a model load, so a cough is not worth one.
 	MinRepairSeconds float64
@@ -239,6 +252,12 @@ func (o Options) Run(ctx context.Context) (Result, error) {
 	// delivered twice and out of order.
 	pipeline.closeRepairs()
 	pipeline.waitForRepairs()
+	// After the repairs, not before: a route that had to be brought up is still
+	// serving them until they are done, and stopping it earlier would turn the
+	// session's last utterances into fallback ones.
+	if pipeline.stopRoute != nil {
+		pipeline.stopRoute()
+	}
 
 	if notify.Skipped != nil && capture.Err() != nil {
 		notify.Skipped(capture.Err().Error())
@@ -304,6 +323,10 @@ type session struct {
 	repairQueue   chan repairJob
 	repairResults chan repairResult
 	repairDone    sync.WaitGroup
+	// stopRoute releases the repair route when the session ends. A route that had
+	// to be brought up (a spawned server) owns a process, and the session is what
+	// decides how long that process lives.
+	stopRoute func()
 
 	// buffer is the recent audio an offline decode re-reads.
 	buffer *audio.RollingBuffer
@@ -336,22 +359,58 @@ func (s *session) startRepairWorker(ctx context.Context, options Options, engine
 	if !options.Config.RefineOnSegmentEnd {
 		return
 	}
-	transcriber := options.Transcriber
-	if transcriber == nil {
-		model := options.RepairModel
-		if model == "" {
-			model = options.Model
+	model := options.RepairModel
+	if model == "" {
+		model = options.Model
+	}
+	// The CLI route is both the default and, when a preferred route exists, the
+	// fallback: the two are the same decode of the same audio, differing only in
+	// where the model was loaded.
+	cliRepairer := asr.Repairer{
+		Binary:         options.Binary,
+		WorkDir:        options.Config.AudioCPPDirPath(),
+		Model:          model,
+		Backend:        engineConfig.Backend,
+		Threads:        options.Config.Threads,
+		Language:       options.Config.Language,
+		RequestOptions: engineConfig.RequestOptions,
+		SessionOptions: engineConfig.SessionOptions,
+	}
+	var transcriber asr.Transcriber = cliRepairer
+	if options.PreferredRepair != nil {
+		wait := options.PreferredWait
+		if wait <= 0 {
+			// Long enough for a spawned server to load a model, short enough that a
+			// repair is still worth more than the fallback it replaces.
+			wait = 5 * time.Second
 		}
-		transcriber = asr.Repairer{
-			Binary:         options.Binary,
-			WorkDir:        options.Config.AudioCPPDirPath(),
-			Model:          model,
-			Backend:        engineConfig.Backend,
-			Threads:        options.Config.Threads,
-			Language:       options.Config.Language,
-			RequestOptions: engineConfig.RequestOptions,
-			SessionOptions: engineConfig.SessionOptions,
+		// One route per session, because the route owns a process whose lifetime is
+		// the session's. Sharing one across sessions would leave the second
+		// dictation talking to a server the first one stopped.
+		transcriber = &asr.Routed{
+			BringUp:  options.PreferredRepair,
+			Fallback: cliRepairer,
+			Wait:     wait,
+			Report: func(err error) {
+				// Once per session, per kind: a route that failed has failed, and one
+				// line per utterance would be noise.
+				if s.notify.Skipped != nil {
+					s.notify.Skipped(err.Error())
+				}
+			},
 		}
+	}
+	// An explicit Transcriber replaces the whole composition, including the CLI
+	// fallback: a caller that supplies one is answering the question this function
+	// otherwise decides.
+	if options.Transcriber != nil {
+		transcriber = options.Transcriber
+	}
+	// A route that has to be brought up (a spawned server) is started now, in the
+	// background, and stopped when the session ends: its lifetime is the session's.
+	if starter, ok := transcriber.(asr.Starter); ok {
+		go starter.Start(ctx)
+		s.stopRoute = starter.Stop
 	}
 
 	// One worker, buffered: repairs run off the audio path but stay ordered, so

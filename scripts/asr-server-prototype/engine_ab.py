@@ -106,6 +106,9 @@ def main():
     parser.add_argument("--server-url", default="http://127.0.0.1:18080")
     parser.add_argument("--model", default="refine",
                         help="with --server: the server model id; without it: the refine GGUF path")
+    parser.add_argument("--refine-gguf", default="",
+                        help="with --server: set refine_model too, which is what the server "
+                             "started on demand has to serve")
     parser.add_argument("--config", default=os.path.expanduser("~/.config/voiceime/config.toml"))
     parser.add_argument("--timeout", type=float, default=120)
     args = parser.parse_args()
@@ -113,7 +116,7 @@ def main():
     if args.server:
         values = {"asr_server_url": args.server_url,
                   "asr_server_model": args.model,
-                  "refine_model": ""}
+                  "refine_model": args.refine_gguf}
     else:
         values = {"asr_server_url": "", "refine_model": args.model if args.model != "refine" else ""}
 

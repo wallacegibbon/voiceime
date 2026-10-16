@@ -81,6 +81,7 @@ type Config struct {
 	// utterance, which is what a large refine model needs.
 	ASRServerURL       string `toml:"asr_server_url" desc:"Resident audiocpp_server root, e.g. http://127.0.0.1:8080; empty starts a process per utterance."`
 	ASRServerModel     string `toml:"asr_server_model" desc:"Model id the server config gave the offline model; must not be the streaming model's id."`
+	ASRServerAutostart bool   `toml:"asr_server_autostart" desc:"Start a local server on demand when asr_server_url is on this machine and nothing is listening."`
 	ASRServerTimeoutMS int    `toml:"asr_server_timeout_ms" desc:"Deadline for one server-side repair decode."`
 
 	// Endpointing.
@@ -130,7 +131,12 @@ func Default() *Config {
 		// 30s is generous for one utterance: the point of a deadline here is to
 		// abandon a repair that has stopped being worth waiting for, not to bound
 		// a decode that is running normally.
-		ASRServerTimeoutMS:  30000,
+		ASRServerTimeoutMS: 30000,
+		// "refine" is the id this project's own server config gives the offline
+		// model, so naming only a URL is enough to get a working route. A server
+		// someone else runs reports the ids it offers if this one is wrong.
+		ASRServerModel:      "refine",
+		ASRServerAutostart:  true,
 		EndpointSilenceMS:   800,
 		EndpointMinSpeechMS: 300,
 		// This is a floor, not a fixed threshold: the detector raises its
@@ -504,6 +510,44 @@ func (c *Config) FindASRBinary() (string, error) {
 		}
 	}
 	return "", errors.New("audiocpp_cli not found: set asr_bin or audio_cpp_dir, or put it on PATH")
+}
+
+// FindServerBinary locates audiocpp_server, the resident host for the offline
+// decode. Discovery mirrors FindASRBinary because the two ship together: the
+// configured CLI's own directory first (a build tree holds both, so a deliberate
+// choice of binary settles this too), then the checkout's build trees, then PATH.
+func (c *Config) FindServerBinary() (string, error) {
+	var candidates []string
+	if c.ASRBin != "" {
+		candidates = append(candidates, filepath.Join(filepath.Dir(Expand(c.ASRBin)), serverBinaryName))
+	}
+	if value := os.Getenv("VOICEIME_ASR_SERVER"); value != "" {
+		candidates = append(candidates, Expand(value))
+	}
+	for _, root := range c.checkoutRoots() {
+		matches, _ := filepath.Glob(filepath.Join(root, filepath.FromSlash(audioCPPBuildGlob)))
+		sort.Strings(matches)
+		var preferred, rest []string
+		for _, match := range matches {
+			candidate := filepath.Join(filepath.Dir(match), serverBinaryName)
+			if strings.Contains(candidate, c.Backend) {
+				preferred = append(preferred, candidate)
+			}
+			rest = append(rest, candidate)
+		}
+		candidates = append(candidates, preferred...)
+		candidates = append(candidates, rest...)
+	}
+	if found, err := exec.LookPath(serverBinaryName); err == nil {
+		candidates = append(candidates, found)
+	}
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("%s not found: point asr_bin at the audio.cpp build's audiocpp_cli, or put %s on PATH",
+		serverBinaryName, serverBinaryName)
 }
 
 // checkoutRoots returns the audio.cpp directories to look inside: the configured

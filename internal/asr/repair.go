@@ -79,10 +79,12 @@ func (r Repairer) Transcribe(ctx context.Context, pcm []byte) (string, error) {
 	// bundled VAD is resolved as a path relative to the process's working
 	// directory. Measured on the reference sample, disabling chunking also
 	// transcribed one character more accurately than the VAD path did.
-	requestOptions := map[string]string{"audio_chunk_mode": "none"}
-	for key, value := range r.RequestOptions {
-		requestOptions[key] = value
-	}
+	//
+	// The same options have to reach a server-side repair, which is why they are
+	// built in one place: a multipart transcription upload cannot carry a request
+	// options object, so the server route puts these in the model entry's
+	// default_request_options instead. Two routes, one decoding contract.
+	requestOptions := RepairRequestOptions(r.RequestOptions)
 	if r.Language != "" {
 		args = append(args, "--language", r.Language)
 	}
@@ -112,6 +114,22 @@ func (r Repairer) backend() string {
 		return "cpu"
 	}
 	return r.Backend
+}
+
+// RepairRequestOptions returns the request options the offline repair decode
+// needs, with the caller's overlaid on top.
+//
+// It is exported and shared because the two repair routes have to decode
+// identically or a user comparing them is comparing two things: the CLI route
+// passes these as --request-option flags, and the server route writes them into
+// the model entry's default_request_options, since a multipart transcription
+// upload has no field to carry them per request.
+func RepairRequestOptions(overrides map[string]string) map[string]string {
+	options := map[string]string{"audio_chunk_mode": "none"}
+	for key, value := range overrides {
+		options[key] = value
+	}
+	return options
 }
 
 func (r Repairer) threads() int {

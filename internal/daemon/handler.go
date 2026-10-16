@@ -25,7 +25,12 @@ type EngineHandler struct {
 	// Transcriber overrides the offline decode the repair pass runs. Nil builds
 	// the CLI Repairer; a resident server passes its own implementation.
 	Transcriber asr.Transcriber
-	Log         func(format string, args ...any)
+	// PreferredRepair, when set, brings up the route a repair prefers for one
+	// session, with the CLI repairer as its fallback. It is called per activation.
+	PreferredRepair func(ctx context.Context) (asr.Transcriber, error)
+	// PreferredWait bounds how long a repair waits for PreferredRepair.
+	PreferredWait time.Duration
+	Log           func(format string, args ...any)
 
 	// AudioFile replays a WAV instead of using the microphone, for the diagnostic
 	// that exercises the whole path (engine → application text) without speaking.
@@ -76,6 +81,8 @@ func (h *EngineHandler) Enable(control ibus.Control) {
 		Model:            h.Model,
 		RepairModel:      h.RepairModel,
 		Transcriber:      h.Transcriber,
+		PreferredRepair:  h.PreferredRepair,
+		PreferredWait:    h.PreferredWait,
 		Sink:             control,
 		MinRepairSeconds: h.MinRepairSeconds,
 		Observer: Observer{

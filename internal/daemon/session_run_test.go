@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wallacegibbon/voiceime/internal/asr"
 	"github.com/wallacegibbon/voiceime/internal/audio"
 	"github.com/wallacegibbon/voiceime/internal/config"
 )
@@ -370,5 +371,58 @@ func TestSessionReleasesTextWhenTheInjectedTranscriberFails(t *testing.T) {
 		}
 	default:
 		t.Error("the failure was not reported to the user")
+	}
+}
+
+// routeStub stands in for a brought-up repair route: it answers with text of the
+// test's choosing and records that it was stopped.
+type routeStub struct {
+	text   string
+	onStop func()
+}
+
+func (r *routeStub) Transcribe(context.Context, []byte) (string, error) { return r.text, nil }
+func (r *routeStub) Stop() {
+	if r.onStop != nil {
+		r.onStop()
+	}
+}
+
+// An engine handler serves every activation, so the route a repair prefers is built
+// per session and stopped with it. A held route would send the second dictation to
+// the server the first one stopped - and the failure this replaces was worse than
+// that: Routed closed its readiness channel twice, which panicked inside the
+// dictation path on the second activation of an engine that had already dictated.
+func TestSessionBringsUpAndStopsARepairRoutePerRun(t *testing.T) {
+	options, sink := sessionOptions(t, t.TempDir(), `echo "task=asr"; echo "text_output=命令行解码。"`, true)
+
+	var mu sync.Mutex
+	brought, stopped := 0, 0
+	options.PreferredRepair = func(context.Context) (asr.Transcriber, error) {
+		mu.Lock()
+		brought++
+		mu.Unlock()
+		return &routeStub{text: "服务器解码。", onStop: func() {
+			mu.Lock()
+			stopped++
+			mu.Unlock()
+		}}, nil
+	}
+
+	for run := 1; run <= 2; run++ {
+		runSession(t, options)
+		committed := strings.Join(sink.commits(), "")
+		if !strings.Contains(committed, "服务器解码") {
+			t.Errorf("run %d committed %q, want the preferred route's text", run, committed)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if brought != 2 {
+		t.Errorf("brought up the route %d time(s), want once per session (2)", brought)
+	}
+	if stopped != 2 {
+		t.Errorf("stopped the route %d time(s), want once per session (2)", stopped)
 	}
 }

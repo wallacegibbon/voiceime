@@ -197,18 +197,19 @@ func runStream(ctx *Context, options streamOptions) error {
 	}
 
 	started := time.Now()
-	transcriber, note := repairTranscriber(runCtx, &cfg)
-	if line := repairRouteDescription(&cfg, transcriber, note); line != "" {
-		out.write("repair_route", map[string]any{"detail": line})
-	}
+	// The same checkpoint the session's own repairer will use: --refine-model can
+	// override it per run, and a server serving a different model than the fallback
+	// would make the two routes incomparable.
+	route := repairRoute(&cfg, effectiveRepairModel(options.refineModel, target))
+	out.write("repair_route", map[string]any{"detail": repairRouteDescription(&cfg, route)})
 	session := daemon.Options{
-		Config:      &cfg,
-		Binary:      binary,
-		Model:       target,
-		RepairModel: options.refineModel,
-		Transcriber: transcriber,
-		NewCapture:  newCapture,
-		Sink:        streamSink{emitter: out},
+		Config:          &cfg,
+		Binary:          binary,
+		Model:           target,
+		RepairModel:     options.refineModel,
+		PreferredRepair: route,
+		NewCapture:      newCapture,
+		Sink:            streamSink{emitter: out},
 		Observer: daemon.Observer{
 			Ready: func(load time.Duration) {
 				out.write("ready", map[string]any{

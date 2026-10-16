@@ -28,6 +28,9 @@ import (
 const (
 	audioCPPManagerMarker = "tools/model_manager_v2.py"
 	audioCPPBuildGlob     = "build/*/bin/audiocpp_cli"
+	// serverBinaryName is the resident host that serves offline decodes. It lives
+	// beside audiocpp_cli in the same build tree.
+	serverBinaryName = "audiocpp_server"
 )
 
 // IsAudioCPPCheckout reports whether a directory looks like an audio.cpp

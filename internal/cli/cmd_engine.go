@@ -351,11 +351,11 @@ func newPipelineHandler(runCtx context.Context, ctx *Context, logf func(string, 
 		Log:         logf,
 	}
 
-	// The repair route is chosen once, at engine start: a server that is down
-	// should be reported here rather than discovered on the first utterance.
-	transcriber, note := repairTranscriber(runCtx, ctx.Config)
-	handler.Transcriber = transcriber
-	logf("%s", repairRouteDescription(ctx.Config, transcriber, note))
+	// The repair route is chosen once, at engine start. It is not brought up here:
+	// the session starts it as dictation begins, so a server it spawns is not
+	// holding a model while the engine sits idle between activations.
+	handler.PreferredRepair = repairRoute(ctx.Config, repair)
+	logf("%s", repairRouteDescription(ctx.Config, handler.PreferredRepair))
 	if audioFile != "" {
 		// Validated here rather than at first use: a typo in the path should fail
 		// when the engine starts, not silently later.

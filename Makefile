@@ -54,14 +54,20 @@ build: ## Build bin/voiceime for this machine
 	@echo "built $(BIN_DIR)/$(BINARY) ($(VERSION))"
 
 .PHONY: install
-install: build ## Install to $(DESTDIR)$(PREFIX)/bin
+install: build ## Install to $(DESTDIR)$(PREFIX)/bin (and docs to $(PREFIX)/docs)
 	install -d $(DESTDIR)$(PREFIX)/bin
 	install -m 0755 $(BIN_DIR)/$(BINARY) $(DESTDIR)$(PREFIX)/bin/$(BINARY)
-	@echo "installed $(DESTDIR)$(PREFIX)/bin/$(BINARY)"
+	@# The hotkey unit records the absolute path of docs/AGENT.md beside the binary
+	@# (dir(binary)/../docs), so the docs are installed too: without them the
+	@# unit's Documentation= is a dead link.
+	install -d $(DESTDIR)$(PREFIX)/docs
+	install -m 0644 docs/*.md $(DESTDIR)$(PREFIX)/docs/
+	@echo "installed $(DESTDIR)$(PREFIX)/bin/$(BINARY) and $(DESTDIR)$(PREFIX)/docs/"
 
 .PHONY: uninstall
-uninstall: ## Remove the installed binary
+uninstall: ## Remove the installed binary and docs
 	rm -f $(DESTDIR)$(PREFIX)/bin/$(BINARY)
+	rm -f $(DESTDIR)$(PREFIX)/docs/*.md
 
 .PHONY: dist
 dist: build ## Package a release tarball under dist/

@@ -95,11 +95,16 @@ func runEngineInstall(ctx *Context, system, apply, quiet bool) error {
 
 	if !quiet {
 		ctx.Print("component written to %s", path)
-		ctx.Print("IBus does not read that directory by default. Enable it with:")
+		ctx.Print("note: IBus does not read that directory by default, and IBUS_COMPONENT_PATH")
+		ctx.Print("      replaces the default path, which is why it must also list")
+		ctx.Print("      /usr/share/ibus/component")
+		if apply {
+			ctx.Print("enabling it now:")
+		} else {
+			ctx.Print("enable it with:")
+		}
 		ctx.Print("  %s", setEnv)
 		ctx.Print("  ibus restart")
-		ctx.Print("note: IBUS_COMPONENT_PATH replaces the default path, which is why")
-		ctx.Print("      it must also list /usr/share/ibus/component")
 	}
 
 	if apply {

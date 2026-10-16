@@ -313,7 +313,14 @@ func modelChecks(ctx *Context, refresh bool, report func(Check)) {
 		} else {
 			detail := fmt.Sprintf("%s (%s)", found.Path, found.Family)
 			if !models.RepairIsRealtime(*found) {
-				detail += "; measured cost: slower than real time on CPU, so repairs will lag behind speech"
+				// The cost this warns about is the one a fresh process pays per
+				// utterance, which is the whole reason a resident server exists. A
+				// machine configured for one is not being advised to change model.
+				if cfg.ASRServerURL != "" {
+					detail += "; slower than real time as a fresh process on CPU, which is what asr_server_url avoids: the server pays its load once"
+				} else {
+					detail += "; measured cost: slower than real time on CPU, so repairs will lag behind speech"
+				}
 			}
 			report(Check{ID: "refine_model", Status: "ok", Detail: detail})
 		}

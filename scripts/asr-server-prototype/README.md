@@ -47,13 +47,14 @@ latency one.
 
 ## Two properties that are requirements, not details
 
-**The refine model needs its own server entry.** The server holds a model for the
+**A model cannot be shared with a live session.** The server holds a model for the
 whole length of a request, so a repair sent to the id a live dictation owns waits
 for that dictation to end. `model_lock.py` shows it: a ~215ms repair takes 9.7s
 when sent to the streaming model's id and 1.14s when sent to a second id, against
-a 12.7s live session. Two entries cost two resident copies of the weights
-(+253MB for SenseVoice Q8, measured), so this is a deliberate memory-for-latency
-trade, not an oversight to optimise away.
+a 12.7s live session. Two entries cost two resident copies of the weights (+253MB
+for SenseVoice Q8, measured). The server voiceime spawns therefore serves only the
+offline entry: the streaming layer stays on the CLI's stdin route, so nothing is
+duplicated.
 
 **Per-utterance request options must live in the server config.** The multipart
 transcription upload accepts only `file`, `model`, `language`, `prompt/text`,
@@ -65,7 +66,16 @@ that the text matches the CLI route on the sample clips either way.
 
 ## Running it
 
-Start a server (two roles, the refine one its own entry):
+The spawn path is what `voiceime` does by default now, so the commands below are for
+measuring it rather than for driving it:
+
+```bash
+voiceime config set refine_model ~/models/Qwen3-ASR-0.6B-GGUF/qwen3-asr-0.6b-q8_0.gguf
+voiceime config set asr_server_url http://127.0.0.1:18080   # spawned on demand
+```
+
+To run a server by hand instead - which is what the probes here talk to - use two
+roles with the refine one its own entry:
 
 ```bash
 python3 server_config.py \
@@ -98,12 +108,14 @@ activates it with `ibus engine voiceime`, which is what a hotkey press does.
 
 ## Not done yet
 
-- **Nobody starts the server.** The branch reads `asr_server_url`; starting,
-  supervising and reaping `audiocpp_server` (a systemd user unit, an on-demand
-  spawn, or the user's own shell) is the open decision, and it is why this is a
-  prototype branch rather than a change to `main`.
-- The docs still say the accurate repair does not keep up on CPU
-  (`README.md`, `docs/AGENT.md`, `doctor`'s refine advice). That statement is
-  true of the CLI route and false of this one, so it needs revising with the
-  rest of the feature.
-- `asr_server_url` is not in `doctor`, and `voiceime server` does not exist.
+- **The spawned server is not supervised outside a session.** Its lifetime is the
+  dictation session's: spawned at the start, stopped after the last repair lands.
+  A parent killed outright (SIGKILL, no chance to run Stop) leaves the child
+  running; it is reused by the next session, and `idle_unload_ms` releases its
+  weights two minutes later rather than holding them. A systemd user unit would
+  make that airtight and is the next step if this graduates from a prototype.
+- **A hung server stalls one repair at a time.** A server that accepts a
+  connection and never answers costs `asr_server_timeout_ms` on each repair before
+  the fallback runs. A server that has died refuses the connection immediately, so
+  the common failure is cheap; a circuit breaker after the first failure would
+  bound the rare one.

@@ -165,9 +165,10 @@ the machine has a working GPU. The numbers are measured on the reference machine
 | Machine | Package | Role | Measured |
 |---|---|---|---|
 | **CPU only** | `sensevoice_small_q8` | streaming **and** repair | 242 MiB on disk, 428 MiB RSS; decode RTF 0.047 (~21x realtime, Chinese); one process per dictation session with a ~0.3 s load; repair 0.55 s for a 4.2 s utterance |
-| **CPU only** | *nothing else* | — | Leave `refine_model` empty so repairs reuse the streaming model. Adding `qwen3_asr_0_6b_q8_0` here makes every repair cost ~5.7 s for a 4.2 s utterance - slower than the person speaking |
+| **CPU only** | *nothing else* | — | Leave `refine_model` empty so repairs reuse the streaming model. Adding `qwen3_asr_0_6b_q8_0` here makes every repair cost ~5.7 s for a 4.2 s utterance - slower than the person speaking - unless you also set `asr_server_url`, which moves the decode to a resident server and brings it to ~0.7 s (below) |
 | **With a GPU** | `sensevoice_small_q8` | streaming | same model, same reason: see below |
 | **With a GPU** | `qwen3_asr_0_6b_q8_0` | repair (`refine_model`) | 1.07 GiB on disk, 2110 MiB RSS; decode RTF 0.28 (3.5x realtime); its offline decode of the reference Chinese sample matched the reference transcript exactly where the streaming model produced one wrong character |
+| **CPU, resident server** | `qwen3_asr_0_6b_q8_0` | repair (`refine_model` + `asr_server_url`) | same weights; the server is started when a session begins and stopped at the end, so the load is paid once per dictation instead of once per utterance. Measured: 0.56/0.60/0.59 s per sentence over three sentences, against 5.13/8.45/11.67 s as a process per utterance |
 
 CPU only:
 
@@ -196,10 +197,25 @@ Why the roles are split that way:
 * **Repair is where accuracy is worth paying for**, because it re-reads a finished
   utterance with the whole utterance as context. That is exactly the difference
   measured above: the sentence split and the wrong character, repaired.
-* **On CPU that accuracy is unaffordable**: 5.66 s for a 4.24 s segment, most of it
-  loading a 1.07 GiB checkpoint once per segment. The repair would still be running
-  when the user starts the next sentence, so `doctor` reports it as advice rather
-  than switching to it.
+* **On CPU that accuracy used to be unaffordable**: 5.66 s for a 4.24 s segment, most
+  of it loading a 1.07 GiB checkpoint once per segment. The repair would still be
+  running when the user starts the next sentence, so `doctor` reports it as advice
+  rather than switching to it. Setting `asr_server_url` removes that cost rather than
+  hiding it: the checkpoint is loaded once per dictation session instead of once per
+  sentence, and the measured repair drops to about 0.7 s. What remains per session is
+  the load itself (~1.4 s here), overlapped with the user's first sentence.
+
+CPU with the resident repair server:
+
+```sh
+"$BIN" config set refine_model ~/models/Qwen3-ASR-0.6B-GGUF/qwen3-asr-0.6b-q8_0.gguf
+"$BIN" config set asr_server_url http://127.0.0.1:18080
+```
+
+voiceime writes the server's config and starts it for the session, so nothing has to
+be run by hand: it is spawned as dictation begins and stopped when the session ends,
+and a server already listening on that address is used and left alone. The session
+log, or `stream --events` (`repair_route`), names the route in use.
 
 **The GPU half of this table is an inference, not a measurement.** No GPU backend
 has been benchmarked for this project (`docs/measurements.md`, "Not measured yet");

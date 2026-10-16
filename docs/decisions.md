@@ -653,3 +653,67 @@ that replaces a chunk without re-reading the whole chunk deletes its text for th
 overhang, D7's other recorded failure. Delaying the commit until a covering window
 arrives - bounds the wait instead of removing the dependency, and still merges
 adjacent utterances.
+
+## D21 — A model that cannot keep up as a process per utterance is served resident, on demand.
+
+**Decision.** The offline decode can run through a resident `audiocpp_server`
+instead of a process per utterance, and voiceime starts that server itself when a
+dictation session begins and stops it when the session ends. It is configured with
+`asr_server_url`, off by default (`refine_on_segment_end` already covers the case
+where a small refine model is enough).
+
+**Why.** The repair pass re-decodes *every* accepted utterance (D20), so the cost
+that matters is per utterance, and on the CLI route it is not the decode - it is
+the model load, paid again each time. Measured here with Qwen3-ASR-0.6B, a 1.15 GiB
+checkpoint: 4.87 s for a 0.5 s clip and 5.79 s for a 4.24 s one, and the CLI's own
+report accounts for 463 ms of that in session time, so ~4.4 s is work before the
+session starts. It is not I/O: the whole file reads out of page cache in 0.09 s.
+Resident, the same decode costs 0.34 s and 1.05 s respectively.
+
+Through the real engine, commit latency measured from the endpointer closing a
+segment to its text landing, Qwen3-ASR-0.6B as the refine model both ways:
+
+| | sentence 1 | sentence 2 | sentence 3 |
+| --- | --- | --- | --- |
+| process per utterance | 5.13 s | 8.45 s | 11.67 s |
+| resident server | 0.56 s | 0.60 s | 0.59 s |
+
+The CLI column accumulates because each repair queues behind the last, so the third
+sentence arrives 11.7 s after it was spoken. The server column is flat, which is the
+point: the repair keeps up with speech, so choosing a more accurate refine model
+becomes a quality decision rather than a latency one. This is what makes the advice
+in D18's spirit - "slower than real time on CPU" - a property of the route rather
+than of the model.
+
+**Lifetime.** On demand, not resident: spawned as a session starts, stopped after
+the last repair lands. Kept warm between sentences, which is what the resident part
+buys, and released between dictations, which is what an always-on server would not:
+1.9 GB with both ASR entries loaded here. The stop runs *after* the repairs rather
+than when the session's context ends, because the last sentences of a session are
+decoded while the session is already shutting down.
+
+**Why it is not a second entry for the streaming model.** The streaming layer stays
+on the CLI's stdin route, so a server started here holds one offline entry. That
+matters because the server holds a model for the whole length of a request: a repair
+sent to an id a live dictation owns waits for that dictation to end. Measured, a
+215 ms repair waited 9.7 s behind a 12 s session. Two entries with the same weights
+would be two resident copies (+253 MB for SenseVoice Q8, measured), which is a price
+worth paying only for a deployment that also moves streaming into the server.
+
+**Consequence.** `doctor` still reports a refine family that cannot keep up on the
+CLI route, but stops warning about lag when a server is configured, since the cost it
+measures is the one the server removes. The decode contract has to be identical on
+both routes or the comparison is meaningless: `asr.RepairRequestOptions` is now the
+single place that decides them, because a multipart transcription upload has no field
+for request options and the server route carries them in the entry's
+`default_request_options` instead.
+
+**Rejected.** Keeping the server resident across dictations - it holds a gigabyte for
+a machine that is idle most of the day, and the on-demand start is overlapped with
+the user's first sentence anyway (~0.8 s of a 2.4 s repair against 0.6 s for a warm
+one). Spawning on the first repair rather than at session start - it puts the whole
+model load on the first sentence's commit. Serving the streaming role from the same
+server - it needs a second entry and therefore a second resident copy of the
+streaming weights, with no gain while the CLI route already streams. Falling back
+silently when the server cannot start - a user who configured it needs to know, so
+the failure is reported once per session and the CLI route carries the utterance.

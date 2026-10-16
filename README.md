@@ -84,21 +84,28 @@ on the reference machine ([details](docs/measurements.md)).
 | Machine | `streaming_model` | `refine_model` |
 |---|---|---|
 | **CPU only** | `sensevoice_small_q8` (242 MiB, ~21x realtime) | empty — repairs reuse the streaming model (0.55 s per sentence) |
+| **CPU, with the repair server** | `sensevoice_small_q8` | `qwen3_asr_0_6b_q8_0` plus `asr_server_url` (0.7 s per sentence) |
 | **With a GPU** | `sensevoice_small_q8` | `qwen3_asr_0_6b_q8_0` (1.07 GiB, the more accurate offline reader) |
 
 ```
 voiceime models install sensevoice_small_q8          # every machine
-voiceime models install qwen3_asr_0_6b_q8_0          # only with a GPU backend
+voiceime models install qwen3_asr_0_6b_q8_0          # with a GPU, or with the server below
 voiceime config set refine_model ~/models/Qwen3-ASR-0.6B-GGUF/qwen3-asr-0.6b-q8_0.gguf
+voiceime config set asr_server_url http://127.0.0.1:18080
 ```
 
 Streaming stays SenseVoice with or without a GPU: it loads in ~0.3 s per dictation
 session and live text is bounded by `chunk_seconds`, not by decode speed. Qwen3 is
 worth adding only as the repair model, where the whole sentence is re-read with
-context — and on CPU that repair costs 5.66 s for a 4.24 s sentence, which does not
-keep up with speech, so it is a GPU-only recommendation (an inference: no GPU
-backend has been benchmarked here). [docs/DEPLOY.md](docs/DEPLOY.md) has the
-commands for both cases.
+context.
+
+On CPU that used to be a GPU-only recommendation, because a repair as a *process per
+utterance* costs 5.66 s for a 4.24 s sentence — and most of that is loading the
+1.07 GiB checkpoint again, not decoding it. Setting `asr_server_url` changes that:
+voiceime starts a server for the dictation session and stops it at the end, so the
+load is paid once and the same repair takes about 0.7 s. See
+[docs/decisions.md](docs/decisions.md) D21. [docs/DEPLOY.md](docs/DEPLOY.md) has the
+commands for every case.
 
 ## How it works
 

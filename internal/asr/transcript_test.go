@@ -235,3 +235,33 @@ func TestRepairKeepsOrderWhenNewerTextExists(t *testing.T) {
 		t.Errorf("second chunk = %+v, want the newer partial after it", chunks[1])
 	}
 }
+
+// CommitUpTo releases only the text whose audio lies at or before the boundary,
+// leaving what came after it provisional.
+//
+// This is the repair's commit, and the range is the point: the offline pass runs
+// off the audio path, so by the time it lands the transcript also holds windows
+// that were decoded after the utterance - the trailing silence - and releasing
+// the whole transcript would deliver those under the segment's final text.
+func TestCommitUpToStopsAtTheBoundary(t *testing.T) {
+	transcript := NewTranscript()
+	transcript.AppendStream("前", 0, 16000)
+	transcript.AppendStream("中", 16000, 32000)
+	transcript.AppendStream("后", 32000, 48000)
+
+	if got := transcript.CommitUpTo(32000); got != "前中" {
+		t.Fatalf("CommitUpTo(32000) = %q, want the text up to the boundary", got)
+	}
+	if got := transcript.ProvisionalText(); got != "后" {
+		t.Fatalf("provisional = %q, want the text past the boundary to stay provisional", got)
+	}
+	if got := transcript.CommitUpTo(32000); got != "" {
+		t.Fatalf("a repeated CommitUpTo(32000) = %q, want nothing new", got)
+	}
+	if got := transcript.CommitUpTo(48000); got != "后" {
+		t.Fatalf("CommitUpTo(48000) = %q, want the remaining text once the boundary reaches it", got)
+	}
+	if got := transcript.ProvisionalText(); got != "" {
+		t.Fatalf("provisional = %q, want nothing left after the final commit", got)
+	}
+}

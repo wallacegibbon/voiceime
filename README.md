@@ -17,12 +17,13 @@ for the operational surface.
 | Config surface, validation, capabilities | working |
 | Model discovery with an inspect cache | working |
 | Model download through a configurable Hugging Face protocol endpoint | working |
-| Microphone capture, endpointing | implemented, tests pass, not yet run against a real dictation |
+| Microphone capture, endpointing | working, measured against a real room ([numbers](docs/measurements.md#endpointing-in-a-real-room)) |
 | Streaming ASR adapter, offline repair pass | working, measured ([numbers](docs/measurements.md)) |
 | `doctor` diagnostics with fix commands | working |
 | IBus engine (text delivery into applications) | working; protocol verified against a live daemon ([transcript](docs/ibus-protocol.md)) |
 | Dictation inside the engine process | working: activating the engine starts capture, live preedit and committed text |
-| Hotkey installation, notification/sound cues | **not implemented** — switching input methods is currently the on/off switch |
+| Shortcut listener (`hotkey install`) | working: a function key (`<F9>` by default) toggles dictation — the IBus global shortcut on Wayland, also a GNOME keybinding on X11 |
+| Notification/sound cues | **not implemented** — `doctor` detects `notify-send`/`pw-play`, but nothing emits a cue yet |
 
 So the whole path now exists: install a model, install the engine, activate it, and
 speak. Proven by measurement rather than by assertion - the engine process was
@@ -58,7 +59,7 @@ Go 1.24 or newer. Nothing else: capture is a subprocess, so there is no audio
 library, no development headers and no cgo — which is why the same source
 cross-compiles to four platforms from Linux with no toolchain per platform.
 
-The stripped binary is 3.1 MB, 1.4 MB compressed, plus the documentation.
+The stripped binary is 4.8 MB, 2.0 MB compressed, plus the documentation.
 
 ## Use
 
@@ -122,6 +123,10 @@ Two layers of text, and the split is the whole design:
   wrong at every window boundary, because each window is decoded without context.
 * **Committed** text has been delivered to an application and is final. The
   endpoint detector decides the moment of commitment.
+* Text the recogniser produced for audio the detector never called speech — the
+  windows it decodes from the silence after an utterance — is **withheld**, not
+  delivered: committing it would type the recogniser's guess, so the session
+  reports how many characters it dropped instead.
 
 When an utterance ends, the audio for it is re-decoded with the offline path and
 replaces the provisional text for that same span. That is what corrects words the

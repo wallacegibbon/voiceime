@@ -592,3 +592,43 @@ need it to become one.
 events, not a release to hook. Detecting the burst by looking ahead instead of by a
 window - a held key's first repeat arrives a full repeat-delay after the press, which
 makes it indistinguishable from a deliberate second tap without the window.
+
+## D20 — A segment commits only its own audio; the tail is withheld, not typed.
+
+**Decision.** The commit for an utterance stops at the end of the audio the
+endpointer accepted for it. The repair pass - the one commit that runs off the audio
+path, up to a second after its segment closed - releases only its own span
+(`Transcript.CommitUpTo`), and a session that stops with text still provisional
+withholds it and reports the count instead of committing it.
+
+**Why.** The endpointer is the only thing that decides what is committable, and
+committing is an explicit decision made when the user has stopped speaking (D7,
+D16). Two paths broke that. The session's closing commit was gated on whether *any*
+utterance had been accepted, so once a session contained speech, the windows the
+recogniser decoded from the silence after the last utterance were delivered too -
+observed: a probe over a 14 s English clip followed by trailing silence committed
+`我。`, a hallucination for audio the detector never called speech. And the repair
+committed the whole provisional transcript rather than its own span: it lands after
+the audio path has moved on, so windows decoded while it ran were delivered under
+the segment's final text. Measured with a synthetic session whose speech is followed
+by 1.6 s of silence: the blanket repair commit delivered fifteen trailing windows
+(`片段`) that the range-limited one withholds.
+
+**Consequence.** Text the detector never called speech is withheld rather than
+delivered, exactly as a session that never contained speech withholds everything. It
+is still not a silent loss - the text was shown as preedit and the session reports
+how many characters were dropped, which is what tells "the detector never heard me"
+apart from "the session was lost". The synchronous commit paths (repair off, a
+segment too short to repair, a repair that could not be queued) still commit the
+transcript as it stands, which is safe because they run the instant the segment
+closes, before any later window can exist.
+
+The gap D16 records is not closed by this: text decoded from the noise *before* the
+first boundary still rides along with the first segment's commit, because both paths
+commit every chunk up to the segment's end. Closing it needs per-sample speech
+regions in the transcript - the same larger change D16 names.
+
+**Rejected.** Silencing the recogniser on non-speech - it needs a confidence signal
+this path does not have (D7), and the endpointer already makes the decision.
+Dropping the trailing text without reporting it - the text is visible at the caret,
+so a silent drop is indistinguishable from a lost session.

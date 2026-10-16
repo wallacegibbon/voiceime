@@ -236,16 +236,19 @@ func (o Options) Run(ctx context.Context) (Result, error) {
 	if notify.Skipped != nil && capture.Err() != nil {
 		notify.Skipped(capture.Err().Error())
 	}
-	// Goes through commitProvisional so the "already delivered" bookkeeping
-	// applies here too: the last utterance must not be sent twice.
+	// The endpointer is the only thing that decides what is committable, so
+	// nothing is delivered here: the Flush above already reported an utterance
+	// still open at stop, and its repair (or its direct commit) has delivered
+	// that text by now. Whatever is left provisional came from windows the
+	// detector never called speech - the silence or room noise after the last
+	// utterance - and committing it would type the recogniser's hallucination.
 	//
-	// But only if the endpointer heard speech at some point. Streaming ASR
-	// produces plausible text for almost any input - measured: twenty seconds of
-	// an empty room committed "被。。。。。。嗯。" - so committing the provisional text
-	// of a session that never contained speech types hallucinated words into the
-	// application for no reason. A user whose speech is too quiet to cross the
-	// threshold sees nothing rather than nonsense; `voiceime doctor` and
-	// `stream --events` show which of the two happened.
+	// That this session also contained real speech says nothing about the audio
+	// still in hand. A phrase shorter than endpoint_min_speech_ms is not an
+	// utterance and is deliberately not committed when dictation stops, and the
+	// windows that follow the last utterance are a reading of the room, which
+	// streaming ASR turns into plausible words for almost any input (measured:
+	// twenty seconds of an empty room once committed "被。。。。。。嗯。").
 	//
 	// Discarding is not the same as discarding *silently*, though: that text was
 	// visible at the user's caret as preedit, so how much of it is being dropped is
@@ -253,17 +256,7 @@ func (o Options) Run(ctx context.Context) (Result, error) {
 	// with a number) be told apart from "the session was lost" (no message), and it
 	// is the actionable direction - it is the size of what the room measurement was
 	// wrong about.
-	if pipeline.segments.Load() > 0 {
-		pipeline.commitProvisional()
-	} else if notify.Skipped != nil {
-		if withheld := pipeline.transcript.ProvisionalText(); withheld != "" {
-			notify.Skipped(fmt.Sprintf(
-				"no speech detected; withheld %d characters the recogniser produced for audio the detector never called speech (check silence_rms_threshold and endpoint_min_speech_ms)",
-				len([]rune(withheld))))
-		} else {
-			notify.Skipped("no speech detected; nothing committed")
-		}
-	}
+	pipeline.withholdRemaining(notify)
 
 	summary := Result{
 		StreamText: result.Text,
@@ -361,8 +354,9 @@ func (s *session) startRepairWorker(ctx context.Context, options Options, engine
 					s.notify.Error(result.err)
 				}
 				// A failed repair must still release the utterance, or the text
-				// would sit in provisional limbo forever.
-				s.commitProvisional()
+				// would sit in provisional limbo forever. Only the utterance's
+				// own span is released: newer windows belong to what came next.
+				s.commitUpTo(result.job.endSample)
 				continue
 			}
 			s.transcript.Repair(result.job.startSample, result.job.endSample, result.text)
@@ -374,8 +368,11 @@ func (s *session) startRepairWorker(ctx context.Context, options Options, engine
 				s.notify.Error(err)
 			}
 			// The repair is what makes the text worth committing: delivering
-			// before it lands would deliver the window-boundary damage.
-			s.commitProvisional()
+			// before it lands would deliver the window-boundary damage. Because
+			// it runs off the audio path, it commits only up to the span it
+			// repaired - windows that arrived while it ran are not part of this
+			// utterance and must not be delivered under it.
+			s.commitUpTo(result.job.endSample)
 		}
 	}()
 }
@@ -460,11 +457,27 @@ func (s *session) publishPreeditLocked() error {
 func (s *session) commitProvisional() {
 	s.publishMu.Lock()
 	defer s.publishMu.Unlock()
-	s.commitProvisionalLocked()
+	s.deliverLocked(s.transcript.CommitProvisional())
 }
 
-func (s *session) commitProvisionalLocked() {
-	pending := s.transcript.CommitProvisional()
+// commitUpTo delivers the text whose audio lies at or before endSample, leaving
+// anything after it provisional.
+//
+// It is what the repair uses. The offline pass runs off the audio path, so by the
+// time it lands the transcript also holds windows that were decoded after the
+// utterance - the trailing silence - and committing the whole transcript would
+// deliver those under the segment's final text. The endpointer's segment is the
+// only thing that makes text committable, so the commit stops at its end.
+func (s *session) commitUpTo(endSample int64) {
+	s.publishMu.Lock()
+	defer s.publishMu.Unlock()
+	s.deliverLocked(s.transcript.CommitUpTo(endSample))
+}
+
+// deliverLocked hands the text that has just become final to the sink, clearing
+// the composition first. It is the one writer for the sink, which is why the
+// order of "clear, then commit" cannot be violated by a concurrent caller.
+func (s *session) deliverLocked(pending string) {
 	// Clear the composition first: an application that kept showing the text after
 	// inserting it would display the utterance twice.
 	if err := s.sink.Preedit("", 0, false); err != nil && s.notify.Error != nil {
@@ -481,5 +494,43 @@ func (s *session) commitProvisionalLocked() {
 	}
 	if s.notify.Committed != nil {
 		s.notify.Committed(pending)
+	}
+}
+
+// withholdRemaining drops the provisional text left when a session stops and
+// reports how much there was, instead of delivering it.
+//
+// It is the counterpart of commitProvisional, and the endpointer decides which
+// applies: text belonging to an utterance the detector accepted has already been
+// committed by the time this runs, because Flush reports the utterance that is
+// still open and its repair (or its direct commit) releases it. Anything still
+// provisional is therefore a window the detector never called speech - the room
+// after the last utterance - and delivering it would type the recogniser's
+// guess. That is the same failure a session that never contained speech is
+// guarded against; the only difference is that earlier utterances existed, which
+// says nothing about the audio still in hand.
+//
+// The report is not optional. The text was visible at the user's caret as
+// preedit, so a silent drop is indistinguishable from a lost session; the count
+// is what tells "the detector never heard me" apart from "the session was lost".
+func (s *session) withholdRemaining(notify Observer) {
+	if notify.Skipped == nil {
+		return
+	}
+	withheld := s.transcript.ProvisionalText()
+	switch {
+	case withheld == "" && s.segments.Load() == 0:
+		notify.Skipped("no speech detected; nothing committed")
+	case withheld == "":
+		// Every utterance the detector accepted was committed; the session
+		// succeeded and there is nothing to report.
+	case s.segments.Load() == 0:
+		notify.Skipped(fmt.Sprintf(
+			"no speech detected; withheld %d characters the recogniser produced for audio the detector never called speech (check silence_rms_threshold and endpoint_min_speech_ms)",
+			len([]rune(withheld))))
+	default:
+		notify.Skipped(fmt.Sprintf(
+			"withheld %d characters the recogniser produced after the last utterance, for audio the detector never called speech",
+			len([]rune(withheld))))
 	}
 }

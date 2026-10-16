@@ -19,6 +19,17 @@ fails, it prints a `fix` command; run it and continue.
 Conventions below: `$REPO` is the checkout (`git rev-parse --show-toplevel`),
 `$BIN` is the built binary (`$REPO/bin/voiceime`). Commands are run from `$REPO`.
 
+**Run them from inside the graphical session**, not from a bare ssh or console
+shell. Several commands - `ibus` itself, and through it `engine status` and the
+`ibus` check in `doctor` - reach the daemon through the session, and in a shell that
+did not inherit `DISPLAY` (or `WAYLAND_DISPLAY`, or `IBUS_ADDRESS`) they fail in a
+way that reads as a broken install: `doctor` exits 3 with `ibus: the voiceime engine
+is not registered` and a fix that would change nothing, while `engine status`
+reports `engine_registered: false` on a machine where the engine is registered.
+`hotkey install` is the same trap from the other side - see step 8. If you must work
+over ssh, copy the session's environment first (`DISPLAY=:0` or whatever `ps` shows
+`ibus-daemon` holding, or its `IBUS_ADDRESS`).
+
 ---
 
 ## 0. Prerequisites
@@ -50,6 +61,16 @@ make build          # -> built bin/voiceime (<git describe>)
 make check          # what CI runs: gofmt, vet, tests, unreachable-code check
 ```
 
+`make check`'s `deadcode` step installs `golang.org/x/tools/cmd/deadcode` into a
+throwaway directory, so it needs network access **once**. On a machine without it,
+the pinned module is usually already in the module cache and can be used directly:
+
+```sh
+GOPROXY="file://$(go env GOMODCACHE)/cache/download" make deadcode
+```
+
+or run the rest of the gate on its own: `make fmt-check vet test`.
+
 ## 2. Put the binary somewhere permanent
 
 **This step matters more than it looks.** The IBus component file and the systemd
@@ -61,6 +82,11 @@ outlives a rebuild and a moved checkout. `make install` puts it in
 make install                          # -> ~/.local/bin/voiceime
 export BIN="$HOME/.local/bin/voiceime"
 ```
+
+`make install` also copies `docs/` to `~/.local/docs/`. That is not decoration: the
+systemd unit names the agent guide *relative to the binary*
+(`dir(binary)/../docs/AGENT.md`), so the docs are part of the install - without them
+the unit's `Documentation=` is a dead link.
 
 Running it straight from the checkout (`"$REPO/bin/voiceime"`) works too, and is
 the normal development loop, but it has two consequences worth knowing: every
@@ -193,8 +219,11 @@ another `download_mirror` and retry the same package.
 ## 5. Verify without a microphone
 
 ```sh
-"$BIN" doctor --json           # exit 0; every check ok (a `refine_model_advice`
-                               # warning is informational and expected)
+"$BIN" doctor --json           # exit 0; every check ok. A `warn` is informational,
+                               # never a failure: `backend` on a machine with a GPU
+                               # whose audio.cpp was built for cpu, or
+                               # `refine_model_advice` when a more accurate refine
+                               # model is installed but not selected.
 "$BIN" capabilities --json     # commands, settings and detected environment
 ```
 
@@ -309,18 +338,37 @@ stdout is discarded). To see it, run the engine by hand as described in
 `hotkey install` also runs `systemctl --user daemon-reload` and
 `enable --now`, and is idempotent. The default trigger is `<F9>`.
 
-**Which mechanism it installs depends on the session, and the choice is
-automatic.** The listener registers the shortcut through IBus
+**The commands do not change; the mechanism does, and the choice is automatic.**
+The listener registers the shortcut through IBus
 (`org.freedesktop.IBus.GlobalShortcutKeys`), which the compositor honours on
-**Wayland**. On **X11** nothing grabs the key - `ibus-daemon` has no display
-connection at all, and a passive grab on the key is free for anyone to take - so
-the key would just reach the focused application. `hotkey install` therefore also
-writes a **GNOME custom keybinding** (executed by `gsd-media-keys`, which does
-grab keys on X11) bound to `voiceime hotkey toggle`, and on Wayland it removes
-that keybinding if a previous X11 install left one, so two consumers never fight
-over one key. `hotkey status --json` reports `data.session`, `data.mechanisms`
-and `data.gnome_binding`, so the effective trigger is visible rather than
-assumed; `hotkey uninstall` removes both.
+**Wayland**. On **X11** nothing grabs that property - the key would reach the
+focused application - so `hotkey install` also writes a **GNOME custom keybinding**,
+because `gsd-media-keys` does grab keys there. Both sessions install the same unit
+with the same commands; only the trigger differs:
+
+| | Wayland | X11 |
+|---|---|---|
+| who grabs the key | the compositor | `gsd-media-keys` |
+| who runs the toggle | the listener (`hotkey run`), in process | a GNOME keybinding that runs `voiceime hotkey toggle` |
+| a **held** key | collapsed by the listener's `held` flag | collapsed by `hotkey toggle`'s repeat guard |
+| fresh install of the key | *removes* any leftover GNOME keybinding | *adds* the GNOME keybinding |
+| `hotkey status` says | `trigger: IBus global shortcut` | `trigger: GNOME keybinding` |
+
+Both rows matter. On Wayland the keybinding is removed so two consumers never fight
+over one key. And because the X11 trigger is a *command* rather than a listener,
+`gsd-media-keys` runs it once per key event - **including every auto-repeat tick of a
+held key** - so `hotkey toggle` carries its own guard: a second invocation within
+700 ms is treated as the key repeating and ignored, which is what keeps a held F9 to
+a single toggle (`docs/decisions.md` D19, `docs/measurements.md`). `hotkey status
+--json` reports `data.session`, `data.mechanisms` and `data.gnome_binding`, so the
+effective trigger is visible rather than assumed; `hotkey uninstall` removes both.
+
+**Install it from inside the session.** `hotkey install` reads the session type from
+`XDG_SESSION_TYPE`, falling back to `WAYLAND_DISPLAY`/`DISPLAY`. From a bare ssh or
+console shell where none of those name a display server it installs only the unit -
+no keybinding - and the key would do nothing on X11. It says so now: `data.session`
+is reported and a `data.warning` asks you to re-run it from a terminal inside the
+graphical session. `hotkey status` warns the same way.
 
 Two constraints are built into this step, both measured (`docs/decisions.md`
 D13/D14):
@@ -345,16 +393,24 @@ if the key seems to do nothing.
 ## 10. Acceptance, in one command
 
 ```sh
-"$BIN" doctor --json >/dev/null; doctor=$?
-"$BIN" engine status --json | grep -q '"engine_registered": *true'
-"$BIN" hotkey status --json  | grep -q '"service_active": *true'
-pgrep -f "ibus-engine --ibus" >/dev/null
-echo "doctor=$doctor engine=ok listener=ok engine_process=ok"
+"$BIN" doctor --json >/dev/null;                                    doctor=$?
+"$BIN" engine status --json | grep -q '"engine_registered": *true';  engine=$?
+"$BIN" hotkey status --json  | grep -q '"service_active": *true';    listener=$?
+pgrep -f "ibus-engine --ibus" >/dev/null;                          engine_process=$?
+echo "doctor=$doctor engine=$engine listener=$listener engine_process=$engine_process"
+[ "$doctor" = 0 ] && [ "$engine" = 0 ] && [ "$listener" = 0 ]
 ```
 
-`doctor=0` plus the three `ok`s is the deployable state. The one thing no command
-can assert is a human seeing text appear in a focused window; if that is the goal,
-dictate one sentence into a text editor and watch for it.
+`doctor=0`, `engine=0` and `listener=0` are the deployable state, and the closing
+`[ ... ]` reports them as the snippet's own exit code - the earlier version of this
+block echoed `ok` for each whatever the command returned, so it could not fail.
+`engine_process` is deliberately not part of that test: the engine is spawned lazily
+on the first activation, so it reads `1` on a fresh machine until you tap the key
+once (`ibus engine voiceime` does it too). Once dictation has been activated, `0`
+there is the end-to-end proof that the engine, capture and the recogniser all came
+up. The one thing no command can assert is a human seeing text appear in a focused
+window; if that is the goal, dictate one sentence into a text editor and watch for
+it.
 
 ---
 
@@ -366,9 +422,10 @@ running until the process is. Both halves of that are counter-intuitive, so both
 were measured on the reference machine rather than reasoned about.
 
 ```sh
-make build && make install                 # replaces ~/.local/bin/voiceime
+make build && make install                 # replaces ~/.local/bin/voiceime and ~/.local/docs
 "$BIN" engine install --apply              # component, activation env, ibus restart
 "$BIN" engine status --json                # assert: engine_registered == true
+"$BIN" hotkey install                      # only if the unit or the keybinding changed
 "$BIN" doctor --json                       # exit 0, and both process checks ok
 ibus engine voiceime                       # only if dictation was on before
 ```
@@ -500,6 +557,11 @@ Stated so nobody mistakes an assumption for a result:
   watching an editor.
 * **GPU backends.** Everything here is `backend = cpu`; `cuda`/`vulkan` are passed
   through to audio.cpp and untested.
-* **Other desktop environments and X11.** Only GNOME on Wayland has been used.
+* **Other desktop environments.** Only GNOME has been used. A non-GNOME session
+  gets no custom keybinding, and on X11 that leaves no trigger at all.
+* **X11.** Every figure in this project was measured on GNOME/Wayland. The X11 path
+  exists and works - the trigger is a GNOME keybinding there, and the repeat guard in
+  `docs/decisions.md` D19 exists because a held key fired the command dozens of times
+  - but it is the less-travelled half, and it was the half with the defect.
 * **Multi-user machines.** IBus component paths and the wire format for committed
   text are recorded in `docs/ibus-protocol.md`.

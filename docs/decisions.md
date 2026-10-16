@@ -557,3 +557,38 @@ deliberately short and bounded - six keys, each with a reason - because a list o
 everything is a list nobody reads. Values that need a measurement stay in the
 documented procedure rather than in a default: `silence_rms_threshold` is the
 working example, and `docs/DEPLOY.md` step 6 is the procedure.
+
+## D19 — A held key is one press on the command path too, not only in the listener.
+
+**Decision.** `voiceime hotkey toggle` ignores an invocation that arrives within
+`repeatGuard` (700 ms) of the press it last acted on, refreshing the marker so a
+continuous hold stays a single press until it ends. State is one file in the cache
+directory; its mtime is the clock.
+
+**Why.** On X11 the trigger is a GNOME custom keybinding, and `gsd-media-keys` runs
+that command once per key event - including *every auto-repeat tick of a held key*.
+The listener guards a hold with its in-process `held` flag (D13), but the command
+path has no process to hold state, so the guard had to move to the file system.
+Measured on the reference machine: holding the key fired the command 52 times in two
+seconds, and a 1.0 s hold 19 times (`xset`: delay 500 ms, rate 33/s). An even count
+returns the engine to where it started, which is exactly what "F9 stopped working"
+looks like from the outside - the key is delivered, the code runs, and the net
+effect is nothing.
+
+**Why the window exceeds the repeat delay.** A held key emits its *first* repeat
+only after the auto-repeat delay, so any window shorter than that delay lets the
+first repeat through, and that one repeat is enough to toggle straight back. The
+delay is 500 ms here and 660 ms by xset default, so the window sits above both.
+
+**Consequence.** Two deliberate presses closer together than the window collapse
+into one. For a tap-to-toggle key that is normally seconds apart this is not a loss,
+and it is the deliberate half of the trade: err large and a slow double-tap is
+swallowed, err small and a held key toggles its way to a random parity. The window is
+a constant, not a setting, because the value that matters is the X server's repeat
+delay and nothing here can read it portably; a machine with a much larger delay would
+need it to become one.
+
+**Rejected.** Acting only on the key *release* - the keybinding path produces press
+events, not a release to hook. Detecting the burst by looking ahead instead of by a
+window - a held key's first repeat arrives a full repeat-delay after the press, which
+makes it indistinguishable from a deliberate second tap without the window.

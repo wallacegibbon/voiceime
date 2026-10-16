@@ -258,12 +258,21 @@ voiceime hotkey toggle                # the one-shot toggle the keybinding runs
 voiceime hotkey run --log-events      # foreground, prints every event the daemon sends
 ```
 
-`hotkey install` picks the mechanism the session can actually use: IBus's global
-shortcut on Wayland (where the compositor grabs the key), and on X11 a GNOME
-custom keybinding to `voiceime hotkey toggle`, because on X11 nothing grabs the
-IBus shortcut - `ibus-daemon` has no display connection and a passive grab on the
-key is free. `hotkey status` reports which one is live, and `hotkey uninstall`
+`hotkey install` picks the mechanism the session can actually use, and the commands
+above are the same either way: IBus's global shortcut on Wayland (where the
+compositor grabs the key and the listener receives it), and on X11 a GNOME custom
+keybinding to `voiceime hotkey toggle`, because the IBus property is not grabbed
+there. It reads the session from `XDG_SESSION_TYPE`, then `WAYLAND_DISPLAY`/`DISPLAY`;
+when neither names a display server (a bare ssh or console shell) it installs only the
+unit and returns a `warning` - re-run it from a terminal inside the session, or the
+key will do nothing on X11. `hotkey status` reports which mechanism is live
+(`data.session`, `data.mechanisms`, `data.gnome_binding`), and `hotkey uninstall`
 removes both.
+
+On X11 the key is run by `gsd-media-keys` as a command - once per key event,
+auto-repeat included - so `hotkey toggle` ignores a second invocation within 700 ms.
+A held key is one toggle rather than dozens of them (docs/decisions.md D19); the cost
+is that a deliberate second tap closer than that is swallowed, so tap again.
 
 Use a function key, not a modifier combination: IBus consumes the release of the
 keys it grabs, so Ctrl+' leaves Ctrl latched in the focused application until it is

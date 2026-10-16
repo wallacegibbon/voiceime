@@ -262,6 +262,38 @@ rather than left in commit history:
    projectors, so 13 of 15 GGUFs there are not audio models at all. Discovery
    filters to models that declare an ASR task and reports the rest as a count.
 
+7. **`cmd.Wait` closes the pipes `StdoutPipe`/`StderrPipe` made, so it must not run
+   while a reader is still draining them.** The engine reaped the process in a
+   goroutine while `readStdout` was still reading, and `Wait` closed the read end as
+   soon as the process exited, discarding whatever was still buffered - the last
+   partial and the joined transcript. It was intermittent (about one run in ten of
+   `TestCloseDoesNotSwallowEventsTheReaderNeeds`), which is why it survived: a fast
+   reader never saw it. The fix drains both pipes to EOF before calling `Wait`;
+   EOF on a pipe *is* the process closing it at exit, the same event `Wait` waits
+   for.
+
+## The shortcut trigger on X11
+
+The trigger is one key and two mechanisms, and only one of them fires per session
+(DEPLOY.md step 8). What the X11 mechanism costs was measured by injecting the key
+with `xdotool`, because it is the half that no listener is watching:
+
+| How the key is pressed | `voiceime hotkey toggle` runs | effect |
+|---|---|---|
+| a tap shorter than the repeat delay | once | the engine switches, once |
+| held 0.6 s | 5 times | switches on and off, ending where it started |
+| held 1.0 s | 19 times | ditto, with the capture process starting and stopping |
+| held 2.0 s | 52 times | ditto |
+
+`xset q` on the reference machine: auto repeat delay 500 ms, rate 33/s. The trigger
+on X11 is a GNOME custom keybinding, and `gsd-media-keys` runs it once per key
+event - every auto-repeat tick included - whereas the Wayland path hands the event
+to the listener, which collapses a hold with its own guard. An even number of runs
+leaves the engine where it began, so a held key reads as "the shortcut does
+nothing": the key is delivered and the command runs, and the net effect is nothing.
+The guard that fixes it is [decisions.md D19](decisions.md); the boundary it draws
+(700 ms) is set by the repeat delay in that table, not by taste.
+
 ## Not measured yet
 
 Stated plainly so nobody mistakes an assumption for a result:

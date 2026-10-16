@@ -191,36 +191,6 @@ func (t *Transcript) CommitProvisional() string {
 	return pending
 }
 
-// CommitUpTo commits, and returns, the provisional text whose audio lies at or
-// before endSample, leaving anything after it provisional.
-//
-// It exists for the repair, which is the one commit that does not run the moment
-// its segment closes: the offline re-decode takes up to a second, and audio keeps
-// arriving while it runs. Committing the whole provisional transcript then would
-// deliver windows that came after the utterance - a reading of whatever followed,
-// often silence - under the segment's final text. The endpointer's segment is the
-// only thing that makes text committable, so a commit for it must stop at its end.
-//
-// Chunks are appended in stream order and a repair keeps its chunk in place, so
-// the committed region stays a prefix.
-func (t *Transcript) CommitUpTo(endSample int64) string {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	count := t.committed
-	for count < len(t.chunks) && t.chunks[count].EndSample <= endSample {
-		count++
-	}
-	if count == t.committed {
-		return ""
-	}
-	var builder strings.Builder
-	for index := t.committed; index < count; index++ {
-		builder.WriteString(t.chunks[index].Text)
-	}
-	t.committed = count
-	return builder.String()
-}
-
 // Text is committed plus provisional text: the full running transcript.
 func (t *Transcript) Text() string {
 	t.mu.Lock()

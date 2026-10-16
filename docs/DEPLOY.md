@@ -252,11 +252,6 @@ so the threshold sat inside the room's own noise distribution and utterances nev
 ended. Both are fixed, and the numbers are in
 [measurements.md](measurements.md#endpointing-in-a-real-room).
 
-Such a hallucination is no longer typed, either. Text the detector never called
-speech is withheld from delivery, so a session that speaks and then ends in silence
-reports `withheld N characters the recogniser produced after the last utterance`
-rather than committing it - see `docs/decisions.md` D20.
-
 Set the threshold from data, not by guessing, because the room's *spikiness* is
 what matters rather than its average:
 

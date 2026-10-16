@@ -123,10 +123,6 @@ Two layers of text, and the split is the whole design:
   wrong at every window boundary, because each window is decoded without context.
 * **Committed** text has been delivered to an application and is final. The
   endpoint detector decides the moment of commitment.
-* Text the recogniser produced for audio the detector never called speech — the
-  windows it decodes from the silence after an utterance — is **withheld**, not
-  delivered: committing it would type the recogniser's guess, so the session
-  reports how many characters it dropped instead.
 
 When an utterance ends, the audio for it is re-decoded with the offline path and
 replaces the provisional text for that same span. That is what corrects words the

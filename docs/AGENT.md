@@ -115,7 +115,7 @@ Settings that matter, and the reasoning a caller needs to pick values:
 | `capture_rate` | `16000` | Must stay 16000 (models' VAD). Validation error otherwise. |
 | `capture_source` | `""` | PipeWire source name; empty uses the default input. |
 | `silence_rms_threshold` | `600` | **Floor**, not a fixed threshold: the detector adapts up to twice the noise floor it measures in the stream, and never below this value. 600 clears the reference room's idle noise (20ms p90 = 436 RMS) and stays under normal speech; too high a value makes quiet speech silently ignored, so measure before raising it - see [measurements.md](measurements.md#endpointing-in-a-real-room). |
-| `endpoint_min_speech_ms` | `300` | Speech shorter than this is not an utterance. Raise it in a room with impulsive noise (keystrokes, chair). A phrase shorter than it is treated as noise and is **not committed at all** when dictation stops - the session reports how much text it withheld, whether or not it also delivered longer utterances. Lower it only if you dictate short words, and expect more noise to be taken for speech. |
+| `endpoint_min_speech_ms` | `300` | Speech shorter than this is not an utterance. Raise it in a room with impulsive noise (keystrokes, chair). A phrase shorter than it is treated as noise and is **not committed at all** when dictation stops — if it is the only thing in the session, nothing is delivered and the session reports how much it withheld. Lower it only if you dictate short words, and expect more noise to be taken for speech. |
 | `download_mirror` | `https://hf-mirror.com` | Endpoint downloads go through, written to `HF_ENDPOINT`. Any Hugging Face protocol host works: `https://huggingface.co`, a company cache, a LAN address. |
 | `session_options` / `request_options` | `{}` | Passed straight to `audiocpp_cli`. |
 
@@ -197,25 +197,21 @@ Event kinds: `ready` (model loaded, with load time), `partial` (new text, with
 the audio position at which it arrived), `segment` (an utterance closed), `vad`
 (model-reported voice activity, when a family reports it), `repair` (offline
 re-decode of a segment, with its cost), `skipped` (something was not done, with
-the reason - commonly `no speech detected; ...` or `withheld N characters ...`),
-`commit` (text delivered), `summary`.
+the reason - `no speech detected; nothing committed` is the common one), `commit`
+(text delivered), `summary`.
 
 Text is committed only when the endpointer closes an utterance. An open utterance
 is preedit, which applications render underlined, and pressing Escape discards it.
 So "the text stays underlined" always means "the detector has not found a boundary
 yet": check `silence_rms_threshold` and `endpoint_silence_ms` before anything else.
 
-A session commits only what the endpointer accepted as speech. Text the recogniser
-produced for anything else - including the windows it decodes from the silence
-after the last utterance - is withheld rather than typed, because streaming ASR
-produces plausible words for almost any input and typing them into a focused
-application is worse than typing nothing. It is not a silent loss: the text was
-visible as preedit, so the reason names how much of it was dropped. A session that
-never contained speech reports `no speech detected; withheld N characters the
-recogniser produced for audio the detector never called speech`; one that delivered
-utterances and then ended in silence reports `withheld N characters the recogniser
-produced after the last utterance`. A `skipped` reason with a count means the
-detector could not hear the speaker - the fix is the room measurement below. No
+A session that ends without the endpointer accepting a single utterance commits
+nothing, because streaming ASR produces plausible words for almost any input and
+typing them into a focused application is worse than typing nothing. It is not a
+silent loss: the text was visible as preedit, so the reason names how much of it
+was withheld (`no speech detected; withheld N characters the recogniser produced
+for audio the detector never called speech`). A `skipped` reason with a count means
+the detector could not hear the speaker - the fix is the room measurement below. No
 reason at all, with text on screen, means the session ended some other way.
 
 With `--realtime`, the `fed_seconds` of a partial is also the time from the user

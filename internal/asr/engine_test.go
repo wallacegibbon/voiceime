@@ -1,6 +1,12 @@
 package asr
 
-import "testing"
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
 
 // The line protocol is the whole integration surface with audio.cpp, so its
 // parser is tested against lines captured from the real CLI rather than invented
@@ -64,6 +70,67 @@ func TestExtractTextOutput(t *testing.T) {
 	}
 	if got := extractTextOutput("no result here"); got != "" {
 		t.Errorf("extractTextOutput on a report with no text = %q, want empty", got)
+	}
+}
+
+// Closing the stream must not consume the event stream: the session has its own
+// reader on it, and an event is delivered to whoever reads it first. A Close that
+// drained the channel to wait for the process to exit therefore swallowed the last
+// partials - the end of the utterance - exactly when a session is stopping and
+// committing.
+func TestCloseDoesNotSwallowEventsTheReaderNeeds(t *testing.T) {
+	dir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"echo \"audio_input=stdin format=s16le rate=16000 channels=1\"\n" +
+		"cat > /dev/null\n" +
+		// The real CLI flushes the model when stdin closes, so the final text
+		// arrives after Close has already begun.
+		"echo \"partial_text=最后几个字\"\n" +
+		"echo \"text_output=最后几个字\"\n"
+	path := filepath.Join(dir, "fake-audiocpp")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake cli: %v", err)
+	}
+
+	engine, err := Start(context.Background(), EngineConfig{Binary: path, Model: "m", Threads: 1})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { engine.Close() })
+
+	// The session's reader, running before Close so it is parked on the channel.
+	seen := make(chan []string, 1)
+	go func() {
+		var partials []string
+		for event := range engine.Events() {
+			if event.Kind == EventPartial {
+				partials = append(partials, event.Text)
+			}
+		}
+		seen <- partials
+	}()
+
+	if err := engine.Write(make([]byte, 3200)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	result, err := engine.Close()
+	if err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	select {
+	case partials := <-seen:
+		if len(partials) == 0 {
+			t.Fatal("the reader saw no partial: Close consumed the final events")
+		}
+		if last := partials[len(partials)-1]; last != "最后几个字" {
+			t.Errorf("last partial = %q, want %q", last, "最后几个字")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the event stream never closed")
+	}
+	if result.Text != "最后几个字" {
+		t.Errorf("result.Text = %q, want %q", result.Text, "最后几个字")
 	}
 }
 

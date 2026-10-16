@@ -160,6 +160,61 @@ func TestRepairWithNoProvisionalTextIsANoOp(t *testing.T) {
 	}
 }
 
+// A repair must re-decode every chunk it is about to drop, not only the range the
+// endpointer reported.
+//
+// This is the "only part of what I said was recorded" case. Repair drops a chunk
+// that overlaps the range at all, and a streaming window is decoded as one unit,
+// so the dropped chunk reaches past the range at both ends. Decoding only the
+// range deleted the chunk's text for the overhang - the words the energy detector
+// is least sure of, because it misses a quiet onset and stops at the last loud
+// frame. RepairSpan is what makes the decode cover them.
+func TestRepairSpanCoversTheChunksThatWillBeReplaced(t *testing.T) {
+	transcript := NewTranscript()
+	transcript.AppendStream("第一段", 0, 16000)
+	transcript.AppendStream("第二段", 16000, 48000)
+
+	// The detector heard speech only in [8000, 20000): it missed the quiet onset
+	// and ended on the last loud frame.
+	start, end, ok := transcript.RepairSpan(8000, 20000)
+	if !ok {
+		t.Fatal("RepairSpan found nothing to repair, but two chunks overlap the range")
+	}
+	if start != 0 || end != 48000 {
+		t.Fatalf("RepairSpan = [%d,%d), want [0,48000): the union of the chunks the repair will replace", start, end)
+	}
+
+	// Repairing that span keeps every word: the decode covers exactly the audio it
+	// replaces, so no text is silently discarded.
+	transcript.Repair(start, end, "第一段第二段，离线重读")
+	if got := transcript.ProvisionalText(); got != "第一段第二段，离线重读" {
+		t.Errorf("ProvisionalText() = %q, want the offline reading", got)
+	}
+	if chunks := chunksForTest(transcript); len(chunks) != 1 ||
+		chunks[0].StartSample != 0 || chunks[0].EndSample != 48000 {
+		t.Errorf("chunks = %+v, want one chunk spanning the whole replaced span", chunks)
+	}
+}
+
+// A range that no provisional chunk covers needs no decode: the repair would have
+// nothing to replace, and a process start plus a model load is worth avoiding.
+func TestRepairSpanIsEmptyWhenNoProvisionalTextCoversTheRange(t *testing.T) {
+	transcript := NewTranscript()
+	transcript.AppendStream("delivered", 0, 16000)
+	transcript.CommitProvisional()
+	transcript.AppendStream("still provisional", 48000, 64000)
+
+	if _, _, ok := transcript.RepairSpan(0, 16000); ok {
+		t.Error("RepairSpan found a repair for a committed range")
+	}
+	if _, _, ok := transcript.RepairSpan(16000, 32000); ok {
+		t.Error("RepairSpan found a repair for a range between chunks")
+	}
+	if _, _, ok := transcript.RepairSpan(48000, 64000); !ok {
+		t.Error("RepairSpan found nothing for a range that is entirely provisional")
+	}
+}
+
 func TestRepairKeepsOrderWhenNewerTextExists(t *testing.T) {
 	transcript := NewTranscript()
 	transcript.AppendStream("older partial", 0, 16000)

@@ -2,10 +2,12 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -193,4 +195,113 @@ func TestSessionCanRunTwiceWithAFactory(t *testing.T) {
 // local because audio.Silence existed only for tests.
 func silence(seconds float64) []byte {
 	return make([]byte, int(seconds*audio.SampleRate)*audio.BytesPerSample)
+}
+
+// A session whose audio is only silence commits nothing, and says how much text it
+// withheld.
+//
+// Committing anyway is the regression the rule exists to prevent: streaming ASR
+// produces plausible words for almost any input, and twenty seconds of an empty
+// room once committed 被。。。。。。嗯。 into the focused application. Withholding is
+// only acceptable because it is not silent - the text was visible at the user's
+// caret as preedit, so the session reports the size of what it dropped, which is
+// what tells "the detector never heard me" apart from "the session was lost".
+func TestSessionWithholdsTextWhenNoSpeechIsDetected(t *testing.T) {
+	dir := t.TempDir()
+	binary := writeFakeEngine(t, dir, `echo "task=asr"; echo "text_output=幻觉。"`)
+
+	wav := filepath.Join(dir, "silence.wav")
+	if err := audio.WriteWAV(wav, silence(1.5), audio.SampleRate, 1); err != nil {
+		t.Fatalf("write wav: %v", err)
+	}
+
+	cfg := config.Default()
+	cfg.AudioCPPDir = dir
+	cfg.Threads = 1
+	sink := &recordingSink{}
+
+	// Skipped is called from the capture and repair goroutines, so the list is
+	// guarded rather than appended to from three places at once.
+	var mu sync.Mutex
+	var skipped []string
+	options := Options{
+		Config: cfg,
+		Binary: binary,
+		Model:  "not-a-real-model",
+		Sink:   sink,
+		Observer: Observer{Skipped: func(reason string) {
+			mu.Lock()
+			defer mu.Unlock()
+			skipped = append(skipped, reason)
+		}},
+		NewCapture: func() (audio.Capture, error) {
+			return audio.NewFileReplay(wav, true)
+		},
+	}
+	// The fake engine emits partials regardless of what the audio contains, which
+	// is exactly the hallucination the rule is about.
+	result := runSession(t, options)
+
+	if got := sink.commits(); len(got) != 0 {
+		t.Fatalf("a session with no detected speech committed %v", got)
+	}
+	if result.Partials == 0 {
+		t.Fatal("the fake recogniser produced no partials, so this proves nothing")
+	}
+	mu.Lock()
+	reasons := strings.Join(skipped, " | ")
+	mu.Unlock()
+	// The number must be the text that was actually dropped, not a placeholder:
+	// nothing was committed, so the transcript is exactly the withheld text.
+	want := fmt.Sprintf("withheld %d characters", len([]rune(result.FinalText)))
+	if !strings.Contains(reasons, want) {
+		t.Fatalf("skipped reasons = %q, want %q", reasons, want)
+	}
+}
+
+// A session whose audio begins with speech - no quiet frame to measure first -
+// must still find the utterance and commit it, including when the recording simply
+// ends and the boundary comes from Flush rather than from silence.
+//
+// This is the end-to-end form of the endpointer bug. The detector compared every
+// frame against twice the configured threshold until it had measured the room, so
+// a user who started speaking the instant dictation was activated was never heard:
+// the text appeared as preedit, no segment was ever accepted, and stopping the
+// session discarded it (only an accepted segment is committed). The tone here has
+// an RMS of ~850: above the configured 600, below the 1200 that was in force.
+func TestSessionCommitsWhenSpeechStartsImmediately(t *testing.T) {
+	dir := t.TempDir()
+	binary := writeFakeEngine(t, dir, `echo "task=asr"; echo "text_output=修复后的句子。"`)
+
+	spoken := make([]int16, int(0.8*audio.SampleRate))
+	frequency := 2 * math.Pi * 220 / audio.SampleRate
+	for i := range spoken {
+		spoken[i] = int16(1200 * math.Sin(frequency*float64(i)))
+	}
+	// Less trailing silence than the 800ms hangover, so the utterance is closed by
+	// Flush: the session ends with the user still in it, which is the reported case.
+	payload := append(audio.SamplesToBytes(spoken), silence(0.6)...)
+	wav := filepath.Join(dir, "immediate.wav")
+	if err := audio.WriteWAV(wav, payload, audio.SampleRate, 1); err != nil {
+		t.Fatalf("write wav: %v", err)
+	}
+
+	cfg := config.Default()
+	cfg.AudioCPPDir = dir
+	cfg.Threads = 1
+	sink := &recordingSink{}
+	options := Options{
+		Config: cfg,
+		Binary: binary,
+		Model:  "not-a-real-model",
+		Sink:   sink,
+		NewCapture: func() (audio.Capture, error) {
+			return audio.NewFileReplay(wav, true)
+		},
+	}
+
+	runSession(t, options)
+	if len(sink.commits()) == 0 {
+		t.Fatalf("a session that began with speech committed nothing: %v", sink.events)
+	}
 }

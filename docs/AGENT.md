@@ -108,7 +108,7 @@ Settings that matter, and the reasoning a caller needs to pick values:
 | `capture_rate` | `16000` | Must stay 16000 (models' VAD). Validation error otherwise. |
 | `capture_source` | `""` | PipeWire source name; empty uses the default input. |
 | `silence_rms_threshold` | `600` | **Floor**, not a fixed threshold: the detector adapts up to twice the noise floor it measures in the stream, and never below this value. 600 clears the reference room's idle noise (20ms p90 = 436 RMS) and stays under normal speech; too high a value makes quiet speech silently ignored, so measure before raising it - see [measurements.md](measurements.md#endpointing-in-a-real-room). |
-| `endpoint_min_speech_ms` | `300` | Speech shorter than this is not an utterance. Raise it in a room with impulsive noise (keystrokes, chair); a short phrase is then committed when dictation stops instead of mid-stream. |
+| `endpoint_min_speech_ms` | `300` | Speech shorter than this is not an utterance. Raise it in a room with impulsive noise (keystrokes, chair). A phrase shorter than it is treated as noise and is **not committed at all** when dictation stops — if it is the only thing in the session, nothing is delivered and the session reports how much it withheld. Lower it only if you dictate short words, and expect more noise to be taken for speech. |
 | `download_mirror` | `https://hf-mirror.com` | Endpoint downloads go through, written to `HF_ENDPOINT`. Any Hugging Face protocol host works: `https://huggingface.co`, a company cache, a LAN address. |
 | `session_options` / `request_options` | `{}` | Passed straight to `audiocpp_cli`. |
 
@@ -198,6 +198,15 @@ is preedit, which applications render underlined, and pressing Escape discards i
 So "the text stays underlined" always means "the detector has not found a boundary
 yet": check `silence_rms_threshold` and `endpoint_silence_ms` before anything else.
 
+A session that ends without the endpointer accepting a single utterance commits
+nothing, because streaming ASR produces plausible words for almost any input and
+typing them into a focused application is worse than typing nothing. It is not a
+silent loss: the text was visible as preedit, so the reason names how much of it
+was withheld (`no speech detected; withheld N characters the recogniser produced
+for audio the detector never called speech`). A `skipped` reason with a count means
+the detector could not hear the speaker - the fix is the room measurement below. No
+reason at all, with text on screen, means the session ended some other way.
+
 With `--realtime`, the `fed_seconds` of a partial is also the time from the user
 speaking to that text appearing, which is the latency number to compare against
 `chunk_seconds`.
@@ -282,5 +291,6 @@ Run the engine by hand (as above) to see the same log on stderr instead.
 | `models list` shows unrelated files | the models directory is shared | expected; discovery filters to ASR models and reports the count it ignored |
 | Text stays underlined and never commits | the detector has not closed an utterance, so it is still preedit; Escape discards preedit | measure the room and set `silence_rms_threshold` / `endpoint_min_speech_ms` (see [measurements.md](measurements.md#endpointing-in-a-real-room)); `stream --events` shows whether a `segment` event happens |
 | Dictation produces nothing, and `stream --events` reports `no speech detected` | the threshold is above the speaker's voice | lower `silence_rms_threshold` and retry |
+| Dictation produces nothing, and the session reports `withheld N characters` | the recogniser heard something but the endpointer never called it speech, so committing it would type the recogniser's guess | measure the room; lower `silence_rms_threshold` (a quiet speaker) or `endpoint_min_speech_ms` (short utterances). `N` is the size of what the room measurement got wrong |
 | The service restarts forever with `status=203/EXEC` | the unit's `ExecStart` names a binary that no longer exists (the checkout was moved or renamed) | `voiceime hotkey install` then `voiceime doctor`; see [DEPLOY.md § Recovery](DEPLOY.md#recovery) |
 | `ibus list-engine` lists `voiceime` but dictation does nothing | the running engine process was started from an older binary, or the component file names a path that no longer exists | `ibus engine xkb:us::eng && pkill -f "voiceime ibus-engine" && ibus engine voiceime` |

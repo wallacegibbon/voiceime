@@ -203,3 +203,53 @@ func TestSegmenterFlushIgnoresAMereClick(t *testing.T) {
 		t.Fatalf("Flush() after a single click = %+v, want nothing", events)
 	}
 }
+
+// A user who starts speaking the moment dictation is activated has no quiet frame
+// first, and the detector must still hear them.
+//
+// Before the measured gate, Threshold() doubled the seeded floor (cfg.Threshold)
+// before the first frame, so this speaker - speech at RMS ~707 against a
+// configured 600 - was below the 1200 the detector was actually using. Their
+// speech was then adopted as the noise floor, which raised the threshold again,
+// and the detector stayed deaf for the whole utterance: the text stayed preedit
+// and stopping the session discarded it (committed only from an accepted
+// segment). Reproduced here rather than in a live session because it needs no
+// model to be wrong.
+func TestSegmenterHearsSpeechThatStartsImmediately(t *testing.T) {
+	segmenter := NewSegmenter(SegmenterConfig{
+		SilenceMS:   300,
+		MinSpeechMS: 100,
+		Threshold:   600,
+		Adaptive:    true,
+	})
+
+	// RMS of a sine of amplitude 1000 is ~707: above the configured 600, below
+	// twice it.
+	events := segmenter.Push(speech(1.0, 1000), 0)
+	if len(events) != 1 || events[0].Kind != SpeechStart {
+		t.Fatalf("events = %+v, want one speech_start: speech above the configured threshold must be heard from the first frame", events)
+	}
+	if threshold := segmenter.Threshold(); threshold != 600 {
+		t.Errorf("Threshold() = %.0f while speaking, want the configured 600 unchanged: speech must not be learned as the noise floor", threshold)
+	}
+
+	events = segmenter.Push(silence(0.5), 16000)
+	if len(events) != 1 || events[0].Kind != SpeechEnd {
+		t.Fatalf("events after speech = %+v, want one speech_end", events)
+	}
+}
+
+// The complementary rule: a frame that is *not* speech must never be adopted as
+// the noise floor, or the floor would track the user's own voice.
+func TestSegmenterDoesNotLearnSpeechAsTheNoiseFloor(t *testing.T) {
+	segmenter := NewSegmenter(SegmenterConfig{
+		SilenceMS:   300,
+		MinSpeechMS: 100,
+		Threshold:   600,
+		Adaptive:    true,
+	})
+	segmenter.Push(speech(2.0, 1500), 0) // continuous speech, RMS ~1060, no quiet frame
+	if threshold := segmenter.Threshold(); threshold != 600 {
+		t.Fatalf("Threshold() = %.0f after two seconds of speech, want the configured 600", threshold)
+	}
+}

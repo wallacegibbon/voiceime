@@ -179,6 +179,32 @@ Set `silence_rms_threshold` above the idle p90, then confirm the other direction
 with the same command while speaking: the empty room must produce no `segment`
 event, and a sentence must produce one.
 
+**The detector was opening at twice the configured threshold.** Found after the
+tuning above, by replaying audio rather than the room: `NewSegmenter` seeds the
+noise floor with `silence_rms_threshold`, and the threshold is *twice* the floor,
+so before any quiet frame was measured the detector compared every frame against
+`2 * silence_rms_threshold` - 1200, not the configured 600. A user who starts
+speaking the moment dictation is activated, with no room tone in front, had their
+own voice fall below that inflated value, get adopted as the noise floor, and push
+the threshold *up* again - deaf for as long as they kept talking, which produces
+preedit text that never commits and is discarded when the session stops.
+
+It is invisible on the reference machine because its speech sits at p50 3883, well
+above either value, and because any quiet frame at the start resets the floor to
+the room. It is reproducible in one command's worth of synthetic audio (a 1000
+amplitude tone, RMS ~707, as the *first* frames), which is where the regression
+test now lives. Two rules fix it: the configured threshold is in force until a
+quiet frame has been measured, and a frame at or above the configured threshold is
+never adopted as the floor.
+
+**The repair only re-decoded the endpointer's range.** The other half of "only
+part of what I said was recorded", and it needs no room at all: the endpointer's
+range is narrower than the streaming chunks that overlap it (a quiet onset is
+missed; the end is the last frame above the threshold), and the repair drops those
+chunks whole while decoding only the range, so their text for the overhang was
+deleted. The repair now re-decodes the union of the range and every chunk it will
+replace; see [`decisions.md` D7](decisions.md).
+
 **Only a boundary commits.** On the sandbox bus with `dbus-monitor`, activating
 the engine over an 8 s clip of unbroken speech emitted 6 `UpdatePreeditText` and
 **one** `CommitText` - at the end, because no boundary was ever found. The same

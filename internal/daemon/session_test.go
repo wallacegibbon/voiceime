@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/wallacegibbon/voiceime/internal/asr"
+	"github.com/wallacegibbon/voiceime/internal/audio"
 )
 
 // recordingSink captures what the session would have sent to an application.
@@ -139,5 +140,65 @@ func TestSilentUtteranceCommitsNothing(t *testing.T) {
 
 	if got := sink.commits(); len(got) != 0 {
 		t.Fatalf("commits = %v, want none", got)
+	}
+}
+
+// The repair decodes every chunk it will replace, not just the endpointer's range,
+// so a word the detector was unsure about is re-read instead of dropped.
+//
+// The endpointer is the weakest part of the pipeline: an energy detector misses a
+// quiet onset and stops at the last loud frame, so its range is narrower than the
+// streaming chunks that overlap it. Repair drops those chunks whole, so decoding
+// only the range deletes their text for the overhang - the reported "only part of
+// what I said was recorded".
+func TestSegmentEndRepairsEverythingItWillReplace(t *testing.T) {
+	sink := &recordingSink{}
+	session := newTestSession(sink)
+	session.transcript.AppendStream("第一段", 0, 16000)
+	session.transcript.AppendStream("第二段", 16000, 48000)
+
+	// Speech the detector is sure about, inside chunks that reach half a second
+	// before it and a second and a half after it.
+	event := audio.SegmentEvent{Kind: audio.SpeechEnd, StartSample: 8000, EndSample: 20000}
+	buffer := audio.NewRollingBuffer(5)
+	buffer.Append(make([]byte, 48000*audio.BytesPerSample), 0)
+
+	// A queue means repair is on, so onSegmentEnd takes the repair path.
+	session.repairQueue = make(chan repairJob, 1)
+	session.onSegmentEnd(event, buffer, Options{MinRepairSeconds: 0.1})
+
+	select {
+	case job := <-session.repairQueue:
+		if job.startSample != 0 || job.endSample != 48000 {
+			t.Errorf("repair span = [%d,%d), want [0,48000): the decode must cover every chunk it replaces",
+				job.startSample, job.endSample)
+		}
+		if want := 48000 * audio.BytesPerSample; len(job.pcm) != want {
+			t.Errorf("repair audio = %d bytes, want %d", len(job.pcm), want)
+		}
+	default:
+		t.Fatal("no repair was queued, so the utterance would commit unrepaired")
+	}
+	if got := sink.commits(); len(got) != 0 {
+		t.Errorf("commits = %v, want none: the utterance is still being repaired", got)
+	}
+}
+
+// An utterance the streaming recogniser produced no text for has nothing to repair
+// and must be released immediately, or the text would sit provisional forever.
+func TestSegmentEndWithoutProvisionalTextJustCommits(t *testing.T) {
+	sink := &recordingSink{}
+	session := newTestSession(sink)
+	session.repairQueue = make(chan repairJob, 1)
+	buffer := audio.NewRollingBuffer(5)
+	buffer.Append(make([]byte, 48000*audio.BytesPerSample), 0)
+
+	event := audio.SegmentEvent{Kind: audio.SpeechEnd, StartSample: 8000, EndSample: 20000}
+	session.onSegmentEnd(event, buffer, Options{MinRepairSeconds: 0.1})
+
+	select {
+	case job := <-session.repairQueue:
+		t.Fatalf("queued a repair for an utterance with no text: %+v", job)
+	default:
 	}
 }

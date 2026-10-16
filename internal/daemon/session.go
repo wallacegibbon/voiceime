@@ -195,6 +195,15 @@ func (o Options) Run(ctx context.Context) (Result, error) {
 			report(notify.Error, err)
 			break
 		}
+		// A dropped block is the one way audio the user spoke never reaches the
+		// recogniser at all, and the capture layer can only count it. Saying so is
+		// the difference between "the model misheard me" and "the machine could not
+		// keep up", and the transcript has a gap at that position either way.
+		if chunk.DroppedSamples > 0 && notify.Skipped != nil {
+			notify.Skipped(fmt.Sprintf(
+				"capture dropped %.2fs of audio because the engine was behind; that speech was not transcribed",
+				float64(chunk.DroppedSamples)/float64(audio.SampleRate)))
+		}
 		pipeline.audioFed.Store(int64(time.Duration(engine.FedSamples()) * time.Second / audio.SampleRate))
 		buffer.Append(chunk.Data, chunk.StartSample)
 
@@ -237,10 +246,23 @@ func (o Options) Run(ctx context.Context) (Result, error) {
 	// application for no reason. A user whose speech is too quiet to cross the
 	// threshold sees nothing rather than nonsense; `voiceime doctor` and
 	// `stream --events` show which of the two happened.
+	//
+	// Discarding is not the same as discarding *silently*, though: that text was
+	// visible at the user's caret as preedit, so how much of it is being dropped is
+	// reported. The count is what lets "the detector never heard me" (this message,
+	// with a number) be told apart from "the session was lost" (no message), and it
+	// is the actionable direction - it is the size of what the room measurement was
+	// wrong about.
 	if pipeline.segments.Load() > 0 {
 		pipeline.commitProvisional()
 	} else if notify.Skipped != nil {
-		notify.Skipped("no speech detected; nothing committed")
+		if withheld := pipeline.transcript.ProvisionalText(); withheld != "" {
+			notify.Skipped(fmt.Sprintf(
+				"no speech detected; withheld %d characters the recogniser produced for audio the detector never called speech (check silence_rms_threshold and endpoint_min_speech_ms)",
+				len([]rune(withheld))))
+		} else {
+			notify.Skipped("no speech detected; nothing committed")
+		}
 	}
 
 	summary := Result{
@@ -378,7 +400,21 @@ func (s *session) onSegmentEnd(event audio.SegmentEvent, buffer *audio.RollingBu
 		s.commitProvisional()
 		return
 	}
-	pcm, ok := buffer.Slice(event.StartSample, event.EndSample)
+	// Re-decode everything the repair will replace, not just the endpointer's own
+	// range: a streaming chunk is decoded as one unit, so it can reach past the
+	// range at either end, and a repair that only decoded the range would delete
+	// that chunk's text for the overhang - usually the quiet first or last words
+	// of the utterance, which are the ones the detector is least sure of. See
+	// Transcript.RepairSpan.
+	startSample, endSample, found := s.transcript.RepairSpan(event.StartSample, event.EndSample)
+	if !found {
+		// No provisional text covers the utterance: the recogniser produced
+		// nothing for audio the endpointer accepted, so there is nothing to
+		// correct. Committing releases any newer provisional text.
+		s.commitProvisional()
+		return
+	}
+	pcm, ok := buffer.Slice(startSample, endSample)
 	if !ok {
 		// The segment fell out of the rolling buffer (a very long utterance).
 		// Committing the stream text is better than decoding a truncated segment.
@@ -389,7 +425,7 @@ func (s *session) onSegmentEnd(event audio.SegmentEvent, buffer *audio.RollingBu
 		return
 	}
 	select {
-	case s.repairQueue <- repairJob{pcm: pcm, startSample: event.StartSample, endSample: event.EndSample}:
+	case s.repairQueue <- repairJob{pcm: pcm, startSample: startSample, endSample: endSample}:
 	default:
 		if s.notify.Skipped != nil {
 			s.notify.Skipped("repair queue full; committing stream text")

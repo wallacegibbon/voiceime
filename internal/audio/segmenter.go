@@ -92,8 +92,17 @@ type Segmenter struct {
 	// immediately and upward slowly, so one loud frame cannot desensitise the
 	// detector and a genuinely noisy room is still learned in a few seconds.
 	noiseFloor float64
-	pending    []SegmentEvent
-	started    time.Time
+	// measured records that a quiet frame has actually been observed, and is what
+	// keeps the *configured* threshold in force until then. Without it the seed
+	// below (cfg.Threshold) is doubled by Threshold() before the first frame, so
+	// the detector opens at twice the level the user configured, and a user who
+	// starts speaking immediately is not above it: their speech is learned as the
+	// noise floor, which doubles the threshold again, and the detector stays deaf
+	// for as long as they keep talking. That is the reported "text stays preedit
+	// and never commits, and stopping discards it" failure.
+	measured bool
+	pending  []SegmentEvent
+	started  time.Time
 }
 
 // NewSegmenter builds a detector from configuration.
@@ -110,8 +119,10 @@ func NewSegmenter(cfg SegmenterConfig) *Segmenter {
 	if cfg.MaxUtteranceSeconds <= 0 {
 		cfg.MaxUtteranceSeconds = 60
 	}
-	// Seeding the floor with the configured threshold is what keeps a stream that
-	// has not measured anything yet behaving like the plain threshold detector.
+	// Seeding the floor with the configured threshold is a sentinel, not a
+	// measurement: until a quiet frame arrives, Threshold() reports the configured
+	// value untouched (see measured), so a stream that has not measured anything
+	// yet behaves like the plain threshold detector.
 	return &Segmenter{cfg: cfg, noiseFloor: cfg.Threshold, started: time.Now()}
 }
 
@@ -123,8 +134,14 @@ const adaptiveFactor = 2
 // Threshold is the RMS level currently treated as the speech boundary: twice the
 // measured noise floor, but never below the configured value. Adapting *downward*
 // would start treating quiet speech as silence, which loses words.
+//
+// Until a quiet frame has been measured the configured value is returned as-is.
+// The alternative - doubling the seed - is what made a user who starts speaking
+// immediately inaudible: their first frames are compared against 2*threshold,
+// fall below it, and are then adopted as the noise floor, which raises the
+// threshold further. A stream with no measurement must use the user's number.
 func (s *Segmenter) Threshold() float64 {
-	if !s.cfg.Adaptive {
+	if !s.cfg.Adaptive || !s.measured {
 		return s.cfg.Threshold
 	}
 	if adaptive := s.noiseFloor * adaptiveFactor; adaptive > s.cfg.Threshold {
@@ -169,7 +186,14 @@ func (s *Segmenter) frame(frame []byte, sample int64) {
 	// Track the floor only while quiet, and only downward quickly / upward
 	// slowly, so a single loud frame cannot desensitise the detector. While
 	// speaking the floor is frozen: a long utterance would otherwise drag it up.
-	if s.state == stateQuiet {
+	//
+	// Only a frame below the *configured* threshold counts as a measurement of the
+	// room. A frame at or above it is candidate speech, and adopting it as the
+	// floor is exactly the failure measured below this change: a user who starts
+	// speaking immediately had their own voice learned as the noise, which doubled
+	// the threshold above it and left them inaudible until they paused.
+	if s.state == stateQuiet && level < s.cfg.Threshold {
+		s.measured = true
 		if level < s.noiseFloor {
 			s.noiseFloor = level
 		} else {

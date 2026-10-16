@@ -166,6 +166,25 @@ range to attribute it to, so it is not filtered. No family voiceime selects has
 been observed to emit one; a snapshot-emitting family needs its hypothesis trimmed
 to the provisional range before it can be trusted after a commit.
 
+**Refinement (found in the field, after the rule above shipped).** "A provisional
+chunk that overlaps the range is dropped, and the decode is trusted" quietly
+assumed the decode *covers* the chunk. It does not: a streaming chunk is decoded
+as one unit and can reach past the endpointer's range at either end, while the
+repair only re-decoded the range. The chunk's text for the overhang was therefore
+deleted and not replaced - and the overhang is precisely where an energy detector
+is least certain, because it misses a quiet onset and ends on the last frame above
+the threshold. The reported symptom was "only part of what I said was recorded",
+with the missing part at the start or the end of the utterance.
+
+The fix is a single rule, now enforced before the audio is even cut: the repair's
+range is the **union** of the endpointer's range and every provisional chunk the
+repair will replace (`Transcript.RepairSpan`), so the offline pass re-decodes
+everything it removes. Two consequences fall out of it. No text is discarded
+without being re-read, and the committed span ends exactly where the streaming
+position ended, so the "a window that starts inside delivered text is dropped"
+rule above stops firing in the normal case: it is kept as a guard, but it was
+firing because the repair's declared end ran ahead of the stream.
+
 ## D8 — Endpointing lives in voiceime, not in the model.
 
 **Decision.** A small energy-based detector with noise-floor adaptation decides
@@ -385,12 +404,68 @@ the reference machine's own room (`docs/measurements.md` has the numbers):
 **Consequence.** "It never commits" and "it never ends" are the same failure, and
 `docs/measurements.md` now records how to measure a room in one command so the
 threshold can be set from data rather than by guessing. A session with no detected
-speech now reports `skipped: no speech detected; nothing committed` instead of
-typing nonsense, so a threshold set too high shows up as silence rather than as
+speech now reports `skipped: no speech detected; ...` (with the number of
+characters it withheld, so the loss is at least visible) instead of typing
+nonsense, so a threshold set too high shows up as silence rather than as
 wrong words - the honest failure. The residual known gap is text that arrives
 before the *first* boundary in a genuinely noisy room: it still belongs to a real
 segment's commit. Removing it needs per-sample speech regions in the transcript, a
 larger change than this fix.
+
+**Refinement (found in the field, after the rules above shipped).** The four rules
+above were necessary and not sufficient: the same reported symptom came back for a
+speaker who starts talking the instant dictation is activated, with no quiet frame
+first. Two more clauses were needed, and both are the same mistake seen from two
+sides - a *level* was being treated as a *measurement*.
+
+1. The adaptive threshold is not in force until a quiet frame has actually been
+   measured. `NewSegmenter` seeded the floor with `Threshold`, and `Threshold()`
+   returns twice the floor when that exceeds the configured value, so the detector
+   opened at **2x** the configured threshold before it had measured anything at
+   all - the seeding comment claimed it behaved like the plain threshold detector,
+   and it did the opposite. A speaker between those two numbers is below the
+   threshold in force, so their speech is never speech.
+2. A frame at or above the configured threshold is candidate speech and is never
+   adopted as the noise floor. This is what turned (1) into a *self-ratcheting*
+   failure rather than a one-frame glitch: speech below the inflated threshold was
+   learned as the floor, which doubled the threshold again, and the detector stayed
+   deaf for as long as the user kept talking. When they stopped, the floor fell
+   back to the room and the next utterance worked - hence "sometimes".
+
+**Why the seed was wrong in a way a test could not see.** Both clauses are silent
+in the other direction. With a quiet frame at the start - any room tone below the
+configured value, which includes every test fixture that begins with silence and
+every real session where the user pauses after activating - the floor drops to that
+frame immediately and the threshold is correct. The failure only exists when the
+very first frames are speech, which no unit test written against synthetic audio
+had: `TestSegmenterLearnsTheNoiseFloorFromTheStream` begins with room tone, which
+is exactly the case that hides it. There is now a test that begins with speech.
+
+**Consequence.** The configured value is what a stream with no measurement uses, so
+it is again the *plain threshold detector* until the room has been heard, and a
+room whose own floor is above the configured value is no longer learned upward.
+That is deliberate: `silence_rms_threshold` is specified as a floor above the
+room's idle noise (step 6 of `docs/DEPLOY.md` measures it), and a room above it is
+a misconfiguration that the same measurement step reports, whereas a speaker the
+detector cannot hear is indistinguishable from a broken microphone. A room that is
+noisy but *correctly configured* still adapts upward as before - the threshold is
+twice the measured floor, and the measured floor is a real quiet frame.
+
+**Rule 4 was kept, and stopped being silent.** The symptom above is also what rule
+4 looks like from the user's side - the text is visible as preedit, the session ends,
+and nothing appears - so removing the rule is the tempting fix. It is the wrong one.
+With the endpointer fixed, the only way to reach that state is audio the detector
+judged *not to be speech*, and rule 4 exists because committing that audio types the
+recogniser's guess: twenty seconds of an empty room committed `被。。。。。。嗯。`,
+and a single click committed `。`. Whether the text is a real short phrase or a
+transient of the same length cannot be told apart from one run of samples - the
+reference room has a 340 ms transient, which is the length of a short word - so
+weakening the rule trades a visible loss for an invisible corruption. What was
+genuinely wrong was the silence, since the text *had* been shown at the user's
+caret: the session now reports `withheld N characters`, which distinguishes "the
+detector never heard me" from "the session was lost" and sizes what the room
+measurement got wrong. `docs/AGENT.md` had promised the opposite ("a short phrase
+is then committed when dictation stops"); that sentence was wrong and is corrected.
 
 ## D17 — A test is not a caller, and installed artifacts are checked.
 

@@ -104,16 +104,22 @@ type Engine struct {
 	stdin io.WriteCloser
 	// events is closed when the process exits, so a consumer's range loop ends
 	// without needing to poll a status flag.
-	events   chan Event
+	events chan Event
+	// done is closed once the process has exited and events has been closed, so a
+	// caller can wait for the end of the stream without reading it. Close must not
+	// read events itself: the session owns a reader goroutine on it, and whoever
+	// reads an event first is the only one to see it - a Close that drained the
+	// channel would swallow the last partials exactly when a session is stopping,
+	// which is when they matter most.
+	done     chan struct{}
 	fed      atomic.Int64 // samples written
 	partials atomic.Int64 // partial events seen, for window bookkeeping if needed
 	started  time.Time
 	loadOnce sync.Once
 	loadTime time.Duration
-	// closeOnce guards the drain of the event stream. Two callers (the session's
-	// explicit Close and its deferred safety net, say) would otherwise both range
-	// over the same channel: the second would see nothing, and whichever caller
-	// saw the events first would be the only one to observe the final transcript.
+	// closeOnce guards the wait for the process to exit. Two callers (the
+	// session's explicit Close and its deferred safety net, say) would otherwise
+	// both wait and both set closeErr.
 	closeOnce sync.Once
 	closeErr  error
 
@@ -213,6 +219,7 @@ func Start(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 		cmd:     cmd,
 		stdin:   stdin,
 		events:  make(chan Event, 64),
+		done:    make(chan struct{}),
 		started: time.Now(),
 		result:  Result{Metrics: map[string]string{}},
 	}
@@ -220,15 +227,24 @@ func Start(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 		return nil, fmt.Errorf("start %s: %w", cfg.Binary, err)
 	}
 
-	go engine.readStdout(stdout)
+	stdoutDone := make(chan struct{})
+	go func() {
+		defer close(stdoutDone)
+		engine.readStdout(stdout)
+	}()
 	go engine.readStderr(stderr)
 	go func() {
 		waitErr := cmd.Wait()
+		// Wait() closes the stdout pipe, so the reader sees EOF; waiting for it to
+		// finish here is what makes closing events safe. Without it the reader
+		// could still be sending to the channel after the process was reaped.
+		<-stdoutDone
 		engine.resultMu.Lock()
 		engine.result.ProcessErr = waitErr
 		engine.result.TotalTime = time.Since(engine.started)
 		engine.resultMu.Unlock()
 		close(engine.events)
+		close(engine.done)
 	}()
 
 	// Wait for the ready line instead of sleeping: the load time is reported
@@ -289,22 +305,25 @@ func (e *Engine) LoadTime() time.Duration { return e.loadTime }
 // joined transcript and exits, which is what makes a push-to-talk style stop work
 // without a special command. Safe to call more than once, and from more than one
 // goroutine; the second caller gets the same result.
+//
+// It waits for the process to exit without reading the event stream, so a session
+// draining that stream still sees everything the process emitted on its way out.
 func (e *Engine) Close() (Result, error) {
 	e.closeOnce.Do(func() {
 		_ = e.stdin.Close()
-		deadline := time.After(30 * time.Second)
-		for {
-			select {
-			case _, ok := <-e.events:
-				if !ok {
-					return
-				}
-			case <-deadline:
-				_ = e.cmd.Process.Kill()
-				e.closeErr = fmt.Errorf("engine did not exit within 30s of end of audio")
-				return
-			}
+		select {
+		case <-e.done:
+			return
+		case <-time.After(30 * time.Second):
 		}
+		_ = e.cmd.Process.Kill()
+		// Reaping the process releases the pipes; not waiting at all would leave
+		// the deadline path racing the reader goroutine for the last events.
+		select {
+		case <-e.done:
+		case <-time.After(5 * time.Second):
+		}
+		e.closeErr = fmt.Errorf("engine did not exit within 30s of end of audio")
 	})
 	return e.Result(), e.closeErr
 }

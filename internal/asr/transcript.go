@@ -146,6 +146,41 @@ func (t *Transcript) Repair(startSample, endSample int64, text string) {
 	t.chunks = kept
 }
 
+// RepairSpan returns the audio that a repair for [startSample, endSample) has to
+// re-decode: the union of that range and every provisional chunk the repair will
+// replace.
+//
+// The union is the point. Repair drops any chunk that overlaps the range *at
+// all*, and a streaming window is decoded as one unit, so a chunk can extend well
+// beyond the range. Decoding only the range therefore discarded that chunk's text
+// for the audio outside it - the words at the start or the end of the utterance,
+// which is exactly where an energy detector is least certain and most likely to
+// be short. That is the reported "only part of what I said was recorded".
+//
+// ok is false when no provisional text covers the range: there is nothing to
+// correct then, and no reason to pay for a decode.
+func (t *Transcript) RepairSpan(startSample, endSample int64) (int64, int64, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	start, end := startSample, endSample
+	found := false
+	for index := t.committed; index < len(t.chunks); index++ {
+		chunk := t.chunks[index]
+		if !overlaps(chunk, startSample, endSample) {
+			continue
+		}
+		found = true
+		if chunk.StartSample < start {
+			start = chunk.StartSample
+		}
+		if chunk.EndSample > end {
+			end = chunk.EndSample
+		}
+	}
+	return start, end, found
+}
+
 // CommitProvisional returns the text that is about to become committed, which is
 // what the caller needs to hand to the application, and then commits it.
 func (t *Transcript) CommitProvisional() string {

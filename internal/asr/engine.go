@@ -232,13 +232,23 @@ func Start(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 		defer close(stdoutDone)
 		engine.readStdout(stdout)
 	}()
-	go engine.readStderr(stderr)
+	stderrDone := make(chan struct{})
 	go func() {
-		waitErr := cmd.Wait()
-		// Wait() closes the stdout pipe, so the reader sees EOF; waiting for it to
-		// finish here is what makes closing events safe. Without it the reader
-		// could still be sending to the channel after the process was reaped.
+		defer close(stderrDone)
+		engine.readStderr(stderr)
+	}()
+	go func() {
+		// Drain both pipes to EOF *before* reaping. cmd.Wait closes the pipes that
+		// StdoutPipe and StderrPipe created, and it does so as soon as the process
+		// exits, so calling Wait while a reader is still draining discards
+		// whatever is left in the pipe buffer - the final partial and the joined
+		// transcript, which is the text a session must not lose. That was not a
+		// hypothesis: the reader missed the last events in roughly one run in ten
+		// (TestCloseDoesNotSwallowEventsTheReaderNeeds). EOF on the pipes *is* the
+		// process closing them at exit, which is the event Wait waits for.
 		<-stdoutDone
+		<-stderrDone
+		waitErr := cmd.Wait()
 		engine.resultMu.Lock()
 		engine.result.ProcessErr = waitErr
 		engine.result.TotalTime = time.Since(engine.started)

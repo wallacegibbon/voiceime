@@ -54,3 +54,27 @@ func (b *RollingBuffer) Slice(startSample, endSample int64) ([]byte, bool) {
 	to := int(endSample-b.startSample) * BytesPerSample
 	return b.data[from:to], true
 }
+
+// SliceClamped returns the audio covering [startSample, endSample) clipped to what
+// the buffer holds, together with the range it actually returned. ok is false when
+// the requested range and the held audio do not overlap at all.
+//
+// It exists for a decode range that is an utterance *widened* on purpose: a session
+// that stops while the user is still speaking has no trailing silence to read, so
+// the widening has nothing to widen into. Clipping there recovers the utterance
+// itself, and the caller decides whether the clipped range is still worth decoding.
+func (b *RollingBuffer) SliceClamped(startSample, endSample int64) ([]byte, int64, int64, bool) {
+	heldEnd := b.startSample + int64(SampleCount(b.data))
+	if startSample < b.startSample {
+		startSample = b.startSample
+	}
+	if endSample > heldEnd {
+		endSample = heldEnd
+	}
+	if endSample <= startSample {
+		return nil, 0, 0, false
+	}
+	from := int(startSample-b.startSample) * BytesPerSample
+	to := int(endSample-b.startSample) * BytesPerSample
+	return b.data[from:to], startSample, endSample, true
+}

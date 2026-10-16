@@ -240,3 +240,71 @@ func TestSegmentEndClampsTheDecodeRangeAtZero(t *testing.T) {
 		t.Fatal("no decode was queued")
 	}
 }
+
+// A session that stops while the user is still speaking has no trailing silence
+// for the decode range to widen into: the segmenter's flush closes the last
+// utterance on the last loud frame, so the padded range overruns the recording by
+// up to padSamples. Refusing to decode there delivered the streaming draft for the
+// last sentence of every session that ends mid-speech - the case reproduced on the
+// reference machine, where the second of two utterances came back
+// "skipped: segment too long to repair" on three runs out of three.
+//
+// The clip in that reproduction is 4.24s of audio ending in speech: the utterance
+// runs to 4.08s, padSamples is 0.4s, and the buffer holds 4.24s.
+func TestSegmentEndClipsThePadToTheAudioThatExists(t *testing.T) {
+	sink := &recordingSink{}
+	session := newTestSession(sink)
+	session.repairQueue = make(chan repairJob, 4)
+	session.options.MinRepairSeconds = 0.1
+	session.buffer = audio.NewRollingBuffer(63)
+	session.buffer.Append(make([]byte, 67840*audio.BytesPerSample), 0) // 4.24s fed
+	session.padSamples = 6400                                          // 0.4s at 16 kHz
+
+	event := audio.SegmentEvent{Kind: audio.SpeechEnd, StartSample: 47360, EndSample: 65280}
+	session.onSegmentEnd(event)
+
+	select {
+	case job := <-session.repairQueue:
+		// The start pad is inside the buffer (which holds from 0), so only the end
+		// is clipped: [47360-6400, 67840) rather than [40960, 71680).
+		if job.startSample != 40960 || job.endSample != 67840 {
+			t.Fatalf("decode span = [%d,%d), want [40960,67840): the utterance widened by "+
+				"as much pad as the audio allows", job.startSample, job.endSample)
+		}
+		if want := (67840 - 40960) * audio.BytesPerSample; len(job.pcm) != want {
+			t.Errorf("decode audio = %d bytes, want %d", len(job.pcm), want)
+		}
+	default:
+		t.Fatalf("no decode was queued, so the last sentence would commit unrepaired: %v", sink.events)
+	}
+}
+
+// Clipping is only for the widened range. When a provisional chunk is what makes
+// the span long, the decode has to re-read everything that chunk's text covers -
+// decoding less would delete that text without replacing it - so a span that fell
+// out of the buffer is still skipped.
+func TestSegmentEndStillSkipsASpanThatFellOutOfTheBuffer(t *testing.T) {
+	sink := &recordingSink{}
+	session := newTestSession(sink)
+	// A window partial covering from the start of the session: the repair span is
+	// the union with the utterance, and the window start is no longer held.
+	session.transcript.AppendStream("开头的一段话。", 0, 60000)
+	session.repairQueue = make(chan repairJob, 4)
+	session.options.MinRepairSeconds = 0.1
+	session.buffer = audio.NewRollingBuffer(63)
+	session.buffer.Append(make([]byte, 40000*audio.BytesPerSample), 20000) // held [20000,60000)
+	session.padSamples = 6400
+
+	event := audio.SegmentEvent{Kind: audio.SpeechEnd, StartSample: 40000, EndSample: 55000}
+	session.onSegmentEnd(event)
+
+	select {
+	case job := <-session.repairQueue:
+		t.Fatalf("queued a decode for [%d,%d): the range must cover the chunk's text "+
+			"or the repair deletes it", job.startSample, job.endSample)
+	default:
+	}
+	if got := sink.commits(); len(got) != 1 {
+		t.Fatalf("commits = %v, want the stream text: the repair cannot run", got)
+	}
+}

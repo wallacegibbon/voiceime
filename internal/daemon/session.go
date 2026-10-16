@@ -443,6 +443,7 @@ func (s *session) resolveSegment(event audio.SegmentEvent) {
 		return
 	}
 	startSample, endSample, found := s.transcript.RepairSpan(event.StartSample, event.EndSample)
+	padded := false
 	if !found {
 		// Widen by half the silence the detector needed to close the utterance:
 		// it ends on the last loud frame, so its own range can clip a quiet tail,
@@ -453,8 +454,29 @@ func (s *session) resolveSegment(event audio.SegmentEvent) {
 			startSample = 0
 		}
 		endSample = event.EndSample + s.padSamples
+		padded = true
 	}
 	pcm, ok := s.buffer.Slice(startSample, endSample)
+	if !ok && padded {
+		// The widening can reach past the end of the audio that exists. A session
+		// that stops while the user is still speaking has no trailing silence left
+		// to read, and the segmenter's flush closes the last utterance on the last
+		// loud frame - so the padded range overruns the recording by up to
+		// padSamples on exactly the sentence a push-to-talk stop ends on. Refusing
+		// to decode there delivered the streaming draft instead, which is the
+		// window-boundary damage the repair exists to fix.
+		//
+		// Clipping is safe here and only here: with no provisional text covering the
+		// utterance, the decode replaces nothing, so a shorter range means a smaller
+		// reading of the same speech rather than text deleted without being re-read.
+		// The utterance itself still has to be present - if it is not, the repair
+		// really has fallen out of the buffer and skipping is the honest outcome.
+		clipped, clippedStart, clippedEnd, overlap := s.buffer.SliceClamped(startSample, endSample)
+		if overlap && clippedStart <= event.StartSample && event.EndSample <= clippedEnd {
+			pcm, ok = clipped, true
+			startSample, endSample = clippedStart, clippedEnd
+		}
+	}
 	if !ok {
 		// The segment fell out of the rolling buffer (a very long utterance).
 		// Committing the stream text is better than decoding a truncated segment.

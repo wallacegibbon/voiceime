@@ -100,7 +100,7 @@ func Ensure(ctx context.Context, spec Spec) (*Instance, error) {
 		return nil, err
 	}
 	if err := probe(ctx, base); err == nil {
-		return &Instance{BaseURL: base, ModelID: spec.ModelID}, nil
+		return &Instance{BaseURL: base, ModelID: spec.modelID()}, nil
 	}
 	if !spec.Autostart {
 		return nil, fmt.Errorf("nothing is listening at %s and asr_server_autostart is off", base)
@@ -141,7 +141,7 @@ func Ensure(ctx context.Context, spec Spec) (*Instance, error) {
 
 	instance := &Instance{
 		BaseURL: base,
-		ModelID: spec.ModelID,
+		ModelID: spec.modelID(),
 		owned:   true,
 		cmd:     cmd,
 		logPath: spec.LogPath,
@@ -152,7 +152,13 @@ func Ensure(ctx context.Context, spec Spec) (*Instance, error) {
 	}
 	deadline := time.Now().Add(timeout)
 	for {
-		if err := probe(ctx, base); err == nil {
+		// Bounded by the start deadline as well as the probe's own timeout: a server
+		// that accepts connections and never answers must not extend the wait by a
+		// fresh five seconds on every pass.
+		probeCtx, cancel := context.WithDeadline(ctx, deadline)
+		err := probe(probeCtx, base)
+		cancel()
+		if err == nil {
 			return instance, nil
 		}
 		if cmd.ProcessState != nil && cmd.ProcessState.Exited() {
@@ -293,6 +299,16 @@ func (s Spec) baseURL() (string, error) {
 	return fmt.Sprintf("http://%s:%d", s.Host, s.Port), nil
 }
 
+// modelID is the id the offline entry gets, defaulted in one place: the config and
+// the Instance that describes it have to agree, or a warm-up or repair would ask the
+// server for an id its own config does not define.
+func (s Spec) modelID() string {
+	if strings.TrimSpace(s.ModelID) == "" {
+		return DefaultID
+	}
+	return s.ModelID
+}
+
 func (s Spec) validate() error {
 	switch {
 	case s.Model == "":
@@ -420,10 +436,6 @@ type wireModel struct {
 }
 
 func writeConfig(spec Spec, family string) error {
-	modelID := spec.ModelID
-	if modelID == "" {
-		modelID = DefaultID
-	}
 	backend := spec.Backend
 	if backend == "" {
 		backend = "cpu"
@@ -437,7 +449,7 @@ func writeConfig(spec Spec, family string) error {
 		MaxLoadedModels: 0,
 		IdleUnloadMS:    spec.IdleUnloadMS,
 		Models: []wireModel{{
-			ID:                    modelID,
+			ID:                    spec.modelID(),
 			Family:                family,
 			Path:                  spec.Model,
 			Task:                  "asr",

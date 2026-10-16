@@ -393,8 +393,12 @@ func (s *session) startRepairWorker(ctx context.Context, options Options, engine
 			Wait:     wait,
 			Report: func(err error) {
 				// Once per session, per kind: a route that failed has failed, and one
-				// line per utterance would be noise.
-				if s.notify.Skipped != nil {
+				// line per utterance would be noise. It is reported as an error rather
+				// than a skip because something the user configured did not work - the
+				// dictation itself continues either way.
+				if s.notify.Error != nil {
+					s.notify.Error(err)
+				} else if s.notify.Skipped != nil {
 					s.notify.Skipped(err.Error())
 				}
 			},

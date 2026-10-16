@@ -358,6 +358,68 @@ dictate one sentence into a text editor and watch for it.
 
 ---
 
+## Updating an installed copy
+
+`make build && make install` replaces the binary and nothing else happens: a
+process keeps the binary it was started from, so the code you just built is not
+running until the process is. Both halves of that are counter-intuitive, so both
+were measured on the reference machine rather than reasoned about.
+
+```sh
+make build && make install                 # replaces ~/.local/bin/voiceime
+"$BIN" engine install --apply              # component, activation env, ibus restart
+"$BIN" engine status --json                # assert: engine_registered == true
+"$BIN" doctor --json                       # exit 0, and both process checks ok
+ibus engine voiceime                       # only if dictation was on before
+```
+
+(`$BIN` is the installed binary, as in step 2. Run `doctor` from that copy, not
+from the checkout: the check compares the running processes against the binary
+running `doctor`, so the checkout build reports a difference that is real but
+expected.)
+
+What each step actually does:
+
+* **`install` neither fails on nor disturbs a running copy.** The destination is
+  replaced in place - there is no `Text file busy` - and the process started from
+  it keeps the old inode, so `/proc/<pid>/exe` then reads
+  `/home/u/.local/bin/voiceime (deleted)`. That is exactly what `doctor` reports as
+  a `warn` on `engine_process` and `hotkey_process` ("still running the previous
+  build"). So that warning is the *expected* state between the two steps, not a
+  fault to hunt, and nothing has to be stopped before installing.
+* **`engine install --apply` ends both running processes, and only one of them is
+  yours to restart.** It restarts `ibus-daemon`, and the engine and the listener
+  are both connected to the daemon's *own* socket (resolved from `IBUS_ADDRESS` or
+  the registry file, not the session bus), so both lose it. The engine process
+  exits and IBus respawns it lazily on the next activation - which is why the last
+  command above exists: `ibus restart` also resets the selected engine to the
+  default, so dictation has to be turned back on. The listener exits with
+  `status=1` and its own unit starts it again (`Restart=on-failure`,
+  `RestartSec=2`), re-registering the shortcut on the way up. Measured: after
+  `ibus restart` the unit's `NRestarts` went 0 → 1 and the new process logged its
+  startup line about two seconds later - so on a systemd session the listener
+  restart is not yours to do. It *is* yours when the listener was started by hand
+  (there is no unit to restart it), or when it is alive-but-stale: the
+  `make install` without a daemon restart case at the top of this list.
+
+The shortcut is the one thing no command can confirm. The registration is a
+write-only property on the daemon, so `hotkey status` can confirm that the listener
+is *active* and what was asked for, but not what the daemon actually holds; whether
+the compositor grabs the key is a property of the session and is settled by
+pressing it.
+
+To restart just the two processes instead of the daemon - which is what `doctor`
+offers as the fix when the stale-process *warning* is what you noticed:
+
+```sh
+ibus engine xkb:us::eng
+pkill -f "voiceime ibus-engine"
+systemctl --user restart voiceime-hotkey
+ibus engine voiceime                       # only if it was dictating
+```
+
+---
+
 ## Recovery
 
 ### The checkout or binary moved or was renamed
@@ -398,14 +460,10 @@ ibus list-engine | grep voiceime
 
 A running engine keeps running the binary it was started from, so a rebuild does
 not take effect until it is restarted. `voiceime doctor` reports it as a `warn` on
-`engine_process` ("still running the previous build"); the fix is the same command
-either way:
-
-```sh
-ibus engine xkb:us::eng
-pkill -f "voiceime ibus-engine"
-ibus engine voiceime
-```
+`engine_process` and `hotkey_process` ("still running the previous build"). The
+procedure is [Updating an installed copy](#updating-an-installed-copy); the short
+version is `ibus engine xkb:us::eng && pkill -f "voiceime ibus-engine" &&
+systemctl --user restart voiceime-hotkey && ibus engine voiceime`.
 
 ### The key is swallowed but nothing happens
 

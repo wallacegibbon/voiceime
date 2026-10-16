@@ -26,6 +26,13 @@ the version reporting as `dev`. An installed copy is not required: running
 `bin/voiceime doctor` straight from the checkout is the normal development loop,
 and nothing in the program depends on being on `PATH`.
 
+Installing does not restart anything: a process keeps the binary it was started
+from, so rebuilt code runs only after the engine and the listener have been
+restarted, and until then `doctor` reports the difference as a `warn` on
+`engine_process` / `hotkey_process`. The procedure, and which of the restarts
+systemd does for you, is
+[DEPLOY.md § Updating an installed copy](DEPLOY.md#updating-an-installed-copy).
+
 ## Ground rules
 
 * **No prompts, no GUI.** Nothing waits for input. If a command needs a decision,

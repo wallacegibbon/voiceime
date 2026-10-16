@@ -95,14 +95,23 @@ func (t *Transcript) SetSnapshot(text string, startSample, endSample int64) {
 	})
 }
 
-// Repair replaces the provisional text covering [startSample, endSample) with
-// freshly decoded text.
+// Place writes the text decoded for [startSample, endSample): a provisional chunk
+// that overlaps the range is replaced, and when none does the decode is inserted
+// in sample order.
 //
-// Two rules make this safe to call from a background worker at any time:
+// Replacing is what a repair does - the offline pass re-reads a finished utterance
+// and what it replaces is the text the streaming layer produced for that audio.
+// Inserting is the other half: an utterance can close before any window covers it
+// (a short one always does), and then the decode is the only reading of that audio
+// rather than a correction of one, so there is nothing to replace and the text has
+// to be placed.
 //
-//   - Committed text is never touched, and a range that contains no provisional
-//     chunk is a no-op. Otherwise a repair finishing late - the user already
-//     paused and the text was delivered - would append its text a second time.
+// Two rules keep this safe to call from a background worker at any time:
+//
+//   - Committed text is never touched, so a decode that finishes late - the user
+//     already paused and the text was delivered - cannot append a second copy, and
+//     a decode for audio that was already delivered is dropped rather than inserted
+//     again.
 //   - An empty decode is a no-op as well. Empty output from the offline path is
 //     indistinguishable from "the model found nothing there", and dropping text
 //     the user has already watched appear is a worse failure than keeping text
@@ -111,37 +120,50 @@ func (t *Transcript) SetSnapshot(text string, startSample, endSample int64) {
 //     limitation rather than guessed at.
 //
 // A provisional chunk that overlaps the range at all is dropped, even if part of
-// it lies outside: the range comes from the endpoint detector and covers a whole
-// spoken segment, so an overlapping partial is always part of the same speech,
-// and there is no way to split its text that is better than trusting the decode.
-// The repaired chunk is inserted where the first replaced chunk was, so a repair
-// that lands while newer provisional text exists keeps the transcript in order.
-func (t *Transcript) Repair(startSample, endSample int64, text string) {
+// it lies outside: the range covers a whole spoken segment, so an overlapping
+// partial is always part of the same speech, and there is no way to split its text
+// that is better than trusting the decode. The new chunk goes where the first
+// replaced chunk was, or before the first chunk that starts after it, so the
+// transcript stays in sample order.
+func (t *Transcript) Place(startSample, endSample int64, text string) {
 	if text == "" {
 		return
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	placed := false
 	kept := make([]Chunk, 0, len(t.chunks)+1)
-	replaced := false
+	insert := func() {
+		kept = append(kept, Chunk{
+			Text:        text,
+			StartSample: startSample,
+			EndSample:   endSample,
+			Source:      "repair",
+		})
+		placed = true
+	}
 	for index, chunk := range t.chunks {
-		if index >= t.committed && overlaps(chunk, startSample, endSample) {
-			if !replaced {
-				kept = append(kept, Chunk{
-					Text:        text,
-					StartSample: startSample,
-					EndSample:   endSample,
-					Source:      "repair",
-				})
-			}
-			replaced = true
+		if index < t.committed {
+			kept = append(kept, chunk)
 			continue
+		}
+		if overlaps(chunk, startSample, endSample) {
+			if !placed {
+				insert()
+			}
+			continue
+		}
+		if !placed && chunk.StartSample >= endSample {
+			insert()
 		}
 		kept = append(kept, chunk)
 	}
-	if !replaced {
-		return
+	// Nothing overlapped, so this is an insert. It belongs after the delivered
+	// audio: a decode whose range the application already has would be a second
+	// copy, and the offline pass can finish after a commit.
+	if !placed && startSample >= t.deliveredEndLocked() {
+		insert()
 	}
 	t.chunks = kept
 }
@@ -205,19 +227,6 @@ func (t *Transcript) ProvisionalText() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.provisionalTextLocked()
-}
-
-// DeliveredEnd is the furthest sample the application has already been given: the
-// end of the audio covered by committed chunks.
-//
-// A session uses it to drop an utterance it was holding for its text: a later
-// segment's repair decodes the union of its own range and every chunk it replaces,
-// so it can carry an earlier held utterance out with it, and decoding that one
-// again would deliver the same words twice.
-func (t *Transcript) DeliveredEnd() int64 {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.deliveredEndLocked()
 }
 
 // deliveredEndLocked is the end of the audio the application has already been

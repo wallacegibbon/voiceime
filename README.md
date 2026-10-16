@@ -125,9 +125,10 @@ Two layers of text, and the split is the whole design:
   endpoint detector decides the moment of commitment.
 
 When an utterance ends, the audio for it is re-decoded with the offline path and
-replaces the provisional text for that same span. That is what corrects words the
-user has already seen — a measured cost of 0.55 s for a 4.2 s sentence when the
-repair uses the streaming model.
+replaces the provisional text for that same span — or is placed directly when the
+streaming layer had not reached it yet, which is the normal case for a short
+utterance. That is what corrects words the user has already seen — a measured cost of
+0.55 s for a 4.2 s sentence when the repair uses the streaming model.
 
 ## Layout
 

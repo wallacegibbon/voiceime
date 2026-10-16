@@ -121,7 +121,7 @@ func TestRepairedTextIsWhatGetsCommitted(t *testing.T) {
 
 	session.transcript.AppendStream("欢迎大家来体验达摩院。", 15000, 48000)
 	session.transcript.AppendStream("推出的语音识别模型。", 48000, 88000)
-	session.transcript.Repair(15000, 88000, "欢迎大家来体验达摩院推出的语音识别模型。")
+	session.transcript.Place(15000, 88000, "欢迎大家来体验达摩院推出的语音识别模型。")
 	session.commitProvisional()
 
 	got := sink.commits()
@@ -186,97 +186,57 @@ func TestSegmentEndRepairsEverythingItWillReplace(t *testing.T) {
 	}
 }
 
-// An utterance whose text the streaming layer has not produced yet must NOT be
-// committed at its boundary.
+// An utterance the streaming layer has not reached must still be decoded: the
+// offline pass is the reader for an accepted utterance, not only a corrector of
+// streaming text. Leaving it out is what made a short sentence sit in preedit, its
+// boundary passing before any window covered it.
 //
-// Committing there delivers nothing and forgets the segment, which is the reported
-// "the text stays preedit and never commits": the text arrives later, and by then
-// no boundary is left to release it. The segment is held instead, and released
-// when a covering window arrives.
-func TestSegmentEndWithoutTextIsHeldForLater(t *testing.T) {
+// The range is the utterance widened by padSamples: the endpointer ends on the last
+// loud frame, so its own range can clip a quiet tail. See resolveSegment.
+func TestSegmentEndWithNoStreamingTextDecodesItsOwnAudio(t *testing.T) {
 	sink := &recordingSink{}
 	session := newTestSession(sink)
 	session.repairQueue = make(chan repairJob, 4)
 	session.options.MinRepairSeconds = 0.1
 	session.buffer = audio.NewRollingBuffer(5)
 	session.buffer.Append(make([]byte, 48000*audio.BytesPerSample), 0)
+	session.padSamples = 1600 // 100 ms at 16 kHz
 
-	event := audio.SegmentEvent{Kind: audio.SpeechEnd, StartSample: 8000, EndSample: 20000}
+	event := audio.SegmentEvent{Kind: audio.SpeechEnd, StartSample: 16000, EndSample: 32000}
 	session.onSegmentEnd(event)
-
-	if len(session.pending) != 1 {
-		t.Fatalf("pending = %v, want the segment held for its text", session.pending)
-	}
-	select {
-	case job := <-session.repairQueue:
-		t.Fatalf("queued a repair for an utterance with no text: %+v", job)
-	default:
-	}
-	if got := sink.commits(); len(got) != 0 {
-		t.Fatalf("commits = %v, want none: the segment has no text to deliver yet", got)
-	}
-}
-
-// The held segment is released as soon as a window covering it arrives. This is
-// the fix itself: a short utterance closes before the recogniser has decoded it,
-// and used to be forgotten at that point.
-func TestHeldSegmentIsReleasedWhenItsWindowArrives(t *testing.T) {
-	sink := &recordingSink{}
-	session := newTestSession(sink)
-	session.repairQueue = make(chan repairJob, 4)
-	session.options.MinRepairSeconds = 0.1
-	session.buffer = audio.NewRollingBuffer(5)
-	session.buffer.Append(make([]byte, 48000*audio.BytesPerSample), 0)
-
-	event := audio.SegmentEvent{Kind: audio.SpeechEnd, StartSample: 8000, EndSample: 20000}
-	session.onSegmentEnd(event)
-	if len(session.pending) != 1 {
-		t.Fatalf("pending = %v, want the segment held", session.pending)
-	}
-
-	// Its window arrives: a chunk that covers the utterance.
-	session.transcript.AppendStream("你好", 0, 32000)
-	session.resolvePending()
 
 	select {
 	case job := <-session.repairQueue:
-		if job.startSample > 8000 || job.endSample < 20000 {
-			t.Errorf("repair span = [%d,%d), want it to cover the utterance [8000,20000)",
-				job.startSample, job.endSample)
+		if job.startSample != 16000-1600 || job.endSample != 32000+1600 {
+			t.Fatalf("decode span = [%d,%d), want [%d,%d): the utterance widened by padSamples",
+				job.startSample, job.endSample, 16000-1600, 32000+1600)
 		}
 	default:
-		t.Fatal("the held segment was not released when its window arrived")
+		t.Fatal("no decode was queued: the utterance would never commit")
 	}
-	if len(session.pending) != 0 {
-		t.Errorf("pending = %v, want the held segment released", session.pending)
+	if got := sink.commits(); len(got) != 0 {
+		t.Fatalf("commits = %v, want none: the decode has not landed yet", got)
 	}
 }
 
-// A held segment whose audio a later union already delivered is dropped, not
-// decoded again: a later segment's repair decodes every chunk it replaces, so it
-// can carry the earlier utterance out with it, and re-decoding it would deliver
-// the same words twice.
-func TestHeldSegmentAlreadyDeliveredIsDropped(t *testing.T) {
-	sink := &recordingSink{}
-	session := newTestSession(sink)
+// An utterance at the very start of a session must not ask for audio before zero.
+func TestSegmentEndClampsTheDecodeRangeAtZero(t *testing.T) {
+	session := newTestSession(&recordingSink{})
 	session.repairQueue = make(chan repairJob, 4)
 	session.options.MinRepairSeconds = 0.1
 	session.buffer = audio.NewRollingBuffer(5)
 	session.buffer.Append(make([]byte, 48000*audio.BytesPerSample), 0)
+	session.padSamples = 1600
 
-	session.pending = append(session.pending,
-		audio.SegmentEvent{Kind: audio.SpeechEnd, StartSample: 0, EndSample: 16000})
-	session.transcript.AppendStream("你好", 0, 16000)
-	session.commitProvisional()
+	event := audio.SegmentEvent{Kind: audio.SpeechEnd, StartSample: 500, EndSample: 20000}
+	session.onSegmentEnd(event)
 
-	session.resolvePending()
-
-	if len(session.pending) != 0 {
-		t.Fatalf("pending = %v, want the already-delivered segment dropped", session.pending)
-	}
 	select {
 	case job := <-session.repairQueue:
-		t.Fatalf("queued a repair for audio that was already delivered: %+v", job)
+		if job.startSample != 0 {
+			t.Fatalf("decode span starts at %d, want 0", job.startSample)
+		}
 	default:
+		t.Fatal("no decode was queued")
 	}
 }

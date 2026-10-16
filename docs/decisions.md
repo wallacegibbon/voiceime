@@ -592,3 +592,64 @@ need it to become one.
 events, not a release to hook. Detecting the burst by looking ahead instead of by a
 window - a held key's first repeat arrives a full repeat-delay after the press, which
 makes it indistinguishable from a deliberate second tap without the window.
+
+## D20 — Every accepted utterance is decoded offline; the streaming layer only drafts.
+
+**Decision.** When the endpointer closes an utterance, the offline pass decodes the
+audio for *that utterance*, and what it produces is what gets delivered. Streaming
+text is a draft: it is never required for a commit, and whether a window happens to
+cover the utterance changes nothing about the delivered text.
+
+The range to decode depends on what the streaming layer covered:
+
+* **A window covers the utterance.** Decode the union of the utterance's range and
+  every chunk the decode will replace (`Transcript.RepairSpan`): the decode removes
+  that chunk whole, so it has to re-read everything it removes.
+* **Nothing covers it.** Decode the utterance itself, widened on each side by
+  `endpoint_silence_ms / 2`.
+
+**Why.** Two clocks run against each other. The endpointer closes an utterance about
+`endpoint_silence_ms` after the speech ends; the recogniser emits a partial only
+every `chunk_seconds`. A short utterance therefore closes before any text covers it,
+and the old code read that as "the recogniser produced nothing, so there is nothing
+to correct" and committed empty. The commit fires only when a segment closes or the
+session ends, so the text then arrived with no boundary left to release it. Reported
+as the text sitting in preedit forever; measured here as a 1.2 s utterance followed
+by silence committing at 11.20 s - the end of the audio - eight seconds after the
+text appeared. Holding the segment until a covering window arrived was built and
+measured first; it bounds the wait, but it keeps the commit dependent on the
+streaming layer and merges adjacent short utterances through the union.
+
+Making the decode unconditional removes that dependency rather than bounding it, and
+it is what the two layers were already for (D7): the streaming pass shows text while
+the user speaks, it does not decide what is final.
+
+**Why the pad is what it is.** Measured on the reference clip, decoding only the
+endpointer's own range loses a quiet tail - 0.06 gain on the last half second and the
+decode stops at `Some call me。` instead of `Some call me nature.` - and 300 ms of
+widening recovers it. It cannot reach the next utterance: the pause before one is at
+least the whole hangover, so half of it stops halfway. Widening was also measured
+harmless where the range was already adequate: clean speech decodes identically at
+every pad from 0 to 0.6 s.
+
+**Consequence.** A commit no longer waits for a window. Measured on a three-sentence
+clip: each sentence committed 0.43-0.49 s after it closed, against up to a window for
+the held version, and the sentences stopped merging - four commits where the union
+produced three. `chunk_seconds` stops gating when text becomes final, so it now
+trades only draft smoothness and streaming accuracy. The cost: a window straddling a
+commit is dropped, so a rapid short sentence has no draft to watch - it is committed
+instead, about 0.44 s after it ends. Longer utterances are unaffected; their
+in-progress draft is decoded before any commit and was identical between versions.
+
+Two things are deliberately left alone. The end-of-session rule is unchanged, so a
+hallucination in the tail is still committed when the session stops; retiring it
+needs the per-sample accepted-speech regions this is the first half of, and is a
+separate change. An empty decode is still a no-op (D7): removing hallucinations needs
+a confidence signal this path does not have.
+
+**Rejected.** Decoding without the pad - a quiet tail is lost, the failure D7 already
+recorded. Always decoding the utterance's own range, ignoring the union - a decode
+that replaces a chunk without re-reading the whole chunk deletes its text for the
+overhang, D7's other recorded failure. Delaying the commit until a covering window
+arrives - bounds the wait instead of removing the dependency, and still merges
+adjacent utterances.

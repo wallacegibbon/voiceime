@@ -110,7 +110,7 @@ Settings that matter, and the reasoning a caller needs to pick values:
 | `streaming_model` | `""` | Empty means pick automatically. |
 | `refine_model` | `""` | Empty means reuse the streaming model (fastest). |
 | `language` | `zh` | Passed to the model; empty asks it to auto-detect. |
-| `chunk_seconds` | `3` | Below 1.5 measurably corrupts CJK output; validate warns. |
+| `chunk_seconds` | `3` | The streaming window: how much audio a draft is decoded from. Below 1.5 measurably corrupts CJK output; validate warns. It does not gate when text is committed - a finished utterance is decoded offline and delivered when it closes - so it can be raised for accuracy without making delivery wait. |
 | `refine_on_segment_end` | `true` | The pass that repairs window-boundary damage. |
 | `capture_rate` | `16000` | Must stay 16000 (models' VAD). Validation error otherwise. |
 | `capture_source` | `""` | PipeWire source name; empty uses the default input. |

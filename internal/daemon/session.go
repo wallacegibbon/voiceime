@@ -147,6 +147,7 @@ func (o Options) Run(ctx context.Context) (Result, error) {
 		sink:       o.Sink,
 		notify:     notify,
 		buffer:     buffer,
+		padSamples: int64(cfg.EndpointSilenceMS) * int64(audio.SampleRate) / 2000,
 	}
 	pipeline.startRepairWorker(ctx, o, engineConfig)
 
@@ -170,13 +171,6 @@ func (o Options) Run(ctx context.Context) (Result, error) {
 					// The window started inside text that was already delivered.
 					// Saying so is better than looking like a lost partial.
 					notify.Skipped("a window overlapping already-delivered text was dropped")
-				}
-				if accepted {
-					// Text the streaming layer had not reached when an utterance
-					// closed may be what that utterance was waiting for. The
-					// capture goroutine owns the buffer, so it decides - this only
-					// raises the flag.
-					pipeline.wake.Store(true)
 				}
 				if notify.Partial != nil {
 					notify.Partial(event.Text, event.FedSeconds)
@@ -215,13 +209,6 @@ func (o Options) Run(ctx context.Context) (Result, error) {
 		pipeline.audioFed.Store(int64(time.Duration(engine.FedSamples()) * time.Second / audio.SampleRate))
 		buffer.Append(chunk.Data, chunk.StartSample)
 
-		// New streaming text may have arrived while the detector was quiet, and
-		// that is what releases a segment held because its text was not there when
-		// it closed. Resolve before this block's own boundaries so an older held
-		// utterance is still delivered before a newer one.
-		if pipeline.wake.CompareAndSwap(true, false) {
-			pipeline.resolvePending()
-		}
 		for _, event := range segmenter.Push(chunk.Data, chunk.StartSample) {
 			if event.Kind != audio.SpeechEnd {
 				continue
@@ -239,9 +226,6 @@ func (o Options) Run(ctx context.Context) (Result, error) {
 	for _, event := range segmenter.Flush() {
 		pipeline.onSegmentEnd(event)
 	}
-	// The last partials can land after the capture loop's final wake check, so
-	// give a held segment one more chance before the engine closes.
-	pipeline.resolvePending()
 
 	result, engineErr := engine.Close()
 	<-engineDone
@@ -316,17 +300,13 @@ type session struct {
 	repairResults chan repairResult
 	repairDone    sync.WaitGroup
 
-	// buffer is the recent audio a repair re-decodes. The capture goroutine owns
-	// it (Append and Slice both run there), which is why resolvePending - which
-	// may slice it - is driven from that goroutine rather than from the
-	// recognition events.
+	// buffer is the recent audio an offline decode re-reads.
 	buffer *audio.RollingBuffer
-	// wake is set by the recognition goroutine when it appends streaming text, so
-	// the capture goroutine knows a held segment may be releasable now. pending
-	// holds the segments whose text had not arrived when they closed. Both are
-	// touched only by the capture goroutine; the flag alone is shared.
-	wake    atomic.Bool
-	pending []audio.SegmentEvent
+	// padSamples widens an utterance's decode range on each side, by half the
+	// silence the detector needs to close one. The detector stops on the last loud
+	// frame, so it can clip a quiet tail; half the hangover covers that and still
+	// stops well short of the next utterance. See resolveSegment.
+	padSamples int64
 
 	// publishMu serialises sink calls. Three goroutines publish (recognition
 	// events, segment boundaries and repair results), and the order of "clear the
@@ -395,7 +375,7 @@ func (s *session) startRepairWorker(ctx context.Context, options Options, engine
 				s.commitProvisional()
 				continue
 			}
-			s.transcript.Repair(result.job.startSample, result.job.endSample, result.text)
+			s.transcript.Place(result.job.startSample, result.job.endSample, result.text)
 			if s.notify.Repair != nil {
 				s.notify.Repair(result.text, result.took,
 					float64(result.job.endSample-result.job.startSample)/audio.SampleRate)
@@ -418,49 +398,53 @@ func (s *session) closeRepairs() {
 
 func (s *session) waitForRepairs() { s.repairDone.Wait() }
 
-// onSegmentEnd closes an utterance: queue its repair, or commit straight away
-// when repair is off.
-//
-// An utterance can close before the streaming layer has any text for it: a short
-// one closes about endpoint_silence_ms after the speech ends, while the recogniser
-// emits a partial only every chunk_seconds. A segment with no text covering it is
-// therefore held rather than committed - committing there delivers nothing and
-// leaves the text to arrive with no boundary left to release it, which is the
-// reported "the text stays preedit and never commits". resolvePending releases it
-// as soon as a covering window arrives.
+// onSegmentEnd closes an utterance: queue its offline decode, or commit straight
+// away when repair is off.
 func (s *session) onSegmentEnd(event audio.SegmentEvent) {
 	s.segments.Add(1)
 	if s.notify.Segment != nil {
 		s.notify.Segment(float64(event.StartSample)/audio.SampleRate,
 			float64(event.EndSample)/audio.SampleRate, event.DurationSeconds())
 	}
-	if !s.resolveSegment(event) {
-		s.pending = append(s.pending, event)
-	}
+	s.resolveSegment(event)
 }
 
-// resolveSegment queues the repair for a finished utterance, or commits it
-// straight away, and reports whether it is done. It returns false when no
-// streaming text covers the utterance yet, which is the caller's signal to hold
-// the segment instead of committing it empty.
-func (s *session) resolveSegment(event audio.SegmentEvent) bool {
+// resolveSegment queues the offline decode of a finished utterance, or commits it
+// straight away when repair is off.
+//
+// The decode is what makes the text final - the streaming layer only ever produces
+// a draft - so whether streaming text happens to cover this utterance changes
+// nothing about what is delivered. It does change *what range to decode*, because a
+// decode that stands in for streaming text must re-read everything that text
+// covered:
+//
+//   - Text covers the utterance: decode the union of its range and every
+//     overlapping chunk. A chunk is decoded as one unit and reaches past the
+//     range, so decoding only the range would delete that text without re-reading
+//     it. See Transcript.RepairSpan.
+//
+//   - Nothing covers it: the decode is the *only* reading of this audio, so decode
+//     the utterance itself, widened by padSamples. A short utterance always lands
+//     here - it closes about endpoint_silence_ms after the speech ends, while the
+//     recogniser emits a partial only every chunk_seconds - and treating that as
+//     "nothing to correct" is what used to commit empty and leave the text with no
+//     boundary left to release it.
+func (s *session) resolveSegment(event audio.SegmentEvent) {
 	if s.repairQueue == nil || event.DurationSeconds() < s.options.MinRepairSeconds {
 		s.commitProvisional()
-		return true
+		return
 	}
-	// Re-decode everything the repair will replace, not just the endpointer's own
-	// range: a streaming chunk is decoded as one unit, so it can reach past the
-	// range at either end, and a repair that only decoded the range would delete
-	// that chunk's text for the overhang - usually the quiet first or last words
-	// of the utterance, which are the ones the detector is least sure of. See
-	// Transcript.RepairSpan.
 	startSample, endSample, found := s.transcript.RepairSpan(event.StartSample, event.EndSample)
 	if !found {
-		// The recogniser has produced nothing for this audio *yet*, which is not
-		// the same as producing nothing: a window covering the utterance can still
-		// be in flight, and for a short utterance it always is. Hold the segment;
-		// resolvePending retries when the text arrives.
-		return false
+		// Widen by half the silence the detector needed to close the utterance:
+		// it ends on the last loud frame, so its own range can clip a quiet tail,
+		// and half the hangover covers that without reaching the next utterance -
+		// the pause before one is at least the whole hangover. See padSamples.
+		startSample = event.StartSample - s.padSamples
+		if startSample < 0 {
+			startSample = 0
+		}
+		endSample = event.EndSample + s.padSamples
 	}
 	pcm, ok := s.buffer.Slice(startSample, endSample)
 	if !ok {
@@ -470,45 +454,15 @@ func (s *session) resolveSegment(event audio.SegmentEvent) bool {
 			s.notify.Skipped("segment too long to repair; committing stream text")
 		}
 		s.commitProvisional()
-		return true
+		return
 	}
 	select {
 	case s.repairQueue <- repairJob{pcm: pcm, startSample: startSample, endSample: endSample}:
-		return true
 	default:
 		if s.notify.Skipped != nil {
 			s.notify.Skipped("repair queue full; committing stream text")
 		}
 		s.commitProvisional()
-		return true
-	}
-}
-
-// resolvePending releases the segments held because the streaming layer had not
-// reached them when they closed.
-//
-// It runs in the capture goroutine, which owns the rolling buffer, and is woken by
-// the flag the recognition goroutine sets when it appends text. Segments are
-// released oldest first, and one whose audio has already been delivered is dropped
-// rather than decoded again: a later segment's repair re-decodes the union of its
-// own range and every chunk it replaces, and that union can carry an earlier held
-// utterance out with it.
-//
-// A segment that still has no text stops the walk. Its covering window has not
-// arrived yet and the segments behind it are newer, so holding keeps delivery in
-// order; if no window ever carries text for it, the session stop still delivers
-// whatever became provisional.
-func (s *session) resolvePending() {
-	for len(s.pending) > 0 {
-		segment := s.pending[0]
-		if s.transcript.DeliveredEnd() >= segment.EndSample {
-			s.pending = s.pending[1:]
-			continue
-		}
-		if !s.resolveSegment(segment) {
-			return
-		}
-		s.pending = s.pending[1:]
 	}
 }
 

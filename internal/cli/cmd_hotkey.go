@@ -12,14 +12,18 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/wallacegibbon/voiceime/internal/config"
 	"github.com/wallacegibbon/voiceime/internal/gnome"
 	"github.com/wallacegibbon/voiceime/internal/ibus"
 )
 
-// cmdHotkey runs the push-to-talk listener: hold the configured key to dictate,
-// release to return to whatever input method was selected before.
+// cmdHotkey runs the dictation listener: tap the configured key to start
+// dictating, tap it again to return to whatever input method was selected
+// before. On Wayland the listener receives the key itself; on X11 a GNOME
+// keybinding runs `hotkey toggle` instead, because the IBus registration is not
+// grabbed there (see sessionType and docs/DEPLOY.md).
 func cmdHotkey() *Command {
 	var (
 		spec      string
@@ -30,11 +34,11 @@ func cmdHotkey() *Command {
 	)
 	return &Command{
 		Name:    "hotkey",
-		Summary: "Listen for a global shortcut and switch to voiceime while it is held",
+		Summary: "Listen for a global shortcut and toggle dictation when it is tapped",
 		Usage:   "voiceime hotkey <run|toggle|install|uninstall|status> [--keys <combo>]",
 		Flags: func(set *flag.FlagSet) {
-			set.StringVar(&spec, "keys", "", "shortcut to hold, e.g. <Control>apostrophe (default: from config)")
-			set.StringVar(&keyspec, "engine", "", "engine to switch to while held (default: from config)")
+			set.StringVar(&spec, "keys", "", "shortcut to tap, e.g. <Control>apostrophe (default: from config)")
+			set.StringVar(&keyspec, "engine", "", "engine to switch to while dictating (default: from config)")
 			set.BoolVar(&quiet, "quiet", false, "only report state changes")
 			set.BoolVar(&install, "yes", false, "accepted and ignored; keeps scripts uniform")
 			set.BoolVar(&logEvents, "log-events", false, "log every shortcut event the daemon sends, not just the ones acted on")
@@ -246,8 +250,11 @@ func installHotkeyService(ctx *Context, spec string) error {
 		return FailureError("%v", err)
 	}
 
+	// Documentation= names the agent guide beside the binary: `make install` puts
+	// the docs at <prefix>/docs/, and a checkout run finds <repo>/docs/. A path
+	// with nothing behind it is a dead link systemd cannot report.
 	unit := fmt.Sprintf(`[Unit]
-Description=voiceime push-to-talk listener
+Description=voiceime dictation shortcut listener
 Documentation=file://%s
 
 [Service]
@@ -282,16 +289,17 @@ WantedBy=default.target
 			applied = true
 		}
 	}
-	// The IBus registration only fires where a component honours it, which in
-	// this project means Wayland: there the compositor grabs the key and echoes
-	// the event back. On X11 nothing grabs it - measured: ibus-daemon has no
-	// display connection at all, and the desktop's ibus integration never reads
-	// the property - so an X11 session also gets a GNOME keybinding, because
-	// gsd-media-keys does grab keys there. Both are installed on X11: the unit is
-	// harmless and keeps working if the session ever moves to Wayland.
+	// The IBus registration is honoured on Wayland, where the compositor grabs the
+	// key and echoes the event back to the listener. On X11 the desktop's ibus
+	// integration never reads the property, so the key reaches the focused
+	// application instead; gsd-media-keys does grab keys there, so an X11 session
+	// also gets a GNOME custom keybinding that runs `voiceime hotkey toggle`. The
+	// unit is installed either way - it is inert on X11 and keeps working if the
+	// session ever moves to Wayland.
 	session := sessionType()
 	mechanisms := []string{"ibus-global-shortcut"}
 	var keybinding any
+	var warning string
 	switch session {
 	case "x11":
 		mechanisms = append(mechanisms, "gnome-keybinding")
@@ -301,9 +309,16 @@ WantedBy=default.target
 		// have the GNOME keybinding, and on Wayland the IBus shortcut works too,
 		// so two consumers would fight over one key.
 		removeStaleGnomeKeybinding(ctx)
+	default:
+		// Not a display server: a plain tty, an ssh session, cron. Only the IBus
+		// shortcut is installed, and on X11 it is inert, so a trigger installed
+		// from here may simply do nothing. Name the detected session and the fix
+		// rather than reporting a successful install of nothing.
+		warning = fmt.Sprintf("session type %q is not a display server; on X11 the IBus shortcut is inert, so the trigger cannot be confirmed. Run `voiceime hotkey install` from a terminal inside the graphical session", session)
+		ctx.Print("note: %s", warning)
 	}
 
-	return ctx.Emit("hotkey install", map[string]any{
+	result := map[string]any{
 		"unit":          path,
 		"commands":      commands,
 		"applied":       applied,
@@ -311,7 +326,11 @@ WantedBy=default.target
 		"session":       session,
 		"mechanisms":    mechanisms,
 		"gnome_binding": keybinding,
-	})
+	}
+	if warning != "" {
+		result["warning"] = warning
+	}
+	return ctx.Emit("hotkey install", result)
 }
 
 // removeStaleGnomeKeybinding clears a keybinding a previous X11 install left
@@ -332,12 +351,20 @@ func removeStaleGnomeKeybinding(ctx *Context) {
 
 // sessionType names the display server the command runs under. It is the one
 // thing this deployment branches on, because it decides which component can grab
-// the global shortcut. XDG_SESSION_TYPE is authoritative when the session set
-// it; the two display variables cover a shell that did not inherit it (a plain
-// login shell, or another user's environment).
+// the global shortcut.
+//
+// Only `x11` and `wayland` are display servers, so only those are taken from
+// XDG_SESSION_TYPE. That variable can also read `tty` - an ssh or console shell -
+// or be unset, and treating `tty` as a session type is how an install run over
+// ssh chose neither trigger and reported success. When it is not a display
+// server the display variables are the better evidence; the raw value is
+// returned when nothing says otherwise, so a caller can report it instead of
+// guessing.
 func sessionType() string {
-	if value := strings.ToLower(strings.TrimSpace(os.Getenv("XDG_SESSION_TYPE"))); value != "" {
-		return value
+	declared := strings.ToLower(strings.TrimSpace(os.Getenv("XDG_SESSION_TYPE")))
+	switch declared {
+	case "x11", "wayland":
+		return declared
 	}
 	if os.Getenv("WAYLAND_DISPLAY") != "" {
 		return "wayland"
@@ -345,7 +372,7 @@ func sessionType() string {
 	if os.Getenv("DISPLAY") != "" {
 		return "x11"
 	}
-	return ""
+	return declared
 }
 
 // installGnomeKeybinding adds the X11-only trigger and returns what happened, so
@@ -380,6 +407,45 @@ func installGnomeKeybinding(ctx *Context, spec, binary string) map[string]any {
 	return info
 }
 
+// repeatGuard is how long after a press a second `hotkey toggle` is treated as
+// the key repeating rather than a new press.
+//
+// The listener guards a hold with its `held` flag (D13), but the X11 trigger is a
+// GNOME keybinding that runs this command once per key event - including every
+// auto-repeat tick of a held key - so the guard has to live in the file system.
+// It must exceed the X11 auto-repeat delay: a held key emits its *first* repeat
+// only after that delay, so a shorter window would let that repeat through and
+// toggle straight back to where it started. The reference delay is 500 ms (the
+// xset default is 660 ms), so the window sits above both. The cost is that two
+// deliberate presses closer than the window collapse into one, which for a
+// tap-to-toggle key normally seconds apart is not a loss.
+const repeatGuard = 700 * time.Millisecond
+
+// repeatGuardPath records the time of the press that was last acted on. Fixed
+// rather than generated, so repeat guard and toggle agree without any state.
+func repeatGuardPath() string {
+	return filepath.Join(config.CacheDir(), "hotkey-last-press")
+}
+
+// suppressRepeat reports whether this invocation is an auto-repeat of a press
+// already acted on, refreshing the marker so a continuous hold stays one press
+// until it ends. A missing or unreadable marker means "act": the first press of a
+// hold, and every press on a machine that does not repeat, must get through. The
+// marker's mtime is the clock - one file operation, and no format to parse.
+func suppressRepeat(path string, now time.Time) bool {
+	if info, err := os.Stat(path); err == nil {
+		if age := now.Sub(info.ModTime()); age >= 0 && age < repeatGuard {
+			_ = os.Chtimes(path, now, now)
+			return true
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return false
+	}
+	_ = os.WriteFile(path, []byte(now.UTC().Format(time.RFC3339Nano)), 0o644)
+	return false
+}
+
 // toggleHotkey turns dictation on or off in one shot. A platform keybinding runs
 // a command on a key press, so the persistent-listener design cannot be reused
 // there; the engine the user was on before is remembered so the second press
@@ -393,6 +459,16 @@ func toggleHotkey(ctx *Context) error {
 	current, err := ibus.CurrentEngine(address)
 	if err != nil {
 		return FailureError("%v", err)
+	}
+	// A held key repeats, and gsd-media-keys runs this command on every repeat,
+	// so without the guard the engine switches once per repeat and ends up
+	// wherever the parity leaves it (measured: 52 toggles for a 2s hold).
+	if suppressRepeat(repeatGuardPath(), time.Now()) {
+		ctx.Print("ignored: %s is repeating", hotkeySpec(ctx, ""))
+		return ctx.Emit("hotkey toggle", map[string]any{
+			"dictation": current == target,
+			"skipped":   "key repeat",
+		})
 	}
 	statePath := filepath.Join(config.CacheDir(), "hotkey-previous")
 
@@ -528,14 +604,18 @@ func hotkeyStatus(ctx *Context, spec string) error {
 	} else {
 		ctx.Print("listener: not running (voiceime hotkey install)")
 	}
-	if session == "x11" {
+	switch session {
+	case "x11":
 		if _, ok := state["gnome_binding"]; ok {
 			ctx.Print("trigger: GNOME keybinding - the IBus shortcut is not grabbed on X11")
 		} else {
 			ctx.Print("trigger: none - on X11 the IBus shortcut is inert; run `voiceime hotkey install`")
 		}
-	} else {
+	case "wayland":
 		ctx.Print("trigger: IBus global shortcut")
+	default:
+		ctx.Print("trigger: unknown - session type is %q, not a display server; the IBus", session)
+		ctx.Print("         shortcut is only honoured on Wayland, so this cannot be confirmed here")
 	}
 	ctx.Print("note: IBus keeps one global shortcut registration; another consumer's")
 	ctx.Print("      registration does not include ours, and vice versa.")

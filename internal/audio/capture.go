@@ -151,18 +151,31 @@ func (c *captureBase) readLoop(reader io.Reader, wait func() error) {
 				c.setErr(fmt.Errorf("capture read: %w", err))
 				return
 			}
-			// The stream ended. A source that exits on its own (stop requested,
-			// device gone) is not automatically an error, so the wait result and
-			// the amount of audio produced decide.
+			// The stream ended. Reap the client first: Wait is what releases it,
+			// and it is the only place the exit status is available.
+			var waitErr error
 			if wait != nil {
-				if waitErr := wait(); waitErr != nil {
-					message := fmt.Sprintf("capture process exited: %v", waitErr)
-					if tail := c.diagnosticTail(); tail != "" {
-						message += ": " + tail
-					}
-					c.setErr(fmt.Errorf("%s", message))
-					return
+				waitErr = wait()
+			}
+			// A stop we asked for is the normal way a session ends, and it is
+			// not a failure: Stop closes c.stop and then kills the client, so
+			// the client dies on a signal and the reader sees EOF - wait()
+			// reports the signal, never a clean exit. Checking the request
+			// before the status is what stops a clean shutdown surfacing as
+			// "capture process exited: signal: killed" on every run. A client
+			// that died on its own, with no stop requested, is still an error.
+			select {
+			case <-c.stop:
+				return
+			default:
+			}
+			if waitErr != nil {
+				message := fmt.Sprintf("capture process exited: %v", waitErr)
+				if tail := c.diagnosticTail(); tail != "" {
+					message += ": " + tail
 				}
+				c.setErr(fmt.Errorf("%s", message))
+				return
 			}
 			if published == 0 {
 				message := "capture produced no audio"

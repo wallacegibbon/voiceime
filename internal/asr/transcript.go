@@ -207,6 +207,19 @@ func (t *Transcript) ProvisionalText() string {
 	return t.provisionalTextLocked()
 }
 
+// DeliveredEnd is the furthest sample the application has already been given: the
+// end of the audio covered by committed chunks.
+//
+// A session uses it to drop an utterance it was holding for its text: a later
+// segment's repair decodes the union of its own range and every chunk it replaces,
+// so it can carry an earlier held utterance out with it, and decoding that one
+// again would deliver the same words twice.
+func (t *Transcript) DeliveredEnd() int64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.deliveredEndLocked()
+}
+
 // deliveredEndLocked is the end of the audio the application has already been
 // given: the furthest sample covered by a committed chunk.
 func (t *Transcript) deliveredEndLocked() int64 {

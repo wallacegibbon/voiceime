@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/wallacegibbon/voiceime/internal/asr"
@@ -33,7 +35,7 @@ func cmdServer() *Command {
 	return &Command{
 		Name:    "server",
 		Summary: "Install, remove or inspect the resident recognition server",
-		Usage:   "voiceime server <install|uninstall|status> [--port N] [--stream-model PATH] [--repair-model PATH]",
+		Usage:   "voiceime server <install|uninstall|status|restart|run> [--port N] [--stream-model PATH] [--repair-model PATH]",
 		Flags: func(set *flag.FlagSet) {
 			set.IntVar(&port, "port", server.DefaultPort, "port the server listens on")
 			set.StringVar(&streamModel, "stream-model", "", "GGUF for live partials (default: streaming_model, or the best installed streaming model)")
@@ -47,6 +49,13 @@ func cmdServer() *Command {
 			switch action {
 			case "install":
 				return runServerInstall(ctx, port, streamModel, repairModel)
+			case "run":
+				// What the unit starts: render the config from the settings, then be the
+				// server. Kept separate from install so that a setting change needs only
+				// a restart.
+				return runServerForeground(ctx, port, streamModel, repairModel)
+			case "restart":
+				return runServerRestart(ctx)
 			case "uninstall":
 				return runServerUninstall(ctx)
 			case "status":
@@ -106,7 +115,7 @@ func runServerInstall(ctx *Context, port int, streamFlag, repairFlag string) err
 	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
 		return FailureError("%v", err)
 	}
-	if err := os.WriteFile(unitPath, []byte(serverUnit(binary, configPath)), 0o644); err != nil {
+	if err := os.WriteFile(unitPath, []byte(serverUnit(ctx, binary, configPath)), 0o644); err != nil {
 		return FailureError("%v", err)
 	}
 
@@ -278,24 +287,127 @@ func buildServerSpec(cfg *config.Config, scanned []models.Model, port int, strea
 
 // serverUnit renders the systemd user unit that keeps the server running.
 //
-// Two things in it are load-bearing: ExecStart names the generated config (a server
-// started without one has no models to serve), and Documentation= names the agent
-// guide beside the binary - `make install` puts the docs at <prefix>/docs/, and a path
-// with nothing behind it is a dead link systemd cannot report.
-func serverUnit(binary, configPath string) string {
+// It starts *voiceime*, not audio.cpp directly, and that is the point: `server run`
+// renders the server config from voiceime's settings and then runs the server. There is
+// one source of truth for which models are served, so `systemctl --user restart` picks
+// up a changed setting and a stale config is impossible - the alternative was a second
+// file that had to be rewritten by hand (by `server install`) and could silently disagree.
+func serverUnit(ctx *Context, serverBinary, configPath string) string {
+	self, err := os.Executable()
+	if err != nil {
+		self = "voiceime"
+	}
 	return fmt.Sprintf(`[Unit]
 Description=voiceime recognition server (audio.cpp ASR, models resident)
 Documentation=file://%s
 
 [Service]
 Type=simple
-ExecStart=%s --config %s
+ExecStart=%s server run
 Restart=on-failure
 RestartSec=2
 
 [Install]
 WantedBy=default.target
-`, filepath.Join(filepath.Dir(binary), "..", "docs", "AGENT.md"), binary, configPath)
+`, filepath.Join(filepath.Dir(serverBinary), "..", "docs", "AGENT.md"), self)
+}
+
+// runServerForeground is what the unit's ExecStart runs: write the config that matches
+// the settings, then become the server.
+//
+// Rendering here rather than only in `install` is what removes the second source of
+// truth. Changing a model is a setting, and a restart is all it takes for the service to
+// serve it - there is no generated file that can disagree with the configuration.
+func runServerForeground(ctx *Context, port int, streamFlag, repairFlag string) error {
+	cfg := ctx.Config
+	scanned, err := models.Scan(cfg, false, nil)
+	if err != nil {
+		return FailureError("%v", err)
+	}
+	spec, err := buildServerSpec(cfg, scanned, port, streamFlag, repairFlag)
+	if err != nil {
+		return PreconditionError("voiceime server install", "%v", err)
+	}
+	path := serverConfigFile()
+	if err := server.WriteConfig(spec, path); err != nil {
+		return FailureError("%v", err)
+	}
+	binary, err := cfg.FindServerBinary()
+	if err != nil {
+		return PreconditionError("voiceime config set asr_bin /path/to/audio.cpp/build/<backend>/bin/audiocpp_cli",
+			"%v", err)
+	}
+	if !ctx.JSON {
+		ctx.Print("serving %s for partials and %s for repair (config %s)",
+			filepath.Base(spec.StreamModel), filepath.Base(spec.RepairModel), path)
+	}
+
+	cmd := exec.Command(binary, "--config", path, "--log")
+	cmd.Stdout = ctx.Stdout
+	cmd.Stderr = ctx.Stderr
+	if err := cmd.Start(); err != nil {
+		return FailureError("start %s: %v", binary, err)
+	}
+	// Forward a stop rather than dying and orphaning the child: systemd kills the whole
+	// cgroup, but an operator running this by hand with Ctrl-C would otherwise leave a
+	// server behind.
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			return FailureError("%s exited: %v", filepath.Base(binary), err)
+		}
+		return nil
+	case <-signals:
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			_ = cmd.Process.Kill()
+		}
+		return nil
+	}
+}
+
+// runServerRestart applies a changed setting: restart the unit and wait until it serves
+// what the configuration now names.
+func runServerRestart(ctx *Context) error {
+	if _, err := os.Stat(serverUnitPath()); err != nil {
+		return PreconditionError("voiceime server install", "no service is installed yet")
+	}
+	if err := runCommand("systemctl --user restart " + serverUnitName); err != nil {
+		return FailureError("systemctl --user restart %s: %v", serverUnitName, err)
+	}
+	scanned, err := models.Scan(ctx.Config, false, nil)
+	if err != nil {
+		return FailureError("%v", err)
+	}
+	host, port, err := server.ParseURL(ctx.Config.ASRServerURL)
+	if err != nil {
+		return PreconditionError("voiceime server install", "%v", err)
+	}
+	_ = host
+	spec, err := buildServerSpec(ctx.Config, scanned, port, "", "")
+	if err != nil {
+		return PreconditionError("voiceime server install", "%v", err)
+	}
+	probeCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	if err := waitForEntries(probeCtx, ctx.Config.ASRServerURL, spec); err != nil {
+		return FailureError("%v", err)
+	}
+	if !ctx.JSON {
+		ctx.Print("restarted; serving %s for partials and %s for repair",
+			filepath.Base(spec.StreamModel), filepath.Base(spec.RepairModel))
+	}
+	return ctx.Emit("server", map[string]any{
+		"restarted":    true,
+		"stream_model": spec.StreamModel,
+		"repair_model": spec.RepairModel,
+	})
 }
 
 func runServerUninstall(ctx *Context) error {

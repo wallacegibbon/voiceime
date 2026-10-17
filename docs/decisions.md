@@ -766,8 +766,15 @@ second - so the draft appears during speech exactly as the CLI's did.
 `doctor` fails and says `voiceime server install`, and `stream` refuses to start. That is
 the trade for deleting the fallback - one dependency, one failure mode, one message -
 and it is why the unit is installed by the same command shape as the shortcut listener.
-`chunk_seconds` moved into the generated server config, so changing it needs
-`voiceime server install` again; `doctor` reports the entries the server actually serves.
+`chunk_seconds` and the model paths are read by the service at startup rather than per
+request, which initially made changing one a three-step ritual (`config set`, then
+`server install` to rewrite a generated file, then hope the service was restarted - it was
+not, because `systemctl enable --now` does nothing to a running unit). The unit now runs
+`voiceime server run`, which renders the server config from the settings before exec'ing
+audio.cpp, so the settings are the only source of truth: `config set` names
+`voiceime server restart` as the next step, and that is all it takes. `doctor` compares the
+paths being served with the paths configured, so a service left on the previous checkpoint
+is reported by name instead of showing up as slightly different text.
 
 **Rejected.** Keeping the CLI for streaming (D21) - it pays a model load per session and
 keeps two transport implementations alive. Two entries for one model id - the live

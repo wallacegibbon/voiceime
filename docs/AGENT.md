@@ -122,10 +122,11 @@ Settings that matter, and the reasoning a caller needs to pick values:
 | `download_mirror` | `https://hf-mirror.com` | Endpoint downloads go through, written to `HF_ENDPOINT`. Any Hugging Face protocol host works: `https://huggingface.co`, a company cache, a LAN address. |
 | `session_options` / `request_options` | `{}` | Passed straight to `audiocpp_cli`. |
 
-Two settings are compiled into the service rather than read per request:
-`chunk_seconds` and the model paths. After changing either, run `voiceime server install`
-(which rewrites `~/.config/voiceime/asr-server.json` and restarts the unit) - a `config
-set` on its own has no effect on what is running, and `doctor` reports the mismatch.
+Some settings are read by the recognition service at startup rather than per request:
+the model paths, `chunk_seconds`, `threads`, `backend`, `language`, and the option maps.
+`voiceime config set` names the command that applies them (`voiceime server restart`),
+which re-renders the service config from the settings and waits until it serves them. The
+unit runs `voiceime server run`, so the settings are the only source of truth.
 
 Validate after changing anything:
 
@@ -265,6 +266,7 @@ voiceime hotkey install               # systemd --user unit, starts at login;
 voiceime hotkey status --json         # data.session, data.mechanisms, data.gnome_binding
 voiceime hotkey toggle                # the one-shot toggle the keybinding runs
 voiceime server install               # the resident recognition server (required for dictation)
+voiceime server restart               # apply changed models/chunk_seconds (re-render + restart)
 voiceime server status --json         # data.unit_active, data.listening, data.entries_served
 voiceime server uninstall             # stop and remove it
 voiceime hotkey run --log-events      # foreground, prints every event the daemon sends

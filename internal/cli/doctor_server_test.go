@@ -188,12 +188,16 @@ func TestServerEntryDefaults(t *testing.T) {
 }
 
 // The unit file is what makes the server exist across reboots, and what it starts
-// decides whether the service is useful: a unit whose ExecStart names no config starts
-// a server with no models, which is worse than not starting one.
-func TestServerUnitNamesBothPaths(t *testing.T) {
-	unit := serverUnit("/opt/audio.cpp/build/linux-cpu-release/bin/audiocpp_server", "/home/u/.config/voiceime/asr-server.json")
-	if !strings.Contains(unit, "ExecStart=/opt/audio.cpp/build/linux-cpu-release/bin/audiocpp_server --config /home/u/.config/voiceime/asr-server.json") {
-		t.Errorf("unit does not start the server on its config:\n%s", unit)
+// matters as much as whether it starts: it runs voiceime, which renders the server
+// config from the settings, so a changed model needs only a restart and a stale config
+// is impossible.
+func TestServerUnitRunsVoiceimeWithSubcommand(t *testing.T) {
+	unit := serverUnit(nil, "/opt/audio.cpp/build/linux-cpu-release/bin/audiocpp_server", "/home/u/.config/voiceime/asr-server.json")
+	if !strings.Contains(unit, " server run") {
+		t.Errorf("unit does not run the server subcommand:\n%s", unit)
+	}
+	if strings.Contains(unit, "audiocpp_server --config") {
+		t.Error("unit starts audio.cpp directly, so a changed setting would need the config rewritten by hand")
 	}
 	if !strings.Contains(unit, "Restart=on-failure") {
 		t.Error("unit does not restart a server that dies")
@@ -201,8 +205,22 @@ func TestServerUnitNamesBothPaths(t *testing.T) {
 	if !strings.Contains(unit, "WantedBy=default.target") {
 		t.Error("unit is not enabled for the user session")
 	}
-	// filepath.Join cleans the "..", so the documented path is the resolved one.
 	if !strings.Contains(unit, "Documentation=file:///opt/audio.cpp/build/linux-cpu-release/docs/AGENT.md") {
 		t.Errorf("unit does not document itself beside the binary:\n%s", unit)
+	}
+}
+
+// Settings that only reach the service at startup say so, because a `config set` that
+// looks like it did nothing is the failure this project keeps running into.
+func TestServiceSettingsAreNamed(t *testing.T) {
+	for _, key := range []string{"refine_model", "streaming_model", "chunk_seconds", "threads", "backend"} {
+		if !serviceSetting(key) {
+			t.Errorf("%s is compiled into the service but is not reported as such", key)
+		}
+	}
+	for _, key := range []string{"endpoint_silence_ms", "hotkey", "silence_rms_threshold"} {
+		if serviceSetting(key) {
+			t.Errorf("%s is read per session but is reported as a service setting", key)
+		}
 	}
 }

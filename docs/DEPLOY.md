@@ -242,30 +242,31 @@ copies, and is what a machine with one small model should do.
 
 #### Changing a model
 
-The models are not read from voiceime's settings at runtime: `server install` writes them
-into the service config and the service loads them when it starts. So changing a setting
-alone changes nothing until the config is rewritten and the service restarted:
+Two commands, and no second file to remember:
 
 ```sh
 "$BIN" config set refine_model ~/models/Other-GGUF/other.gguf   # what the repair entry serves
-"$BIN" server install                                           # rewrite the config, restart
-"$BIN" doctor                                                   # asr_server must be ok
+"$BIN" server restart                                            # re-render, restart, wait for it
 ```
 
-`server install` restarts the unit and then waits until it serves the checkpoints it was
-given. Both halves matter: `systemctl enable --now` starts a stopped unit and does
-*nothing* to a running one, so without the restart the previous weights would keep
-answering every request while the report said `serving at ...`. And waiting for `/health`
-would not be enough either, since the old server answers that too.
+`config set` prints that second command when the setting is one the service reads at
+startup (models, `chunk_seconds`, `threads`, `backend`, `language`, the option maps).
 
-`doctor` compares the *paths* the service is serving with the ones the settings name, for
-the same reason: the entry ids never change when a user points one at another checkpoint,
-so a service left on the old weights is otherwise invisible - the failure mode is not an
-error, it is slightly different text.
+The unit runs `voiceime server run` rather than audio.cpp directly: that subcommand
+renders `~/.config/voiceime/asr-server.json` from the settings and then runs the server.
+There is therefore one source of truth - the configuration - and no generated file that
+can disagree with it. `server restart` waits until the entries being served are the ones
+the settings name, because a restart that has not finished loading is a service that
+answers the old requests.
 
-The same applies to anything else baked into the generated config: `chunk_seconds`,
-`threads`, `backend`, `streaming_model`, and `request_options` all reach the service
-through `server install`, not at request time.
+`doctor` compares the *paths* being served with the paths configured, so a service left
+on the previous checkpoint cannot hide: the entry ids never change, and the symptom of a
+stale service is slightly different text rather than an error.
+
+The same applies to everything else the service reads at startup: `chunk_seconds`,
+`threads`, `backend`, `streaming_model`, and the option maps. `--stream-model` and
+`--repair-model` still exist on `server install` for a one-off, but they write settings -
+a plain restart is what applies them.
 
 #### Why the server needs the model memory
 

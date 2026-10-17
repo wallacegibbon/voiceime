@@ -34,6 +34,18 @@ func cmdConfig() *Command {
 	}
 }
 
+// serviceSetting reports whether a setting is one the recognition service reads when it
+// starts, rather than one the session reads per request.
+func serviceSetting(key string) bool {
+	switch key {
+	case "streaming_model", "refine_model", "chunk_seconds", "threads", "backend",
+		"language", "session_options", "request_options",
+		"asr_server_stream_model", "asr_server_model":
+		return true
+	}
+	return false
+}
+
 func runConfig(ctx *Context, args []string, force bool) error {
 	if len(args) == 0 {
 		return UsageError("config needs an action: path, show, init, get, set or validate")
@@ -153,8 +165,17 @@ func runConfig(ctx *Context, args []string, force bool) error {
 			})
 		}
 		ctx.Print("%s = %v", key, value)
+		// A few settings are compiled into the recognition service when it starts rather
+		// than read per request. Saying which, and what applies them, is the difference
+		// between a setting that works and one that looks like it did nothing.
+		applies := ""
+		if serviceSetting(key) {
+			applies = "voiceime server restart"
+			ctx.Print("this reaches the recognition service at startup: run `%s`", applies)
+		}
 		return ctx.Emit("config set", map[string]any{
 			"key": key, "previous": previous, "value": value, "written": true, "valid": true,
+			"apply_with": applies,
 		})
 
 	case "validate":

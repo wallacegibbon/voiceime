@@ -266,3 +266,46 @@ func isExecutable(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir() && info.Mode()&0o111 != 0
 }
+
+// serverUnitCheck verifies the recognition server's unit, which has the same failure mode
+// as the listener's - a path baked in at install time that later stops existing - plus one
+// of its own: a unit written from a checkout runs the *checkout* build, so an installed
+// copy and the running service can be different code while every other check passes.
+func serverUnitCheck(ctx *Context, report func(Check)) {
+	path := serverUnitPath()
+	if path == "" || !fileExists(path) {
+		report(Check{
+			ID:     "server_unit",
+			Status: "fail",
+			Detail: "no recognition server unit; dictation decodes through one, so nothing works without it",
+			Fix:    "voiceime server install",
+		})
+		return
+	}
+	exec, err := unitExecStart(path)
+	if err != nil {
+		report(Check{ID: "server_unit", Status: "fail", Detail: err.Error(), Fix: "voiceime server install"})
+		return
+	}
+	if !isExecutable(exec) {
+		report(Check{
+			ID:     "server_unit",
+			Status: "fail",
+			Detail: fmt.Sprintf("%s runs %s, which does not exist; systemd will restart it forever with status=203/EXEC", path, exec),
+			Fix:    "voiceime server install",
+		})
+		return
+	}
+	// The installed copy is what `make install` updates, so a unit pointing anywhere else
+	// is a service that does not follow the installation.
+	if self, err := os.Executable(); err == nil && filepath.Clean(self) != filepath.Clean(exec) {
+		report(Check{
+			ID:     "server_unit",
+			Status: "warn",
+			Detail: fmt.Sprintf("the unit runs %s, not this installed binary (%s): `make install` does not update the running service", exec, self),
+			Fix:    "voiceime server install",
+		})
+		return
+	}
+	report(Check{ID: "server_unit", Status: "ok", Detail: exec})
+}

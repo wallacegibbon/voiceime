@@ -214,6 +214,7 @@ func runDoctor(ctx *Context, refresh bool) []Check {
 	// systemd unit, and whether the running processes came from this binary. A
 	// moved checkout breaks all three silently (see install_check.go).
 	installChecks(ctx, report)
+	serverUnitCheck(ctx, report)
 
 	return checks
 }

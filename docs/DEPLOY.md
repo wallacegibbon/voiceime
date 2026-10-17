@@ -217,6 +217,24 @@ be run by hand: it is spawned as dictation begins and stopped when the session e
 and a server already listening on that address is used and left alone. The session
 log, or `stream --events` (`repair_route`), names the route in use.
 
+That route adds nothing to this deployment. There is no unit to install and no
+service to enable, because its lifetime is one dictation session, and updating an
+installed copy needs no step for it either - the next session starts the new binary.
+What it does need is present at deploy time and easy to get wrong, so it is worth
+knowing where the moving parts are:
+
+| Piece | Where | What it means for deployment |
+|---|---|---|
+| `audiocpp_server` | beside `audiocpp_cli` in the same audio.cpp build tree | Nothing to install separately: the build produces it, and discovery looks in the same places as for the CLI. A build without it makes the route fall back to a process per utterance, which `doctor` reports as `asr_server` failing |
+| generated config | `~/.cache/voiceime/asr-server-<port>.json` | Rewritten at the start of every session from `refine_model`, so editing it by hand is pointless - change the setting instead. This is the file to read when a start fails |
+| server log | `~/.cache/voiceime/asr-server-<port>.log` | Truncated per session, and the reason a start failed is at the end of it (`audiocpp_server failed: ...`). `doctor` and the session log quote its tail |
+| model family | `voiceime models refresh` cache | The server requires the model's audio.cpp family, which comes from `audiocpp_cli --inspect`. A model the cache cannot see is a `doctor` failure, not a runtime surprise |
+
+The state to check after enabling it is `doctor`'s `asr_server` line: `off` when the
+route is not in use, `started on demand at ... serving ...` when it will work, a
+`fail` naming the setting that is wrong, and a `warn` when it is configured for a
+server that is not running and cannot be started from this machine.
+
 **The GPU half of this table is an inference, not a measurement.** No GPU backend
 has been benchmarked for this project (`docs/measurements.md`, "Not measured yet");
 what is measured is that the repair cost on CPU is dominated by weight loading,
@@ -424,7 +442,9 @@ block echoed `ok` for each whatever the command returned, so it could not fail.
 on the first activation, so it reads `1` on a fresh machine until you tap the key
 once (`ibus engine voiceime` does it too). Once dictation has been activated, `0`
 there is the end-to-end proof that the engine, capture and the recogniser all came
-up. The one thing no command can assert is a human seeing text appear in a focused
+up. `doctor`'s `asr_server` line is part of `doctor=0`: it fails only when the route
+is configured and cannot work, which is the one failure dictation itself hides -
+repairs keep running as a process per utterance, so nothing looks broken. The one thing no command can assert is a human seeing text appear in a focused
 window; if that is the goal, dictate one sentence into a text editor and watch for
 it.
 
@@ -559,6 +579,8 @@ the problem is capture (`voiceime devices`) or the model (`voiceime doctor`).
 "$BIN" engine uninstall              # removes the component file
 make uninstall                       # removes ~/.local/bin/voiceime
 "$BIN" models uninstall sensevoice_small_q8
+pkill -f audiocpp_server             # only if one outlived a killed session
+rm -f ~/.cache/voiceime/asr-server-*  # the server config/log the repair route writes
 ```
 
 `engine uninstall` leaves `IBUS_COMPONENT_PATH` pointing at an empty directory;
@@ -581,3 +603,11 @@ Stated so nobody mistakes an assumption for a result:
   - but it is the less-travelled half, and it was the half with the defect.
 * **Multi-user machines.** IBus component paths and the wire format for committed
   text are recorded in `docs/ibus-protocol.md`.
+* **A repair server that outlives its session.** The spawned server is stopped when
+  the session ends, but a voiceime process killed outright (`SIGKILL`, a crash) cannot
+  run that stop, so the child survives. It is harmless and reused: the next session
+  finds it listening and uses it, and `idle_unload_ms` releases its weights two
+  minutes after the last request. `pgrep -af audiocpp_server` is the check, and
+  `pkill -f audiocpp_server` the cleanup. A systemd user unit would close this gap and
+  is what to reach for if the route ever needs to be supervised rather than merely
+  started.

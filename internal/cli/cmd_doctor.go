@@ -342,13 +342,28 @@ func modelChecks(ctx *Context, refresh bool, report func(Check)) {
 			Detail: "reuses the streaming model (fastest repair)",
 		})
 		if better := models.SuggestRepair(scanned, streamingFamily); better != nil {
+			detail := fmt.Sprintf("%s (%s, %s) is installed and is the more accurate reader; on CPU one repair costs ~1.3x real time, mostly loading the weights, so repairs would lag behind speech. With a GPU backend it is the recommended repair model",
+				better.Path, better.Family, models.Sizes(better.SizeBytes))
+			switch {
+			case cfg.ASRServerURL != "":
+				detail = fmt.Sprintf("%s (%s, %s) is installed and is the more accurate reader; as a process per utterance on CPU it would lag behind speech, but asr_server_url is set, so that load is paid once per dictation instead of once per sentence",
+					better.Path, better.Family, models.Sizes(better.SizeBytes))
+			case !models.RepairIsRealtime(*better):
+				// The fix below is a single setting, so the resolution that makes it
+				// affordable has to be named here or following it leads straight into
+				// the warning above.
+				detail += "; `voiceime config set asr_server_url http://127.0.0.1:18080` moves the load off the per-utterance path and makes this worthwhile on CPU"
+			}
 			report(Check{
 				ID:     "refine_model_advice",
 				Status: "warn",
-				Detail: fmt.Sprintf("%s (%s, %s) is installed and is the more accurate reader; on CPU one repair costs ~1.3x real time, mostly loading the weights, so repairs would lag behind speech. With a GPU backend it is the recommended repair model",
-					better.Path, better.Family, models.Sizes(better.SizeBytes)),
-				Fix: "voiceime config set refine_model " + better.Path,
+				Detail: detail,
+				Fix:    "voiceime config set refine_model " + better.Path,
 			})
 		}
 	}
+
+	// The optional resident server: the one part of a working installation nothing
+	// else verifies, because dictation keeps working when it cannot start.
+	report(asrServerCheck(cfg, scanned))
 }

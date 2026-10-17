@@ -317,7 +317,7 @@ func (s Spec) validate() error {
 		return fmt.Errorf("no config path to write")
 	case s.LogPath == "":
 		return fmt.Errorf("no log path to write")
-	case !isLocalHost(s.Host):
+	case !IsLocalHost(s.Host):
 		return fmt.Errorf("refusing to start a server for %s: autostart is for this machine", s.Host)
 	}
 	return nil
@@ -351,9 +351,9 @@ func (s Spec) resolveFamily() (string, error) {
 	return family, nil
 }
 
-// isLocalHost reports whether an address is this machine, which is what makes
+// IsLocalHost reports whether an address is this machine, which is what makes
 // starting a process for it sensible rather than surprising.
-func isLocalHost(host string) bool {
+func IsLocalHost(host string) bool {
 	switch host {
 	case "localhost", "127.0.0.1", "::1", "[::1]":
 		return true
@@ -390,6 +390,11 @@ func ParseURL(raw string) (host string, port int, err error) {
 	}
 	return host, port, nil
 }
+
+// Probe reports whether a server answers at the address. It answers the question a
+// caller asks before deciding whether to start one, and the one `doctor` asks before
+// reporting that a configured server is missing.
+func Probe(ctx context.Context, base string) error { return probe(ctx, base) }
 
 func probe(ctx context.Context, base string) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)

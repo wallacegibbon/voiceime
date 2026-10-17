@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wallacegibbon/voiceime/internal/asr"
 	"github.com/wallacegibbon/voiceime/internal/config"
 	"github.com/wallacegibbon/voiceime/internal/models"
 	"github.com/wallacegibbon/voiceime/internal/server"
@@ -90,13 +89,26 @@ func asrServerCheck(cfg *config.Config, scanned []models.Model, unitInstalled bo
 			Fix:    "voiceime config set asr_server_model refine",
 		}
 	}
+	entries, err := server.Entries(ctx, raw)
+	if err != nil {
+		return Check{ID: "asr_server", Status: "fail", Detail: err.Error(), Fix: "voiceime server install"}
+	}
+	offered := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		offered = append(offered, entry.ID)
+	}
 	for _, entry := range []string{streamEntry, repairEntry} {
-		transcriber := asr.ServerTranscriber{BaseURL: raw, Model: entry}
-		if err := transcriber.Check(ctx); err != nil {
+		found := false
+		for _, served := range entries {
+			if served.ID == entry {
+				found = true
+			}
+		}
+		if !found {
 			return Check{
 				ID:     "asr_server",
 				Status: "fail",
-				Detail: err.Error(),
+				Detail: fmt.Sprintf("the server has no entry %q (it offers: %s)", entry, strings.Join(offered, ", ")),
 				Fix:    "voiceime server install",
 			}
 		}
@@ -121,7 +133,7 @@ func asrServerCheck(cfg *config.Config, scanned []models.Model, unitInstalled bo
 		}
 	}
 	detail := fmt.Sprintf("%s is serving %s (partials) and %s (repair)", strings.TrimRight(raw, "/"), streamEntry, repairEntry)
-	if entries, err := server.Entries(ctx, raw); err == nil {
+	if entries != nil {
 		// Name the files as well as the ids: `streaming_model` may be empty (meaning
 		// "pick one"), and this is the line a user reads to find out what it picked.
 		named := make([]string, 0, len(entries))

@@ -220,7 +220,6 @@ func cmdIBusEngine() *Command {
 		tracePath      string
 		componentName  string
 		audioFile      string
-		repairModel    string
 	)
 	return &Command{
 		Name:    "ibus-engine",
@@ -234,8 +233,6 @@ func cmdIBusEngine() *Command {
 			set.StringVar(&tracePath, "trace", "", "append incoming D-Bus calls and the session log to this file")
 			set.StringVar(&audioFile, "audio-file", "",
 				"diagnostic: dictate from a WAV instead of the microphone")
-			set.StringVar(&repairModel, "repair-model", "",
-				"offline model for the repair pass (default: from config)")
 			set.StringVar(&componentName, "name", ibus.DefaultComponentName,
 				"bus name to own; must equal the component XML <name> of the file that spawned this process")
 		},
@@ -250,7 +247,6 @@ func cmdIBusEngine() *Command {
 				commitOnEnable: commitOnEnable,
 				componentName:  componentName,
 				audioFile:      audioFile,
-				repairModel:    repairModel,
 				tracePath:      tracePath,
 			})
 		},
@@ -264,13 +260,12 @@ type engineRunOptions struct {
 	commitOnEnable string
 	componentName  string
 	audioFile      string
-	repairModel    string
 	tracePath      string
 }
 
 func runIBusEngine(ctx *Context, options engineRunOptions) error {
 	address, commitOnEnable, componentName := options.address, options.commitOnEnable, options.componentName
-	audioFile, repairModel, tracePath := options.audioFile, options.repairModel, options.tracePath
+	audioFile, tracePath := options.audioFile, options.tracePath
 	if address == "" {
 		resolved, err := ibus.ResolveAddress(ibus.Ping)
 		if err != nil {
@@ -310,7 +305,7 @@ func runIBusEngine(ctx *Context, options engineRunOptions) error {
 		ctx.Print("engine started on %s (diagnostic commit only)", address)
 		handler = &diagnosticHandler{text: commitOnEnable, out: ctx.Stdout}
 	default:
-		pipeline, err := newPipelineHandler(runCtx, ctx, logf, audioFile, repairModel)
+		pipeline, err := newPipelineHandler(runCtx, ctx, logf, audioFile)
 		if err != nil {
 			return err
 		}
@@ -331,24 +326,20 @@ func runIBusEngine(ctx *Context, options engineRunOptions) error {
 // There is no process to start and no model to load here any more. Both roles are
 // served by the unit `voiceime server install` writes, which loads its models at
 // startup, so activating the engine opens a connection and nothing else.
-func newPipelineHandler(runCtx context.Context, ctx *Context, logf func(string, ...any), audioFile, repairModelOverride string) (*daemon.EngineHandler, error) {
+func newPipelineHandler(runCtx context.Context, ctx *Context, logf func(string, ...any), audioFile string) (*daemon.EngineHandler, error) {
 	serverURL := strings.TrimSpace(ctx.Config.ASRServerURL)
 	if serverURL == "" {
 		return nil, PreconditionError("voiceime server install",
 			"dictation needs the repair server: nothing is configured to decode audio")
 	}
-	repairModel := strings.TrimSpace(repairModelOverride)
-	if repairModel == "" {
-		repairModel = serverModelID()
-	}
 	handler := &daemon.EngineHandler{
 		Config:      ctx.Config,
 		ServerURL:   serverURL,
 		StreamModel: serverStreamModelID(),
-		RepairModel: repairModel,
+		RepairModel: serverModelID(),
 		Log:         logf,
 	}
-	logf("%s", serverDescription(ctx.Config, repairModel))
+	logf("%s", serverDescription(ctx.Config))
 	if audioFile != "" {
 		// Validated here rather than at first use: a typo in the path should fail
 		// when the engine starts, not silently later.

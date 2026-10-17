@@ -29,10 +29,10 @@ func serverModelID() string { return server.DefaultID }
 
 // serverDescription says which service and entries a session will use, for the
 // startup log line and for `stream --events`.
-func serverDescription(cfg *config.Config, repairEntry string) string {
+func serverDescription(cfg *config.Config) string {
 	return fmt.Sprintf("server %s: streaming entry %s, repair entry %s (%s)",
 		strings.TrimRight(cfg.ASRServerURL, "/"),
 		serverStreamModelID(),
-		repairEntry,
+		serverModelID(),
 		serverUnitName)
 }

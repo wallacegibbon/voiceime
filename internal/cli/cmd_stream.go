@@ -26,16 +26,14 @@ import (
 // empirical, and this is where the numbers come from.
 func cmdStream() *Command {
 	var (
-		filePath    string
-		seconds     float64
-		realtime    bool
-		chunk       float64
-		refine      bool
-		refineModel string
-		events      bool
-		quiet       bool
-		threads     int
-		model       string
+		filePath string
+		seconds  float64
+		realtime bool
+		chunk    float64
+		refine   bool
+		events   bool
+		quiet    bool
+		threads  int
 	)
 	flags := func(set *flag.FlagSet) {
 		set.StringVar(&filePath, "file", "", "replay a WAV file instead of the microphone")
@@ -43,11 +41,9 @@ func cmdStream() *Command {
 		set.Float64Var(&seconds, "seconds", 0, "stop after this many seconds of capture (0 = until end of input)")
 		set.Float64Var(&chunk, "chunk", 0, "streaming window in seconds (default: from config)")
 		set.BoolVar(&refine, "refine", true, "re-transcribe finished segments offline")
-		set.StringVar(&refineModel, "refine-model", "", "server entry for the repair pass (default: asr_server_model)")
 		set.BoolVar(&events, "events", false, "print one JSON object per event instead of text")
 		set.BoolVar(&quiet, "quiet", false, "print only committed text")
 		set.IntVar(&threads, "threads", 0, "worker threads (default: from config)")
-		set.StringVar(&model, "model", "", "server entry for live partials (default: asr_server_stream_model)")
 	}
 	return &Command{
 		Name:    "stream",
@@ -56,16 +52,14 @@ func cmdStream() *Command {
 		Flags:   flags,
 		Run: func(ctx *Context, args []string) error {
 			return runStream(ctx, streamOptions{
-				filePath:    filePath,
-				realtime:    realtime,
-				seconds:     seconds,
-				chunk:       chunk,
-				refine:      refine,
-				refineModel: refineModel,
-				events:      events,
-				quiet:       quiet,
-				threads:     threads,
-				model:       model,
+				filePath: filePath,
+				realtime: realtime,
+				seconds:  seconds,
+				chunk:    chunk,
+				refine:   refine,
+				events:   events,
+				quiet:    quiet,
+				threads:  threads,
 			})
 		},
 	}
@@ -158,12 +152,7 @@ func runStream(ctx *Context, options streamOptions) error {
 		return PreconditionError("voiceime server install",
 			"nothing is configured to decode audio: run `voiceime server install`")
 	}
-	// --model and --refine-model now name server *entries*, not checkpoint paths: the
-	// service owns the weights. They exist for measuring one entry against another.
-	streamModel := strings.TrimSpace(options.model)
-	if streamModel == "" {
-		streamModel = serverStreamModelID()
-	}
+	streamModel := serverStreamModelID()
 
 	// A per-run copy of the config: chunk and refine are per-invocation knobs, and
 	// mutating the loaded config would leak them into anything else that reads it.
@@ -195,13 +184,8 @@ func runStream(ctx *Context, options streamOptions) error {
 	}
 
 	started := time.Now()
-	// The repair entry follows the same rule as the engine's: the flag, then
-	// asr_server_model.
-	repairModel := strings.TrimSpace(options.refineModel)
-	if repairModel == "" {
-		repairModel = serverModelID()
-	}
-	out.write("repair_route", map[string]any{"detail": serverDescription(&cfg, repairModel)})
+	repairModel := serverModelID()
+	out.write("repair_route", map[string]any{"detail": serverDescription(&cfg)})
 	session := daemon.Options{
 		Config:      &cfg,
 		ServerURL:   cfg.ASRServerURL,

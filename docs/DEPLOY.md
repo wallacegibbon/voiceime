@@ -222,7 +222,7 @@ it: there is no process to fall back to. It is installed the same way the shortc
 listener is, and it loads both models at startup so a session only opens a connection:
 
 ```sh
-"$BIN" server install            # writes the config and the unit, starts it, sets asr_server_url
+"$BIN" server install            # picks the models, records them, writes the unit, starts it
 "$BIN" server status --json      # assert: data.unit_active == true, data.listening == true
                                  # data.served lists the files, which is how "which model is
                                  # streaming" is answered when streaming_model is empty
@@ -241,6 +241,12 @@ Two entries rather than one because the server holds a model for the whole lengt
 request: a repair sent to the entry a live dictation owns waits for that dictation to
 end (measured: 10.9s). The two may point at the same GGUF - that costs two resident
 copies, and is what a machine with one small model should do.
+
+`server install` also **records** which checkpoints it chose: `streaming_model` and
+`refine_model` are written into the configuration, so after deployment the file names what
+is actually loaded instead of saying "pick one". Clear a setting (`config set
+streaming_model ""`) and re-run install to have it pick again - for instance after
+installing a better model.
 
 #### Changing a model
 

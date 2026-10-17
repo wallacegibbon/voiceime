@@ -311,18 +311,15 @@ func modelChecks(ctx *Context, refresh bool, report func(Check)) {
 				Fix:    "voiceime models list",
 			})
 		} else {
-			detail := fmt.Sprintf("%s (%s)", found.Path, found.Family)
-			if !models.RepairIsRealtime(*found) {
-				// The cost this warns about is the one a fresh process pays per
-				// utterance, which is the whole reason a resident server exists. A
-				// machine configured for one is not being advised to change model.
-				if cfg.ASRServerURL != "" {
-					detail += "; slower than real time as a fresh process on CPU, which is what asr_server_url avoids: the server pays its load once"
-				} else {
-					detail += "; measured cost: slower than real time on CPU, so repairs will lag behind speech"
-				}
-			}
-			report(Check{ID: "refine_model", Status: "ok", Detail: detail})
+			// No cost warning: the service holds the weights, so a repair is a decode
+			// (0.5-0.8s measured) whatever the checkpoint. Warning that a bigger model
+			// "would lag" was true of a process per utterance and is the opposite of the
+			// direction this installation is built for.
+			report(Check{
+				ID:     "refine_model",
+				Status: "ok",
+				Detail: fmt.Sprintf("%s (%s)", found.Path, found.Family),
+			})
 		}
 	} else if !cfg.RefineOnSegmentEnd {
 		report(Check{
@@ -332,35 +329,11 @@ func modelChecks(ctx *Context, refresh bool, report func(Check)) {
 			Fix:    "voiceime config set refine_on_segment_end true",
 		})
 	} else {
-		streamingFamily := ""
-		if picked := models.PickStreaming(scanned, cfg.Language); picked != nil {
-			streamingFamily = picked.Family
-		}
 		report(Check{
 			ID:     "refine_model",
 			Status: "ok",
-			Detail: "reuses the streaming model (fastest repair)",
+			Detail: "reuses the streaming model (one model for both passes)",
 		})
-		if better := models.SuggestRepair(scanned, streamingFamily); better != nil {
-			detail := fmt.Sprintf("%s (%s, %s) is installed and is the more accurate reader; on CPU one repair costs ~1.3x real time, mostly loading the weights, so repairs would lag behind speech. With a GPU backend it is the recommended repair model",
-				better.Path, better.Family, models.Sizes(better.SizeBytes))
-			switch {
-			case cfg.ASRServerURL != "":
-				detail = fmt.Sprintf("%s (%s, %s) is installed and is the more accurate reader; as a process per utterance on CPU it would lag behind speech, but asr_server_url is set, so that load is paid once per dictation instead of once per sentence",
-					better.Path, better.Family, models.Sizes(better.SizeBytes))
-			case !models.RepairIsRealtime(*better):
-				// The fix below is a single setting, so the resolution that makes it
-				// affordable has to be named here or following it leads straight into
-				// the warning above.
-				detail += "; `voiceime config set asr_server_url http://127.0.0.1:18080` moves the load off the per-utterance path and makes this worthwhile on CPU"
-			}
-			report(Check{
-				ID:     "refine_model_advice",
-				Status: "warn",
-				Detail: detail,
-				Fix:    "voiceime config set refine_model " + better.Path,
-			})
-		}
 	}
 
 	// The optional resident server: the one part of a working installation nothing

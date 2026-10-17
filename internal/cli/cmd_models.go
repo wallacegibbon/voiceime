@@ -67,12 +67,8 @@ func runModels(ctx *Context, args []string, showAllModels bool) error {
 			if model.Error != "" {
 				state = "unusable: " + model.Error
 			}
-			repairHint := "slow-repair"
-			if models.RepairIsRealtime(model) {
-				repairHint = "realtime-repair"
-			}
-			ctx.Print("%-15s %-9s %-10s %-28s %s", state, models.Sizes(model.SizeBytes),
-				repairHint, describeTasks(model), model.Path)
+			ctx.Print("%-15s %-9s %-28s %s", state, models.Sizes(model.SizeBytes),
+				describeTasks(model), model.Path)
 		}
 		if len(scanned) == 0 {
 			ctx.Print("no speech models found in %s", ctx.Config.ResolvedModelsDir())

@@ -158,12 +158,6 @@ func TestSpecDefaultsAndLocality(t *testing.T) {
 	if got := spec.BaseURL(); got != "http://127.0.0.1:18080" {
 		t.Errorf("BaseURL() = %q, want the documented default", got)
 	}
-	if got := spec.RepairIDOrDefault(); got != DefaultID {
-		t.Errorf("RepairIDOrDefault() = %q, want %q", got, DefaultID)
-	}
-	if got := spec.StreamIDOrDefault(); got != DefaultStreamID {
-		t.Errorf("StreamIDOrDefault() = %q, want %q", got, DefaultStreamID)
-	}
 	if !IsLocalHost("127.0.0.1") || !IsLocalHost("localhost") || !IsLocalHost("::1") {
 		t.Error("loopback addresses are not recognised as local")
 	}

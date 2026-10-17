@@ -130,72 +130,6 @@ func (s ServerTranscriber) Transcribe(ctx context.Context, pcm []byte) (string, 
 	return decoded.Text, nil
 }
 
-// Check reports whether the server is reachable and offers the configured model
-// id. A wrong id is the failure mode that would otherwise appear as a repair
-// error on the user's first utterance, so it is worth one request at startup.
-func (s ServerTranscriber) Check(ctx context.Context) error {
-	base, err := s.baseURL()
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(s.Model) == "" {
-		return fmt.Errorf("asr_server_url is set but asr_server_model is empty")
-	}
-
-	// /health does not list models, and it does not prove one is loaded, but it
-	// does prove something is listening before the models request is attempted.
-	if err := s.get(ctx, base+"/health"); err != nil {
-		return err
-	}
-	payload, err := s.getPayload(ctx, base+"/v1/models")
-	if err != nil {
-		return err
-	}
-	var listing struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(payload, &listing); err != nil {
-		return fmt.Errorf("asr server: decode %s/v1/models: %w", base, err)
-	}
-	available := make([]string, 0, len(listing.Data))
-	for _, entry := range listing.Data {
-		if entry.ID == s.Model {
-			return nil
-		}
-		available = append(available, entry.ID)
-	}
-	return fmt.Errorf("asr server has no model %q (it offers: %s)", s.Model, strings.Join(available, ", "))
-}
-
-func (s ServerTranscriber) get(ctx context.Context, target string) error {
-	_, err := s.getPayload(ctx, target)
-	return err
-}
-
-func (s ServerTranscriber) getPayload(ctx context.Context, target string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
-	if err != nil {
-		return nil, err
-	}
-	response, err := s.client().Do(request)
-	if err != nil {
-		return nil, fmt.Errorf("asr server unreachable: %w", err)
-	}
-	defer response.Body.Close()
-	payload, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
-	if err != nil {
-		return nil, err
-	}
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("asr server: %s: %s", response.Status, summarise(payload))
-	}
-	return payload, nil
-}
-
 func (s ServerTranscriber) client() *http.Client {
 	if s.Client != nil {
 		return s.Client
@@ -203,17 +137,19 @@ func (s ServerTranscriber) client() *http.Client {
 	return http.DefaultClient
 }
 
+// baseURL validates the configured address, because the failure it prevents is the one
+// every misconfigured server produces: a repair that fails per utterance.
 func (s ServerTranscriber) baseURL() (string, error) {
 	base := strings.TrimSpace(s.BaseURL)
 	if base == "" {
-		return "", fmt.Errorf("server repair needs asr_server_url")
+		return "", fmt.Errorf("no server configured: run `voiceime server install`")
 	}
 	parsed, err := url.Parse(base)
 	if err != nil {
-		return "", fmt.Errorf("asr_server_url %q: %v (needs a scheme and a host, e.g. http://127.0.0.1:8080)", base, err)
+		return "", fmt.Errorf("asr_server_url %q: %v (needs a scheme and a host, e.g. http://127.0.0.1:18080)", base, err)
 	}
 	if parsed.Scheme == "" || parsed.Host == "" {
-		return "", fmt.Errorf("asr_server_url %q: needs a scheme and a host, e.g. http://127.0.0.1:8080", base)
+		return "", fmt.Errorf("asr_server_url %q: needs a scheme and a host, e.g. http://127.0.0.1:18080", base)
 	}
 	return strings.TrimRight(base, "/"), nil
 }

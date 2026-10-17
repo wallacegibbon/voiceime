@@ -361,65 +361,6 @@ func PickStreaming(models []Model, language string) *Model {
 	return best
 }
 
-// fastRepairFamilies are the families whose offline decode keeps up with speech
-// on a CPU, so a repair of a finished segment finishes while the user is still
-// talking. The classification is measured, not guessed: on the reference machine
-// a 4.2s segment costs about 0.55s with SenseVoice (roughly 8x realtime including
-// model load) and about 5.7s with Qwen3-ASR-0.6B (about 0.75x realtime), and the
-// larger LLM-based ASR families are slower still. See docs/measurements.md.
-var fastRepairFamilies = map[string]bool{
-	"sense_asr":     true,
-	"moonshine_asr": true,
-	"kroko_asr":     true,
-	"parakeet_tdt":  true,
-	"citrinet_asr":  true,
-	"canary_asr":    true,
-	"gigaam_asr":    true,
-	"moonshine":     true,
-	"whistle_asr":   true,
-	"vibeasr":       true,
-	"niagara_asr":   true,
-	"hviske_asr":    true,
-	"hviske_asr_v6": true,
-	"owsm":          true,
-	"owsm_ctc":      true,
-	"granite5asr":   true,
-	"sensevoice":    true,
-}
-
-// RepairIsRealtime reports whether re-decoding a finished segment with this model
-// is expected to keep up with speech on a CPU-only machine.
-func RepairIsRealtime(model Model) bool { return fastRepairFamilies[model.Family] }
-
-// SuggestRepair returns the most accurate installed ASR model that is *different*
-// from the one already used for streaming, or nil when there is nothing extra to
-// suggest.
-//
-// It is only used for advice, never to silently select a model: a stronger repair
-// model is a real trade (better text against a repair that lags behind speech),
-// and the user is the one who knows whether that trade is worth it on their
-// hardware.
-func SuggestRepair(scanned []Model, streamingFamily string) *Model {
-	var best *Model
-	bestScore := -1
-	for i := range scanned {
-		model := &scanned[i]
-		if model.Error != "" || model.Family == streamingFamily {
-			continue
-		}
-		if !model.Supports("asr", "offline") || RepairIsRealtime(*model) {
-			continue
-		}
-		// Prefer larger checkpoints within the accurate set: among LLM-based ASR
-		// models, size is what buys accuracy.
-		score := int(model.SizeBytes >> 20)
-		if score > bestScore {
-			best, bestScore = model, score
-		}
-	}
-	return best
-}
-
 // ASRModels filters a scan down to the models voiceime can actually use, which
 // is what every caller except an explicit "show me everything" wants.
 //

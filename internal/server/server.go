@@ -76,17 +76,6 @@ func (s Spec) BaseURL() string {
 	return fmt.Sprintf("http://%s:%d", host, port)
 }
 
-// StreamIDOrDefault and RepairIDOrDefault name the entries.
-func (s Spec) StreamIDOrDefault() string { return defaultID(s.StreamID, DefaultStreamID) }
-func (s Spec) RepairIDOrDefault() string { return defaultID(s.RepairID, DefaultID) }
-
-func defaultID(value, fallback string) string {
-	if strings.TrimSpace(value) == "" {
-		return fallback
-	}
-	return value
-}
-
 // WriteConfig writes the server's config and returns its path.
 //
 // lazy_load is false, and that is the point of the service: the weights belong to its
@@ -127,7 +116,7 @@ func WriteConfig(spec Spec, path string) error {
 		UIManagement:    false,
 		Models: []wireModel{
 			{
-				ID:                    spec.StreamIDOrDefault(),
+				ID:                    DefaultStreamID,
 				Family:                spec.StreamFamily,
 				Path:                  spec.StreamModel,
 				Task:                  "asr",
@@ -135,7 +124,7 @@ func WriteConfig(spec Spec, path string) error {
 				DefaultRequestOptions: streamOptions,
 			},
 			{
-				ID:                    spec.RepairIDOrDefault(),
+				ID:                    DefaultID,
 				Family:                spec.RepairFamily,
 				Path:                  spec.RepairModel,
 				Task:                  "asr",

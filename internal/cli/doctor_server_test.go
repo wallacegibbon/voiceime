@@ -64,7 +64,7 @@ func TestASRServerCheckStates(t *testing.T) {
 			name:       "a server without the entries",
 			mutate:     func(c *config.Config) { c.ASRServerURL = wrongEntries.URL },
 			wantStatus: "fail",
-			wantDetail: "has no model",
+			wantDetail: "has no entry",
 		},
 		{
 			name:       "unparseable address",

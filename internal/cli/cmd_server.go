@@ -124,8 +124,8 @@ func runServerInstall(ctx *Context, port int, streamFlag, repairFlag string) err
 	baseURL := spec.BaseURL()
 	changes := []struct{ key, value string }{
 		{"asr_server_url", baseURL},
-		{"asr_server_stream_model", spec.StreamIDOrDefault()},
-		{"asr_server_model", spec.RepairIDOrDefault()},
+		{"streaming_model", spec.StreamModel},
+		{"refine_model", spec.RepairModel},
 	}
 	for _, change := range changes {
 		if err := cfg.Set(change.key, change.value); err != nil {
@@ -141,7 +141,7 @@ func runServerInstall(ctx *Context, port int, streamFlag, repairFlag string) err
 		ctx.Print("wrote %s", unitPath)
 		ctx.Print("serving %s (%s) for partials and %s (%s) for repair",
 			streamPath, streamFamily, repairPath, repairFamily)
-		ctx.Print("config: asr_server_url = %s", baseURL)
+		ctx.Print("recorded in config: streaming_model, refine_model, asr_server_url = %s", baseURL)
 	}
 	// enable for the next login, restart for this one: `enable --now` starts a unit that
 	// is stopped and does nothing to one that is running, which would leave a changed
@@ -228,8 +228,8 @@ func entriesMatch(ctx context.Context, baseURL string, spec server.Spec) error {
 		byID[entry.ID] = filepath.Clean(entry.Path)
 	}
 	want := map[string]string{
-		spec.StreamIDOrDefault(): filepath.Clean(spec.StreamModel),
-		spec.RepairIDOrDefault(): filepath.Clean(spec.RepairModel),
+		server.DefaultStreamID: filepath.Clean(spec.StreamModel),
+		server.DefaultID:       filepath.Clean(spec.RepairModel),
 	}
 	for id, path := range want {
 		served, found := byID[id]
@@ -272,8 +272,6 @@ func buildServerSpec(cfg *config.Config, scanned []models.Model, port int, strea
 		StreamFamily: streamFamily,
 		RepairModel:  repairPath,
 		RepairFamily: repairFamily,
-		StreamID:     serverStreamModelID(),
-		RepairID:     serverModelID(),
 		Host:         "127.0.0.1",
 		Port:         port,
 		Backend:      cfg.Backend,

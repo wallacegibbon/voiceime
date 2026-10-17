@@ -224,6 +224,8 @@ listener is, and it loads both models at startup so a session only opens a conne
 ```sh
 "$BIN" server install            # writes the config and the unit, starts it, sets asr_server_url
 "$BIN" server status --json      # assert: data.unit_active == true, data.listening == true
+                                 # data.served lists the files, which is how "which model is
+                                 # streaming" is answered when streaming_model is empty
 ```
 
 What it writes and where to look when something is wrong:

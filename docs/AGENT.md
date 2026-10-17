@@ -107,8 +107,8 @@ Settings that matter, and the reasoning a caller needs to pick values:
 | `asr_bin` | `""` | Explicit CLI path; empty means discover. |
 | `backend` | `cpu` | `audio.cpp` backend: cpu, cuda, vulkan, hip, metal. `doctor` fails when the local `audiocpp_cli` was not built with it, and warns when a GPU driver is present while this says `cpu`. |
 | `threads` | `4` | Worker threads for both the streaming engine and repairs. The default is the reference machine's 8-core setting; `doctor` warns when it exceeds this machine's physical cores, because the two passes compete for the same ones. |
-| `streaming_model` | `""` | Empty means pick automatically. |
-| `refine_model` | `""` | Empty means reuse the streaming model (fastest). |
+| `streaming_model` | `""` | Which checkpoint drafts while the user speaks. Empty means pick automatically - the best installed streaming model - and `voiceime config show` prints which one that resolved to, because the file cannot show it. |
+| `refine_model` | `""` | Which checkpoint decides the final text. Empty means reuse the streaming model, which is what a machine with one model should do: two entries then serve the same file (two resident copies, since the server holds a model per request). |
 | `asr_server_url` | `""` | Where the resident recognition server listens. `voiceime server install` sets it; empty means dictation cannot run, and `doctor` says so. Both passes go through this one service, which serves two entries - `stream` (partials) and `refine` (repair) - whose ids are fixed by what `server run` writes. |
 | `language` | `zh` | Passed to the model; empty asks it to auto-detect. |
 | `chunk_seconds` | `3` | The streaming window: how much audio a draft is decoded from. Below 1.5 measurably corrupts CJK output; validate warns. It does not gate when text is committed - a finished utterance is decoded offline and delivered when it closes - so it can be raised for accuracy without making delivery wait. |

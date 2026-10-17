@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -119,9 +120,20 @@ func asrServerCheck(cfg *config.Config, scanned []models.Model, unitInstalled bo
 			}
 		}
 	}
-	return Check{
-		ID:     "asr_server",
-		Status: "ok",
-		Detail: fmt.Sprintf("%s is serving %s (partials) and %s (repair)", strings.TrimRight(raw, "/"), streamEntry, repairEntry),
+	detail := fmt.Sprintf("%s is serving %s (partials) and %s (repair)", strings.TrimRight(raw, "/"), streamEntry, repairEntry)
+	if entries, err := server.Entries(ctx, raw); err == nil {
+		// Name the files as well as the ids: `streaming_model` may be empty (meaning
+		// "pick one"), and this is the line a user reads to find out what it picked.
+		named := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			if entry.Path == "" {
+				continue
+			}
+			named = append(named, fmt.Sprintf("%s=%s", entry.ID, filepath.Base(entry.Path)))
+		}
+		if len(named) == 2 {
+			detail = fmt.Sprintf("%s is serving %s", strings.TrimRight(raw, "/"), strings.Join(named, " and "))
+		}
 	}
+	return Check{ID: "asr_server", Status: "ok", Detail: detail}
 }

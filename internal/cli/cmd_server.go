@@ -476,16 +476,22 @@ func runServerStatus(ctx *Context) error {
 	defer cancel()
 	if err := server.Probe(probeCtx, base); err == nil {
 		status["listening"] = true
-		served := []string{}
-		for _, entry := range []string{serverStreamModelID(), serverModelID()} {
-			transcriber := asr.ServerTranscriber{BaseURL: base, Model: entry}
-			if err := transcriber.Check(probeCtx); err != nil {
-				status["model_error"] = err.Error()
-				continue
+		// The files, not only the ids: "which model is streaming" is the question this
+		// command exists to answer, and the ids are the same whatever they point at.
+		if entries, err := server.Entries(probeCtx, base); err == nil {
+			served := make([]map[string]string, 0, len(entries))
+			for _, entry := range entries {
+				served = append(served, map[string]string{
+					"id":   entry.ID,
+					"mode": entry.Mode,
+					"file": filepath.Base(entry.Path),
+					"path": entry.Path,
+				})
 			}
-			served = append(served, entry)
+			status["served"] = served
+		} else {
+			status["model_error"] = err.Error()
 		}
-		status["entries_served"] = served
 	}
 	return ctx.Emit("server", status)
 }

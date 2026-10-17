@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/wallacegibbon/voiceime/internal/config"
+	"github.com/wallacegibbon/voiceime/internal/models"
 )
 
 // cmdConfig is the only supported way to edit settings from a script. It exists
@@ -32,6 +33,37 @@ func cmdConfig() *Command {
 			return runConfig(ctx, args, force)
 		},
 	}
+}
+
+// resolvedModels says what the two model settings resolve to, for the ones the
+// configuration leaves empty. It is what makes `config show` answer "which model is
+// streaming", a question an empty value cannot answer on its own.
+func resolvedModels(ctx *Context) map[string]string {
+	resolved := map[string]string{}
+	scanned, err := models.Scan(ctx.Config, false, nil)
+	if err != nil {
+		return resolved
+	}
+	streaming := ""
+	if strings.TrimSpace(ctx.Config.StreamingModel) == "" {
+		if picked := models.PickStreaming(scanned, ctx.Config.Language); picked != nil {
+			streaming = picked.Path
+			resolved["streaming_model"] = "empty means pick one: " + filepath.Base(picked.Path) + " (" + picked.Family + ")"
+		} else {
+			resolved["streaming_model"] = "empty means pick one, and no streaming model is installed"
+		}
+	}
+	repair := ctx.Config.RefineModel
+	if strings.TrimSpace(repair) == "" {
+		if streaming != "" {
+			resolved["refine_model"] = "empty means reuse the streaming model: " + filepath.Base(streaming)
+		} else {
+			resolved["refine_model"] = "empty means reuse the streaming model, which is not installed"
+		}
+	} else if found := models.Lookup(scanned, repair); found != nil {
+		resolved["refine_model"] = "in use: " + filepath.Base(found.Path) + " (" + found.Family + ")"
+	}
+	return resolved
 }
 
 // serviceSetting reports whether a setting is one the recognition service reads when it
@@ -62,14 +94,23 @@ func runConfig(ctx *Context, args []string, force bool) error {
 
 	case "show":
 		fields := ctx.Config.Fields()
+		// An empty model setting is an instruction to choose, not an absence, and the
+		// file cannot show what it chose. Printing the resolution here is where a user
+		// looks first for "which model is running".
+		resolved := resolvedModels(ctx)
 		ctx.Print("%s", ctx.ConfigPath)
 		for _, field := range fields {
-			ctx.Print("%-22s %v", field.Key, field.Value)
+			line := fmt.Sprintf("%-22s %v", field.Key, field.Value)
+			if note, ok := resolved[field.Key]; ok && note != "" {
+				line += "  -> " + note
+			}
+			ctx.Print("%s", line)
 		}
 		return ctx.Emit("config show", map[string]any{
-			"path":   ctx.ConfigPath,
-			"exists": fileExists(ctx.ConfigPath),
-			"fields": fields,
+			"path":     ctx.ConfigPath,
+			"exists":   fileExists(ctx.ConfigPath),
+			"fields":   fields,
+			"resolved": resolved,
 		})
 
 	case "init":

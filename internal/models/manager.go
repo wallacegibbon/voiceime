@@ -58,27 +58,6 @@ func NewManager(cfg *config.Config) (*Manager, error) {
 	}, nil
 }
 
-// Package is one installable package id.
-type Package struct {
-	ID        string `json:"id"`
-	Family    string `json:"family"`
-	Format    string `json:"format"`
-	Precision string `json:"precision"`
-	Default   bool   `json:"default"`
-}
-
-// Status is the per-package state reported by `sizes` and `installed`.
-type Status struct {
-	ID             string `json:"id"`
-	SizeBytes      *int64 `json:"size_bytes"`
-	State          string `json:"state"`
-	Message        string `json:"message"`
-	Installed      bool   `json:"installed"`
-	VersionState   string `json:"version_state"`
-	LocalRevision  string `json:"local_revision"`
-	RemoteRevision string `json:"remote_revision"`
-}
-
 // environment returns the extra environment the script needs. The endpoint is
 // always set explicitly rather than inherited: HF_ENDPOINT is the variable
 // huggingface_hub reads, so an ambient value would otherwise decide where
@@ -94,69 +73,6 @@ func (m *Manager) command(ctx context.Context, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, m.Python, full...)
 	cmd.Env = append(cmd.Environ(), m.environment()...)
 	return cmd
-}
-
-// List returns every package the registry knows about.
-func (m *Manager) List(ctx context.Context) ([]Package, error) {
-	output, err := m.command(ctx, "list", "--json").Output()
-	if err != nil {
-		return nil, describeExecError("model_manager list", err)
-	}
-	var packages []Package
-	if err := json.Unmarshal(output, &packages); err != nil {
-		return nil, fmt.Errorf("model_manager list returned unexpected output: %w", err)
-	}
-	return packages, nil
-}
-
-// Search filters List by a substring of the package id or family.
-func (m *Manager) Search(ctx context.Context, needle string) ([]Package, error) {
-	packages, err := m.List(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if needle == "" {
-		return packages, nil
-	}
-	needle = strings.ToLower(needle)
-	var matches []Package
-	for _, pkg := range packages {
-		if strings.Contains(strings.ToLower(pkg.ID), needle) ||
-			strings.Contains(strings.ToLower(pkg.Family), needle) {
-			matches = append(matches, pkg)
-		}
-	}
-	return matches, nil
-}
-
-// Sizes checks what the named packages would download (bytes and reachability)
-// without fetching them. Network access is required.
-func (m *Manager) Sizes(ctx context.Context, packages ...string) ([]Status, error) {
-	args := []string{"sizes", "--models-root", m.ModelsDir}
-	args = append(args, packages...)
-	output, err := m.command(ctx, args...).Output()
-	if err != nil {
-		return nil, describeExecError("model_manager sizes", err)
-	}
-	var statuses []Status
-	if err := json.Unmarshal(output, &statuses); err != nil {
-		return nil, fmt.Errorf("model_manager sizes returned unexpected output: %w", err)
-	}
-	return statuses, nil
-}
-
-// Installed reports which packages are present locally. It makes no network
-// calls, so it is safe to run on a machine with no connectivity.
-func (m *Manager) Installed(ctx context.Context) ([]Status, error) {
-	output, err := m.command(ctx, "installed", "--models-root", m.ModelsDir).Output()
-	if err != nil {
-		return nil, describeExecError("model_manager installed", err)
-	}
-	var statuses []Status
-	if err := json.Unmarshal(output, &statuses); err != nil {
-		return nil, fmt.Errorf("model_manager installed returned unexpected output: %w", err)
-	}
-	return statuses, nil
 }
 
 // Progress is one event from an install: either a parsed progress record or a

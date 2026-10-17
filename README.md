@@ -66,15 +66,14 @@ The stripped binary is 4.8 MB, 2.0 MB compressed, plus the documentation.
 ```
 voiceime config init             # write defaults, discover audio.cpp, list what to review
 voiceime doctor                  # check the machine, each finding carries a fix
-voiceime models recommended      # what to install and why
 voiceime models install sensevoice_small_q8
-voiceime devices                 # pick a microphone if the default is wrong
+voiceime server install          # pick the models, start the resident service
 voiceime stream --seconds 5      # dictate for five seconds, watch it transcribe
 ```
 
-`voiceime stream --file sample.wav --realtime --chunk 3` replays a file at real
-time and prints per-partial latency plus what the repair pass changed — that is
-where the numbers in [docs/measurements.md](docs/measurements.md) came from.
+`voiceime stream --file sample.wav --realtime --events` replays a file at real time
+and prints per-partial latency plus what the repair pass changed — that is where the
+numbers in [docs/measurements.md](docs/measurements.md) came from.
 
 ## Models
 

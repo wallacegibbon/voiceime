@@ -134,18 +134,16 @@ voiceime config validate --json       # exit 3 when a blocking issue exists
 ## Install a model
 
 ```
-voiceime models recommended --json    # what to install, and why
-voiceime models sizes <pkg> --json    # reachability and size, downloads nothing
-voiceime models install <pkg>         # downloads into models_dir
-voiceime models installed --json      # what is present locally, no network
+voiceime models list [--all] [--refresh]   # what is present locally; --refresh re-inspects
+voiceime models install <pkg>              # downloads into models_dir
+voiceime models uninstall <pkg>            # removes one installed package
 ```
 
 Downloads go through the single endpoint in `download_mirror`, which must be an
 absolute `http(s)` URL; `config validate` rejects anything else, and the value is
 passed to the model manager as `HF_ENDPOINT`. Whether an endpoint works is a
-property of the endpoint *and* the package: `models sizes` reports the failure per
-package, so a caller that sees a 404 can set another endpoint and retry the same
-package.
+property of the endpoint *and* the package: `models install` reports the failure, so a
+caller that sees a 404 can set another endpoint and retry the same package.
 
 Packages to install, by machine (measured on the reference machine; see
 [measurements.md](measurements.md) for the numbers and
@@ -164,17 +162,15 @@ Packages to install, by machine (measured on the reference machine; see
   both entries resident: 1403 MB at startup, 1907 MB after both have run, with the pair above) and saves the decode, which is the
   point of the service: a repair is a 0.5-0.8 s request instead of a 5.7 s process, and
   a dictation starts in microseconds. See docs/decisions.md D22.
-* Because the streaming model is what loads on every activation, `streaming_model`
-  should stay `""` (empty means "pick the best installed streaming model") unless a
-  caller deliberately wants to pin a choice. `models recommended` prints the same
-  candidates with their sizes.
+* `voiceime server install` picks the models and records them, so `streaming_model`
+  and `refine_model` end up naming the files that run. Clearing one and running install
+  again is how to have it pick afresh; `models list` prints what is installed with sizes.
 
 ## Verify
 
 ```
 voiceime doctor --json                # every prerequisite, each with its fix
 voiceime doctor --refresh --json      # re-inspect models instead of using the cache
-voiceime devices --json               # capture sources and the default one
 ```
 
 `doctor` covers: the config file, the `audiocpp_cli` binary and its version, the

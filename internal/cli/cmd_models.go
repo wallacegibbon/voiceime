@@ -18,30 +18,32 @@ func cmdModels() *Command {
 	// documented way to see the non-ASR GGUF files in a shared models directory -
 	// failed with "flag provided but not defined".
 	var all bool
+	var refresh bool
 	return &Command{
 		Name:    "models",
-		Summary: "List, refresh, size and install model packages",
-		Usage:   "voiceime models <list|refresh|installed|sizes|install|uninstall|search|recommended> [args]",
+		Summary: "List installed models and install or remove packages",
+		Usage:   "voiceime models <list|install|uninstall> [args]",
 		Flags: func(set *flag.FlagSet) {
+			set.BoolVar(&refresh, "refresh", false, "list: re-inspect every model instead of using the cache")
 			set.BoolVar(&all, "all", false, "list: include files that are not speech models")
 		},
 		Run: func(ctx *Context, args []string) error {
-			return runModels(ctx, args, all)
+			return runModels(ctx, args, all, refresh)
 		},
 	}
 }
 
-func runModels(ctx *Context, args []string, showAllModels bool) error {
+func runModels(ctx *Context, args []string, showAllModels, refreshModels bool) error {
 	if len(args) == 0 {
-		return UsageError("models needs an action: list, refresh, installed, sizes, install, uninstall, search or recommended")
+		return UsageError("models needs an action: list, install or uninstall")
 	}
 	action, rest := args[0], args[1:]
 
 	switch action {
-	case "list", "refresh":
-		force := action == "refresh"
+	case "list":
+		force := refreshModels
 		var progress func(string)
-		if action == "refresh" && !ctx.JSON {
+		if force && !ctx.JSON {
 			progress = func(path string) { ctx.Print("inspecting %s", path) }
 		}
 		everything, err := models.Scan(ctx.Config, force, progress)
@@ -92,88 +94,9 @@ func runModels(ctx *Context, args []string, showAllModels bool) error {
 		}
 		return nil
 
-	case "installed":
-		manager, err := newModelManager(ctx)
-		if err != nil {
-			return err
-		}
-		probeCtx, cancel := timeout(60)
-		defer cancel()
-		statuses, err := manager.Installed(probeCtx)
-		if err != nil {
-			return FailureError("%v", err)
-		}
-		rows := []map[string]any{}
-		for _, status := range statuses {
-			if !status.Installed {
-				continue
-			}
-			rows = append(rows, map[string]any{
-				"id":       status.ID,
-				"state":    status.VersionState,
-				"endpoint": manager.Endpoint,
-			})
-			ctx.Print("%s", status.ID)
-		}
-		if err := ctx.Emit("models installed", map[string]any{"packages": rows}); err != nil {
-			return err
-		}
-		return nil
-
-	case "recommended":
-		var rows []map[string]string
-		for _, entry := range models.RecommendedPackages() {
-			rows = append(rows, map[string]string{"id": entry.ID, "reason": entry.Reason})
-			ctx.Print("%-32s %s", entry.ID, entry.Reason)
-		}
-		return ctx.Emit("models recommended", map[string]any{"packages": rows})
-
-	case "search":
-		needle := ""
-		if len(rest) > 0 {
-			needle = rest[0]
-		}
-		manager, err := newModelManager(ctx)
-		if err != nil {
-			return err
-		}
-		probeCtx, cancel := timeout(120)
-		defer cancel()
-		matches, err := manager.Search(probeCtx, needle)
-		if err != nil {
-			return FailureError("%v", err)
-		}
-		for _, pkg := range matches {
-			ctx.Print("%-40s %-20s %-6s %s", pkg.ID, pkg.Family, pkg.Format, pkg.Precision)
-		}
-		return ctx.Emit("models search", map[string]any{"packages": matches, "count": len(matches)})
-
-	case "sizes":
-		if len(rest) == 0 {
-			return UsageError("models sizes needs at least one package id")
-		}
-		manager, err := newModelManager(ctx)
-		if err != nil {
-			return err
-		}
-		probeCtx, cancel := timeout(300)
-		defer cancel()
-		statuses, err := manager.Sizes(probeCtx, rest...)
-		if err != nil {
-			return FailureError("%v", err)
-		}
-		for _, status := range statuses {
-			detail := status.Message
-			if status.SizeBytes != nil {
-				detail = models.Sizes(*status.SizeBytes)
-			}
-			ctx.Print("%-40s %-8s %s", status.ID, status.State, detail)
-		}
-		return ctx.Emit("models sizes", map[string]any{"statuses": statuses, "endpoint": manager.Endpoint})
-
 	case "install":
 		if len(rest) == 0 {
-			return UsageError("models install needs a package id; try `voiceime models recommended`")
+			return UsageError("models install needs a package id, e.g. sensevoice_small_q8 (see docs/AGENT.md)")
 		}
 		packageID := rest[0]
 		manager, err := newModelManager(ctx)

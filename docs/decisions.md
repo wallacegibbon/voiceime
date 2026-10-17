@@ -810,6 +810,11 @@ have a reason to exist *here*".
 * `capture_rate`. It could only ever be 16000 - the models' VAD rejects everything else, and
   validation refused the rest - so it was a setting whose only power was to break a working
   installation. The rate is a constant now.
+* `models search`, `sizes`, `installed`, `recommended`, and the `refresh` action. A
+  deployment installs a named package from this document and lists what is there;
+  everything else was a wrapper around the model manager's own verbs, and each one cost a
+  command name, a JSON shape, and a help line. `list --refresh` keeps the one capability
+  that was not otherwise reachable (forcing a re-inspection).
 * `scripts/asr-server-prototype/`. The probes that measured the on-demand design (D21),
   which no longer exists. Their numbers are quoted here and in measurements.md; keeping the
   scripts meant shipping a measurement rig for a deleted architecture.

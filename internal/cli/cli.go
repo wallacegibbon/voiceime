@@ -122,7 +122,6 @@ func commands() []*Command {
 	return []*Command{
 		cmdCapabilities(),
 		cmdConfig(),
-		cmdDevices(),
 		cmdDoctor(),
 		cmdEngine(),
 		cmdHotkey(),

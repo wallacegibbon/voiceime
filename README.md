@@ -103,7 +103,7 @@ Both passes run through one resident server that voiceime installs
 (`voiceime server install`, a systemd user unit like the shortcut listener), with both
 models loaded at startup. That is what makes Qwen3 affordable on CPU: a repair is a
 request against weights that are already there, not a process that reloads 1.07 GiB.
-The cost is memory — the pair sits at about 1.4 GB — and that is the trade in one line:
+The cost is memory — the pair sits at 1.4-1.9 GB — and that is the trade in one line:
 the service holds the models so dictation does not load them. See
 [docs/decisions.md](docs/decisions.md) D22.
 

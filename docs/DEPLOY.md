@@ -243,7 +243,7 @@ copies, and is what a machine with one small model should do.
 #### Why the server needs the model memory
 
 The service keeps its entries resident, so the machine holds both models all the time
-(1403 MB with SenseVoice Q8 and Qwen3-ASR-0.6B Q8 on the reference machine). That is the
+(1403 MB at startup and 1907 MB after both models have run, measured with SenseVoice Q8 and Qwen3-ASR-0.6B Q8 on the reference machine). That is the
 whole trade: a repair is a 0.5s request instead of a 5s process, and a dictation starts
 in microseconds instead of loading a model. If that memory is not available,
 `voiceime server uninstall` puts the machine back to "no dictation" rather than quietly

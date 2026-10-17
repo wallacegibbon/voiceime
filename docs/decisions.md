@@ -749,7 +749,7 @@ with incomplete coverage, and "a model without a parallel factory therefore supp
 slot" - most real checkpoints get no extra slot. Nothing here needs one.
 
 **Measured on the reference machine** (SenseVoice streaming + Qwen3-ASR-0.6B repair,
-bge models resident: 1403 MB RSS):
+models resident: 1403 MB RSS at startup, 1907 MB once both have run):
 
 | | on-demand (D21) | one service (D22) |
 | --- | --- | --- |

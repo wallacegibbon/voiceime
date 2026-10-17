@@ -158,7 +158,7 @@ Packages to install, by machine (measured on the reference machine; see
   model, because it repairs a finished sentence in 0.55 s.
 * `qwen3_asr_0_6b_q8_0` (1.07 GiB) is the more accurate offline reader and the
   only reason to add a second model. It costs its memory all the time (the service keeps
-  both entries resident: 1403 MB with the pair above) and saves the decode, which is the
+  both entries resident: 1403 MB at startup, 1907 MB after both have run, with the pair above) and saves the decode, which is the
   point of the service: a repair is a 0.5-0.8 s request instead of a 5.7 s process, and
   a dictation starts in microseconds. See docs/decisions.md D22.
 * Because the streaming model is what loads on every activation, `streaming_model`

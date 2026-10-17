@@ -268,6 +268,11 @@ address), and the shortcut listener (the key) - and one command applies it to al
 engine is *dropped* rather than restarted: ibus-daemon starts a fresh one on the next
 activation, which is the same thing without disturbing the selected input method.
 
+It also **validates the file before restarting anything**, and refuses to apply a setting
+that cannot work - a `refine_model` path that does not exist is a `stat`, not a service
+start, so the answer arrives before the running install is disturbed instead of as a
+crash-looping unit that looks like a setting with no effect.
+
 `config set` prints `voiceime config apply` as the next step, for every setting: an edit
 that looks like it did nothing is the failure this project keeps running into.
 

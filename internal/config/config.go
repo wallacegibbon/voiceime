@@ -350,6 +350,28 @@ func (c *Config) Validate() []Issue {
 	if c.ModelsDir == "" {
 		add("error", "models_dir", "must be set", "voiceime config set models_dir "+DefaultModelsDir)
 	}
+	// A model path is the one setting whose typo survives everything else here: it
+	// is valid TOML, it is a valid path string, and it only fails when the
+	// recognition service refuses to start - which then reads as "applied but
+	// nothing changed". The check is a local stat, so validation stays offline
+	// like the rest of this function.
+	for _, model := range []struct{ key, path string }{
+		{"streaming_model", c.StreamingModel},
+		{"refine_model", c.RefineModel},
+	} {
+		path := strings.TrimSpace(model.path)
+		if path == "" {
+			continue
+		}
+		if _, err := os.Stat(Expand(path)); err != nil {
+			reason := err.Error()
+			if errors.Is(err, os.ErrNotExist) {
+				reason = "does not exist"
+			}
+			add("error", model.key, fmt.Sprintf("%s %s", path, reason),
+				fmt.Sprintf("voiceime config set %s \"\"   # empty picks an installed model", model.key))
+		}
+	}
 	return issues
 }
 

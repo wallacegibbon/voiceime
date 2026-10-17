@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -182,5 +183,36 @@ func TestExpandHome(t *testing.T) {
 	}
 	if got := Expand("/absolute/path"); got != "/absolute/path" {
 		t.Errorf("Expand of an absolute path = %q", got)
+	}
+}
+
+// A configured model path that is not there is the failure this check exists for:
+// the file is valid TOML, every other check passes, and the recognition service is
+// the first thing to notice - as a crash loop that reads like "apply did nothing".
+func TestValidateReportsAModelPathThatDoesNotExist(t *testing.T) {
+	cfg := Default()
+	missing := filepath.Join(t.TempDir(), "absent.gguf")
+	cfg.RefineModel = missing
+	issues := Errors(cfg.Validate())
+	if len(issues) != 1 || issues[0].Key != "refine_model" || issues[0].Fix == "" {
+		t.Fatalf("Validate with a missing refine_model = %+v, want one blocking issue carrying a fix", issues)
+	}
+	if !strings.Contains(issues[0].Message, missing) {
+		t.Errorf("message %q does not name the path that is wrong", issues[0].Message)
+	}
+}
+
+// The same check must not fire for a path that exists, or a working install would
+// be reported as broken and `config apply` would refuse to run.
+func TestValidateAcceptsAnExistingModelPath(t *testing.T) {
+	existing := filepath.Join(t.TempDir(), "model.gguf")
+	if err := os.WriteFile(existing, []byte("gguf"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Default()
+	cfg.StreamingModel = existing
+	cfg.RefineModel = existing
+	if issues := Errors(cfg.Validate()); len(issues) != 0 {
+		t.Fatalf("existing model paths were rejected: %+v", issues)
 	}
 }

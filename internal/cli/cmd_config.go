@@ -76,24 +76,49 @@ func applyConfig(ctx *Context) error {
 	result := map[string]any{}
 	systemctl, _ := exec.LookPath("systemctl")
 
+	// Refuse an unusable file before touching any of the three processes. This is
+	// the failure that used to be reported as success: a setting naming a model
+	// that is not there is valid TOML and passes every syntactic check, so it only
+	// showed up as a crash-looping service while `config apply` printed
+	// "service: restarted" and exited 0.
+	if issues := config.Errors(ctx.Config.Validate()); len(issues) > 0 {
+		issue := issues[0]
+		return PreconditionError(issue.Fix, "cannot apply the configuration: %s: %s", issue.Key, issue.Message)
+	}
+
 	// 1. The service: it renders the server config from this file at its own start, so a
 	// model change lands here and nowhere else.
 	if systemctl != "" && fileExists(serverUnitPath()) {
+		// Decide what the service is supposed to serve *before* restarting it, so a
+		// configuration that cannot be served is refused instead of applied and then
+		// left unverified.
+		scanned, scanErr := models.Scan(ctx.Config, false, nil)
+		if scanErr != nil {
+			return FailureError("cannot tell what the service would serve: %v", scanErr)
+		}
+		local, port := false, 0
+		if strings.TrimSpace(ctx.Config.ASRServerURL) != "" {
+			host, parsedPort, parseErr := server.ParseURL(ctx.Config.ASRServerURL)
+			if parseErr != nil {
+				return FailureError("%v", parseErr)
+			}
+			local, port = server.IsLocalHost(host), parsedPort
+		}
+		spec, specErr := buildServerSpec(ctx.Config, scanned, port, "", "")
+		if specErr != nil {
+			return PreconditionError("voiceime models list", "cannot serve what the configuration names: %v", specErr)
+		}
 		if err := runCommand("systemctl --user restart " + serverUnitName); err != nil {
 			return FailureError("restart %s: %v", serverUnitName, err)
 		}
-		scanned, scanErr := models.Scan(ctx.Config, false, nil)
-		host, port, parseErr := server.ParseURL(ctx.Config.ASRServerURL)
-		if scanErr == nil && parseErr == nil && server.IsLocalHost(host) {
-			if spec, specErr := buildServerSpec(ctx.Config, scanned, port, "", ""); specErr == nil {
-				probeCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-				err := waitForEntries(probeCtx, ctx.Config.ASRServerURL, spec)
-				cancel()
-				if err != nil {
-					return FailureError("the service restarted but is not serving the configured models: %v", err)
-				}
-				result["served"] = []string{filepath.Base(spec.StreamModel), filepath.Base(spec.RepairModel)}
+		if local {
+			probeCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+			err := waitForEntries(probeCtx, ctx.Config.ASRServerURL, spec)
+			cancel()
+			if err != nil {
+				return FailureError("the service restarted but is not serving the configured models: %v", err)
 			}
+			result["served"] = []string{filepath.Base(spec.StreamModel), filepath.Base(spec.RepairModel)}
 		}
 		result["service"] = "restarted"
 	} else {
@@ -313,7 +338,10 @@ func runConfig(ctx *Context, args []string, force bool) error {
 			return err
 		}
 		if len(blocking) > 0 {
-			return PreconditionError("voiceime config validate", "%d blocking issue(s) in %s",
+			// No fix on the error itself: the actionable command belongs to the
+			// issue and was printed above. Naming this command as its own fix is
+			// the kind of un-followable advice this project keeps finding.
+			return PreconditionError("", "%d blocking issue(s) in %s",
 				len(blocking), ctx.ConfigPath)
 		}
 		return nil

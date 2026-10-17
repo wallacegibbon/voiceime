@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/wallacegibbon/voiceime/internal/asr"
 	"github.com/wallacegibbon/voiceime/internal/config"
 	"github.com/wallacegibbon/voiceime/internal/models"
 )
@@ -270,65 +272,60 @@ func pathOf(model *models.Model) string {
 	return model.Path
 }
 
-// cmdTranscribe is the offline one-shot: useful for checking a model, and the
-// exact code path the repair pass uses.
+// cmdTranscribe is the offline one-shot: useful for checking an entry, and the exact
+// code path the repair pass uses.
 func cmdTranscribe() *Command {
 	var model string
-	var threads int
 	var language string
 	return &Command{
 		Name:    "transcribe",
-		Summary: "Transcribe a WAV file offline and print the text",
-		Usage:   "voiceime transcribe <file.wav> [--model PATH] [--threads N] [--language CODE]",
+		Summary: "Transcribe a WAV file through the repair server and print the text",
+		Usage:   "voiceime transcribe <file.wav> [--entry ID] [--language CODE]",
 		Flags: func(set *flag.FlagSet) {
-			set.StringVar(&model, "model", "", "model path (default: the configured repair or streaming model)")
-			set.IntVar(&threads, "threads", 0, "worker threads (default: from config)")
+			set.StringVar(&model, "entry", "", "server entry to decode with (default: asr_server_model)")
 			set.StringVar(&language, "language", "", "language code (default: from config)")
 		},
 		Run: func(ctx *Context, args []string) error {
 			if len(args) != 1 {
-				return UsageError("transcribe needs exactly one WAV path")
+				return UsageError("transcribe needs exactly one WAV file")
 			}
-			target := model
-			if target == "" {
-				target = resolveModel(ctx, false)
-			}
-			if target == "" {
-				return PreconditionError("voiceime models list", "no model available to transcribe with")
-			}
-			threadsValue := threads
-			if threadsValue == 0 {
-				threadsValue = ctx.Config.Threads
+			if strings.TrimSpace(ctx.Config.ASRServerURL) == "" {
+				return PreconditionError("voiceime server install",
+					"nothing is configured to decode audio: run `voiceime server install`")
 			}
 			languageValue := language
 			if languageValue == "" {
 				languageValue = ctx.Config.Language
 			}
-			binary, err := ctx.Config.FindASRBinary()
-			if err != nil {
-				return PreconditionError("voiceime config set audio_cpp_dir /path/to/audio.cpp", "%v", err)
+			entry := strings.TrimSpace(model)
+			if entry == "" {
+				entry = serverModelID(ctx.Config)
 			}
-			// Repairer is reused rather than duplicated: the offline decode is
-			// the same operation whether the audio is a file the user named or a
-			// segment voiceime captured a moment ago.
 			from := config.Expand(args[0])
 			wav, err := readPCM(from)
 			if err != nil {
 				return FailureError("%v", err)
 			}
-			repairer := newRepairer(ctx, target, binary, threadsValue, languageValue)
+			// One route for decoding, in a diagnostic as much as in dictation: the
+			// server is what holds the models, so a measurement here describes the
+			// pipeline that actually runs.
+			transcriber := asr.ServerTranscriber{
+				BaseURL:  ctx.Config.ASRServerURL,
+				Model:    entry,
+				Language: languageValue,
+				Timeout:  10 * time.Minute,
+			}
 			transcribeCtx, cancelTranscribe := timeout(600)
 			defer cancelTranscribe()
-			text, err := repairer.Transcribe(transcribeCtx, wav)
+			text, err := transcriber.Transcribe(transcribeCtx, wav)
 			if err != nil {
 				return FailureError("%v", err)
 			}
 			ctx.Print("%s", text)
 			return ctx.Emit("transcribe", map[string]any{
 				"file":     from,
-				"model":    target,
+				"entry":    entry,
 				"language": languageValue,
-				"text":     text,
 			})
 		},
 	}

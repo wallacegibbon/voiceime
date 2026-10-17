@@ -59,10 +59,7 @@ type ServerTranscriber struct {
 	Client *http.Client
 }
 
-var (
-	_ Transcriber = Repairer{}
-	_ Transcriber = ServerTranscriber{}
-)
+var _ Transcriber = ServerTranscriber{}
 
 // Transcribe uploads the segment and returns the text the server decoded.
 func (s ServerTranscriber) Transcribe(ctx context.Context, pcm []byte) (string, error) {
@@ -235,4 +232,20 @@ func summarise(payload []byte) string {
 		return "(no body)"
 	}
 	return text
+}
+
+// RepairRequestOptions returns the request options the offline repair decode
+// needs, with the caller's overlaid on top.
+//
+// It is exported and shared because the two repair routes have to decode
+// identically or a user comparing them is comparing two things: the CLI route
+// passes these as --request-option flags, and the server route writes them into
+// the model entry's default_request_options, since a multipart transcription
+// upload has no field to carry them per request.
+func RepairRequestOptions(overrides map[string]string) map[string]string {
+	options := map[string]string{"audio_chunk_mode": "none"}
+	for key, value := range overrides {
+		options[key] = value
+	}
+	return options
 }

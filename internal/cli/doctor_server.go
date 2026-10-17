@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -12,127 +13,96 @@ import (
 	"github.com/wallacegibbon/voiceime/internal/server"
 )
 
-// asrServerCheck reports on the optional resident-server repair route.
+// serverUnitInstalled reports whether a unit exists to start the server, which decides
+// which fix doctor offers: "start it" and "install it" are different repairs.
+func serverUnitInstalled() bool {
+	path := serverUnitPath()
+	if path == "" {
+		return false
+	}
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// asrServerCheck reports on the resident server, which is the one prerequisite that
+// dictation cannot work without and that nothing else in the install verifies: without
+// it there is no streaming pass and no repair, because voiceime no longer starts
+// processes of its own.
 //
-// It exists because that route is the one part of a working installation that
-// nothing else verifies: a machine configured for it but unable to start it still
-// reports `doctor` clean, because dictation falls back to a process per utterance
-// and keeps working. The fallback is the right behaviour and the wrong silence -
-// the user asked for a faster route and would be paying for it with none of the
-// benefit. The states worth distinguishing are "not in use" (the default, and not a
-// problem), "up and offering the configured model", and "configured but cannot be
-// started", which names the setting that is wrong.
-//
-// One function rather than a block inside runDoctor, so it can be tested against
-// each of those states without a machine that has audio.cpp built on it.
-func asrServerCheck(cfg *config.Config, scanned []models.Model) Check {
+// One function rather than a block inside runDoctor, so its states can be tested
+// without a machine that has audio.cpp built on it.
+func asrServerCheck(cfg *config.Config, scanned []models.Model, unitInstalled bool) Check {
 	raw := strings.TrimSpace(cfg.ASRServerURL)
 	if raw == "" {
 		return Check{
 			ID:     "asr_server",
-			Status: "ok",
-			Detail: "off: one audiocpp_cli process per utterance (asr_server_url is empty)",
+			Status: "fail",
+			Detail: "no server is configured, and dictation decodes through one",
+			Fix:    "voiceime server install",
 		}
 	}
-	modelID := strings.TrimSpace(cfg.ASRServerModel)
-	if modelID == "" {
-		modelID = server.DefaultID
-	}
-
 	host, _, err := server.ParseURL(raw)
 	if err != nil {
 		return Check{
 			ID:     "asr_server",
 			Status: "fail",
 			Detail: err.Error(),
-			Fix:    "voiceime config set asr_server_url http://127.0.0.1:18080",
+			Fix:    "voiceime server install",
 		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	probeErr := server.Probe(ctx, raw)
+	if probeErr != nil {
+		// The unit is what should be running it, so the advice depends on whether one
+		// exists: "start it" and "install it" are different fixes.
+		if unitInstalled {
+			return Check{
+				ID:     "asr_server",
+				Status: "fail",
+				Detail: fmt.Sprintf("%s is not answering: %v", strings.TrimRight(raw, "/"), probeErr),
+				Fix:    "systemctl --user start " + serverUnitName,
+			}
+		}
+		fix := "voiceime server install"
+		if !server.IsLocalHost(host) {
+			fix = "systemctl --user start " + serverUnitName + " on that machine"
+		}
+		return Check{
+			ID:     "asr_server",
+			Status: "fail",
+			Detail: fmt.Sprintf("nothing is answering at %s, and no service on this machine is installed to answer it", raw),
+			Fix:    fix,
+		}
+	}
 
-	if err := server.Probe(ctx, raw); err == nil {
-		// Something is listening, so the remaining question is whether it offers the
-		// model a repair will ask for - the mistake a hand-written server config
-		// makes, and one that otherwise surfaces per utterance as a repair that fell
-		// back.
-		if err := (&asr.ServerTranscriber{BaseURL: raw, Model: modelID}).Check(ctx); err != nil {
+	// Something answers. The remaining question is whether it serves the entries the
+	// client will ask for - a wrong id otherwise shows up per utterance as a repair
+	// that fell back, or as a stream that never starts.
+	streamEntry, repairEntry := serverStreamModelID(cfg), serverModelID(cfg)
+	if streamEntry == repairEntry {
+		return Check{
+			ID:     "asr_server",
+			Status: "fail",
+			Detail: fmt.Sprintf("asr_server_stream_model and asr_server_model are both %q: a repair would wait for the dictation that holds that entry", streamEntry),
+			Fix:    "voiceime config set asr_server_model refine",
+		}
+	}
+	for _, entry := range []string{streamEntry, repairEntry} {
+		transcriber := asr.ServerTranscriber{BaseURL: raw, Model: entry}
+		if err := transcriber.Check(ctx); err != nil {
 			return Check{
 				ID:     "asr_server",
 				Status: "fail",
 				Detail: err.Error(),
-				Fix:    "voiceime config set asr_server_model <the id that server offers>",
+				Fix:    "voiceime server install",
 			}
-		}
-		detail := fmt.Sprintf("%s is serving model %s", strings.TrimRight(raw, "/"), modelID)
-		if !server.IsLocalHost(host) {
-			detail = "remote " + detail
-		}
-		return Check{ID: "asr_server", Status: "ok", Detail: detail}
-	}
-
-	if !cfg.ASRServerAutostart {
-		return Check{
-			ID:     "asr_server",
-			Status: "warn",
-			Detail: fmt.Sprintf("nothing is listening at %s and asr_server_autostart is off: repairs use a process per utterance", raw),
-			Fix:    "voiceime config set asr_server_autostart true",
-		}
-	}
-	if !server.IsLocalHost(host) {
-		return Check{
-			ID:     "asr_server",
-			Status: "warn",
-			Detail: fmt.Sprintf("nothing is listening at %s, and autostart only starts a server on this machine: repairs use a process per utterance", raw),
-		}
-	}
-
-	// Local and autostarting: everything it needs has to be present before the first
-	// session reaches for it.
-	if _, err := cfg.FindServerBinary(); err != nil {
-		return Check{
-			ID:     "asr_server",
-			Status: "fail",
-			Detail: err.Error(),
-			Fix:    "voiceime config set asr_bin /path/to/audio.cpp/build/<backend>/bin/audiocpp_cli",
-		}
-	}
-	if strings.TrimSpace(cfg.RefineModel) == "" {
-		return Check{
-			ID:     "asr_server",
-			Status: "fail",
-			Detail: "asr_server_url is set but refine_model is empty: there is no model for the server to serve",
-			Fix:    "voiceime config set refine_model /path/to/offline-model.gguf",
-		}
-	}
-	found := models.Lookup(scanned, cfg.RefineModel)
-	switch {
-	case found == nil:
-		return Check{
-			ID:     "asr_server",
-			Status: "fail",
-			Detail: cfg.RefineModel + " is not a model voiceime can see, so the server cannot be started for it",
-			Fix:    "voiceime models list",
-		}
-	case found.Error != "":
-		return Check{
-			ID:     "asr_server",
-			Status: "fail",
-			Detail: cfg.RefineModel + ": " + found.Error,
-			Fix:    "voiceime models install " + models.RecommendedPackages()[0].ID,
-		}
-	case found.Family == "":
-		return Check{
-			ID:     "asr_server",
-			Status: "fail",
-			Detail: cfg.RefineModel + ": audio.cpp did not report a family, and the server requires one",
-			Fix:    "voiceime models refresh",
 		}
 	}
 	return Check{
 		ID:     "asr_server",
 		Status: "ok",
-		Detail: fmt.Sprintf("started on demand at %s when dictation begins, serving %s (%s)", raw, found.Path, found.Family),
+		Detail: fmt.Sprintf("%s is serving %s (partials) and %s (repair)", strings.TrimRight(raw, "/"), streamEntry, repairEntry),
 	}
 }

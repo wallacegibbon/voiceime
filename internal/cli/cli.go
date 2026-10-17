@@ -126,6 +126,7 @@ func commands() []*Command {
 		cmdDoctor(),
 		cmdEngine(),
 		cmdHotkey(),
+		cmdServer(),
 		cmdIBusEngine(),
 		cmdModels(),
 		cmdStream(),

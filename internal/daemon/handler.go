@@ -18,19 +18,15 @@ import (
 // it and commits whatever was still provisional. No global hotkey is needed,
 // because switching input methods is the hotkey.
 type EngineHandler struct {
-	Config      *config.Config
-	Binary      string
-	Model       string
+	Config *config.Config
+	// ServerURL, StreamModel and RepairModel name the resident server and the two
+	// entries a session uses.
+	ServerURL   string
+	StreamModel string
 	RepairModel string
-	// Transcriber overrides the offline decode the repair pass runs. Nil builds
-	// the CLI Repairer; a resident server passes its own implementation.
+	// Transcriber overrides the offline decode the repair pass runs, for tests.
 	Transcriber asr.Transcriber
-	// PreferredRepair, when set, brings up the route a repair prefers for one
-	// session, with the CLI repairer as its fallback. It is called per activation.
-	PreferredRepair func(ctx context.Context) (asr.Transcriber, error)
-	// PreferredWait bounds how long a repair waits for PreferredRepair.
-	PreferredWait time.Duration
-	Log           func(format string, args ...any)
+	Log         func(format string, args ...any)
 
 	// AudioFile replays a WAV instead of using the microphone, for the diagnostic
 	// that exercises the whole path (engine → application text) without speaking.
@@ -77,12 +73,10 @@ func (h *EngineHandler) Enable(control ibus.Control) {
 
 	options := Options{
 		Config:           h.Config,
-		Binary:           h.Binary,
-		Model:            h.Model,
+		ServerURL:        h.ServerURL,
+		StreamModel:      h.StreamModel,
 		RepairModel:      h.RepairModel,
 		Transcriber:      h.Transcriber,
-		PreferredRepair:  h.PreferredRepair,
-		PreferredWait:    h.PreferredWait,
 		Sink:             control,
 		MinRepairSeconds: h.MinRepairSeconds,
 		Observer: Observer{

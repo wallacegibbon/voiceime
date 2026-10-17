@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -138,14 +137,6 @@ func EncodeWAV(data []byte, rate, channels int) []byte {
 	writeUint32(&buffer, uint32(frames*blockAlign))
 
 	return append([]byte(buffer.String()), data[:frames*blockAlign]...)
-}
-
-// WriteWAV writes a canonical 16-bit PCM WAV file.
-func WriteWAV(path string, data []byte, rate, channels int) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, EncodeWAV(data, rate, channels), 0o644)
 }
 
 func writeUint32(buffer *strings.Builder, value uint32) {

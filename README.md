@@ -84,7 +84,7 @@ on the reference machine ([details](docs/measurements.md)).
 | Machine | `streaming_model` | `refine_model` |
 |---|---|---|
 | **CPU only** | `sensevoice_small_q8` (242 MiB, ~21x realtime) | empty — repairs reuse the streaming model (0.55 s per sentence) |
-| **CPU, with the repair server** | `sensevoice_small_q8` | `qwen3_asr_0_6b_q8_0` plus `asr_server_url` (0.7 s per sentence) |
+| **CPU, accurate repair** | `sensevoice_small_q8` | `qwen3_asr_0_6b_q8_0` (0.5-0.8 s per sentence) |
 | **With a GPU** | `sensevoice_small_q8` | `qwen3_asr_0_6b_q8_0` (1.07 GiB, the more accurate offline reader) |
 
 ```
@@ -99,13 +99,13 @@ session and live text is bounded by `chunk_seconds`, not by decode speed. Qwen3 
 worth adding only as the repair model, where the whole sentence is re-read with
 context.
 
-On CPU that used to be a GPU-only recommendation, because a repair as a *process per
-utterance* costs 5.66 s for a 4.24 s sentence — and most of that is loading the
-1.07 GiB checkpoint again, not decoding it. Setting `asr_server_url` changes that:
-voiceime starts a server for the dictation session and stops it at the end, so the
-load is paid once and the same repair takes about 0.7 s. See
-[docs/decisions.md](docs/decisions.md) D21. [docs/DEPLOY.md](docs/DEPLOY.md) has the
-commands for every case.
+Both passes run through one resident server that voiceime installs
+(`voiceime server install`, a systemd user unit like the shortcut listener), with both
+models loaded at startup. That is what makes Qwen3 affordable on CPU: a repair is a
+request against weights that are already there, not a process that reloads 1.07 GiB.
+The cost is memory — the pair sits at about 1.4 GB — and that is the trade in one line:
+the service holds the models so dictation does not load them. See
+[docs/decisions.md](docs/decisions.md) D22.
 
 ## How it works
 

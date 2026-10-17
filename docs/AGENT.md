@@ -109,9 +109,9 @@ Settings that matter, and the reasoning a caller needs to pick values:
 | `threads` | `4` | Worker threads for both the streaming engine and repairs. The default is the reference machine's 8-core setting; `doctor` warns when it exceeds this machine's physical cores, because the two passes compete for the same ones. |
 | `streaming_model` | `""` | Empty means pick automatically. |
 | `refine_model` | `""` | Empty means reuse the streaming model (fastest). |
-| `asr_server_url` | `""` | Empty runs one `audiocpp_cli` per utterance, which needs no daemon and is fine for a small refine model. Set it to decode repairs through a resident `audiocpp_server` instead, which is what makes a large refine model affordable: a process pays the whole model load every utterance (~4.4 s of CPU for a 1.07 GiB checkpoint, whatever the audio), a server pays it once. |
-| `asr_server_autostart` | `true` | With a URL on this machine, start the server when a dictation session begins and stop it when the session ends, so nothing holds the weights between sentences. A server already listening on that address is used and left running. |
-| `asr_server_model` | `refine` | The id the offline entry gets in the generated config; a server someone else runs reports the ids it offers if this one is wrong. |
+| `asr_server_url` | `""` | Where the resident recognition server listens. `voiceime server install` sets it; empty means dictation cannot run, and `doctor` says so. Both passes go through this one service, so nothing is started per session and no model is loaded per request. |
+| `asr_server_stream_model` | `stream` | The server entry that serves live partials. |
+| `asr_server_model` | `refine` | The server entry the offline repair uses. It must differ from the streaming entry: the server holds a model for a whole live session, so a repair on the same id waits for the dictation to end (measured 10.9 s). |
 | `language` | `zh` | Passed to the model; empty asks it to auto-detect. |
 | `chunk_seconds` | `3` | The streaming window: how much audio a draft is decoded from. Below 1.5 measurably corrupts CJK output; validate warns. It does not gate when text is committed - a finished utterance is decoded offline and delivered when it closes - so it can be raised for accuracy without making delivery wait. |
 | `refine_on_segment_end` | `true` | The pass that repairs window-boundary damage. |
@@ -157,13 +157,10 @@ Packages to install, by machine (measured on the reference machine; see
   ~21x realtime on CPU, 0.3 s to load per session. On CPU it is also the repair
   model, because it repairs a finished sentence in 0.55 s.
 * `qwen3_asr_0_6b_q8_0` (1.07 GiB) is the more accurate offline reader and the
-  only reason to add a second model. On CPU a repair with it costs 5.66 s for a
-  4.24 s sentence *as a process per utterance*, which does not keep up with
-  speech, so `doctor` reports it as advice instead of selecting it. That cost is
-  the model load, not the decode: with `asr_server_url` set, voiceime starts a
-  server for the session and the same repair costs about 0.7 s (docs/decisions.md
-  D21). Add it on CPU only together with the server, or on a machine where the
-  per-utterance process is fast enough.
+  only reason to add a second model. It costs its memory all the time (the service keeps
+  both entries resident: 1403 MB with the pair above) and saves the decode, which is the
+  point of the service: a repair is a 0.5-0.8 s request instead of a 5.7 s process, and
+  a dictation starts in microseconds. See docs/decisions.md D22.
 * Because the streaming model is what loads on every activation, `streaming_model`
   should stay `""` (empty means "pick the best installed streaming model") unless a
   caller deliberately wants to pin a choice. `models recommended` prints the same
@@ -262,6 +259,9 @@ voiceime hotkey install               # systemd --user unit, starts at login;
                                       # on X11 also a GNOME keybinding (see below)
 voiceime hotkey status --json         # data.session, data.mechanisms, data.gnome_binding
 voiceime hotkey toggle                # the one-shot toggle the keybinding runs
+voiceime server install               # the resident recognition server (required for dictation)
+voiceime server status --json         # data.unit_active, data.listening, data.entries_served
+voiceime server uninstall             # stop and remove it
 voiceime hotkey run --log-events      # foreground, prints every event the daemon sends
 ```
 

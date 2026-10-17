@@ -13,7 +13,6 @@ import (
 	"github.com/wallacegibbon/voiceime/internal/config"
 	"github.com/wallacegibbon/voiceime/internal/daemon"
 	"github.com/wallacegibbon/voiceime/internal/ibus"
-	"github.com/wallacegibbon/voiceime/internal/models"
 )
 
 // cmdEngine installs and inspects the IBus component, and hosts the engine
@@ -325,37 +324,31 @@ func runIBusEngine(ctx *Context, options engineRunOptions) error {
 	return ctx.Emit("ibus-engine", map[string]any{"address": address, "stopped": true})
 }
 
-// newPipelineHandler assembles the dictation pipeline the engine runs: the
-// streaming model for live text, the repair model for finished utterances, and
-// either the microphone or a file as the audio source.
-func newPipelineHandler(runCtx context.Context, ctx *Context, logf func(string, ...any), audioFile, repairModel string) (*daemon.EngineHandler, error) {
-	binary, err := ctx.Config.FindASRBinary()
-	if err != nil {
-		return nil, PreconditionError("voiceime config set audio_cpp_dir /path/to/audio.cpp", "%v", err)
+// newPipelineHandler assembles the dictation pipeline the engine runs: the resident
+// server it talks to, the two entries a session uses, and either the microphone or a
+// file as the audio source.
+//
+// There is no process to start and no model to load here any more. Both roles are
+// served by the unit `voiceime server install` writes, which loads its models at
+// startup, so activating the engine opens a connection and nothing else.
+func newPipelineHandler(runCtx context.Context, ctx *Context, logf func(string, ...any), audioFile, repairModelOverride string) (*daemon.EngineHandler, error) {
+	serverURL := strings.TrimSpace(ctx.Config.ASRServerURL)
+	if serverURL == "" {
+		return nil, PreconditionError("voiceime server install",
+			"dictation needs the repair server: nothing is configured to decode audio")
 	}
-	model := resolveModel(ctx, false)
-	if model == "" {
-		return nil, PreconditionError("voiceime models install "+models.RecommendedPackages()[0].ID,
-			"no streaming model available")
+	repairModel := strings.TrimSpace(repairModelOverride)
+	if repairModel == "" {
+		repairModel = serverModelID(ctx.Config)
 	}
-	repair := repairModel
-	if repair == "" {
-		repair = resolveModel(ctx, true)
-	}
-
 	handler := &daemon.EngineHandler{
 		Config:      ctx.Config,
-		Binary:      binary,
-		Model:       model,
-		RepairModel: repair,
+		ServerURL:   serverURL,
+		StreamModel: serverStreamModelID(ctx.Config),
+		RepairModel: repairModel,
 		Log:         logf,
 	}
-
-	// The repair route is chosen once, at engine start. It is not brought up here:
-	// the session starts it as dictation begins, so a server it spawns is not
-	// holding a model while the engine sits idle between activations.
-	handler.PreferredRepair = repairRoute(ctx.Config, repair)
-	logf("%s", repairRouteDescription(ctx.Config, handler.PreferredRepair))
+	logf("%s", serverDescription(ctx.Config, repairModel))
 	if audioFile != "" {
 		// Validated here rather than at first use: a typo in the path should fail
 		// when the engine starts, not silently later.

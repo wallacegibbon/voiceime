@@ -79,10 +79,10 @@ type Config struct {
 	// the process-per-utterance route, which needs no daemon and is fast enough
 	// for a small model; a server pays the model load once instead of per
 	// utterance, which is what a large refine model needs.
-	ASRServerURL       string `toml:"asr_server_url" desc:"Resident audiocpp_server root, e.g. http://127.0.0.1:8080; empty starts a process per utterance."`
-	ASRServerModel     string `toml:"asr_server_model" desc:"Model id the server config gave the offline model; must not be the streaming model's id."`
-	ASRServerAutostart bool   `toml:"asr_server_autostart" desc:"Start a local server on demand when asr_server_url is on this machine and nothing is listening."`
-	ASRServerTimeoutMS int    `toml:"asr_server_timeout_ms" desc:"Deadline for one server-side repair decode."`
+	ASRServerURL         string `toml:"asr_server_url" desc:"Resident audiocpp_server root, e.g. http://127.0.0.1:18080; 'voiceime server install' sets it."`
+	ASRServerStreamModel string `toml:"asr_server_stream_model" desc:"Server entry that serves live partials."`
+	ASRServerModel       string `toml:"asr_server_model" desc:"Server entry the offline repair decode uses; must not be the streaming entry."`
+	ASRServerTimeoutMS   int    `toml:"asr_server_timeout_ms" desc:"Deadline for one server-side repair decode."`
 
 	// Endpointing.
 	EndpointSilenceMS   int `toml:"endpoint_silence_ms" desc:"Silence after speech before a segment is closed."`
@@ -132,13 +132,14 @@ func Default() *Config {
 		// abandon a repair that has stopped being worth waiting for, not to bound
 		// a decode that is running normally.
 		ASRServerTimeoutMS: 30000,
-		// "refine" is the id this project's own server config gives the offline
-		// model, so naming only a URL is enough to get a working route. A server
-		// someone else runs reports the ids it offers if this one is wrong.
-		ASRServerModel:      "refine",
-		ASRServerAutostart:  true,
-		EndpointSilenceMS:   800,
-		EndpointMinSpeechMS: 300,
+		// The ids `voiceime server install` writes into its config. They are settings
+		// rather than constants because a server someone else runs may name its
+		// entries anything, and the failure that causes (a repair that falls back
+		// silently) is the kind that costs an afternoon.
+		ASRServerModel:       "refine",
+		ASRServerStreamModel: "stream",
+		EndpointSilenceMS:    800,
+		EndpointMinSpeechMS:  300,
 		// This is a floor, not a fixed threshold: the detector raises its
 		// threshold to twice the noise floor it measures in the stream, and never
 		// lowers it below this. 600 sits above the reference room's idle noise

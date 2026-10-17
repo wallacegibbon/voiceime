@@ -11,52 +11,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wallacegibbon/voiceime/internal/asr"
 	"github.com/wallacegibbon/voiceime/internal/audio"
 	"github.com/wallacegibbon/voiceime/internal/config"
 )
 
-// These tests run a whole session against a stand-in for audiocpp_cli. They exist
-// because the session is the only place in the project with three goroutines
-// touching shared state at once - recognition events, the capture loop and the
-// repair worker - and the unit tests around the transcript do not exercise that.
-// Run with -race to be worth anything.
+// These tests run a whole session against a stand-in for the resident server. They
+// exist because the session is the only place in the project with three goroutines
+// touching shared state at once - recognition events, the capture loop and the repair
+// worker - and the unit tests around the transcript do not exercise that. Run with
+// -race to be worth anything.
 
-// The two invocations are told apart by their audio argument: streaming reads
-// "-" from stdin, the repair pass is given a file. Getting this wrong made every
-// call take the offline branch, which is how the first version of this test failed.
-const fakeEngineTemplate = `#!/bin/sh
-case "$*" in
-  *"--audio -"*)
-    # Streaming: report readiness, then emit partials while audio arrives.
-    echo "audio_input=stdin format=s16le rate=16000 channels=1"
-    ( i=0; while [ $i -lt 200 ]; do sleep 0.05; echo "partial_text=片段"; i=$((i+1)); done ) &
-    bg=$!
-    cat > /dev/null
-    kill $bg 2>/dev/null
-    echo "text_output=片段片段"
-    ;;
-  *)
-    # Offline (repair): no stdin, just the report.
-%s
-    ;;
-esac
-`
-
-func writeFakeEngine(t *testing.T, dir, repairBehaviour string) string {
+// speechWAV writes silence, then a tone loud enough to be speech, then silence, so the
+// endpoint detector opens and closes one utterance.
+func speechWAV(t *testing.T) string {
 	t.Helper()
-	path := filepath.Join(dir, "fake-audiocpp")
-	script := strings.Replace(fakeEngineTemplate, "%s", repairBehaviour, 1)
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake engine: %v", err)
-	}
-	return path
-}
-
-// speechWAV writes silence, then a tone loud enough to be speech, then silence,
-// so the endpoint detector opens and closes one utterance.
-func speechWAV(t *testing.T, dir string) string {
-	t.Helper()
+	dir := t.TempDir()
 	room := silence(0.2)
 	spoken := make([]int16, int(0.6*audio.SampleRate))
 	frequency := 2 * math.Pi * 220 / audio.SampleRate
@@ -65,35 +34,37 @@ func speechWAV(t *testing.T, dir string) string {
 	}
 	payload := append(append(room, audio.SamplesToBytes(spoken)...), silence(0.5)...)
 	path := filepath.Join(dir, "speech.wav")
-	if err := audio.WriteWAV(path, payload, audio.SampleRate, 1); err != nil {
-		t.Fatalf("write wav: %v", err)
-	}
+	writeWAV(t, path, payload)
 	return path
 }
 
-func sessionOptions(t *testing.T, dir, repairBehaviour string, refine bool) (Options, *recordingSink) {
+// sessionOptions wires a session to a fake server. The server is the only decode route
+// there is now, which is why the harness is a server rather than a script: it answers
+// the live endpoint, the repair endpoint and /v1/models on one address, as the real
+// service does.
+func sessionOptions(t *testing.T, server *fakeASRServer, refine bool) (Options, *recordingSink) {
 	t.Helper()
-	binary := writeFakeEngine(t, dir, repairBehaviour)
-	wav := speechWAV(t, dir)
+	return sessionOptionsForWAV(t, server, refine, speechWAV(t))
+}
 
+func sessionOptionsForWAV(t *testing.T, server *fakeASRServer, refine bool, wav string) (Options, *recordingSink) {
+	t.Helper()
 	cfg := config.Default()
-	// The CLI runs with this directory as its working directory; it has to exist.
-	cfg.AudioCPPDir = dir
-	cfg.Threads = 1
 	cfg.RefineOnSegmentEnd = refine
+	cfg.ASRServerURL = server.url
 
 	sink := &recordingSink{}
 	return Options{
-		Config: cfg,
-		Binary: binary,
-		Model:  "not-a-real-model",
-		Sink:   sink,
+		Config:      cfg,
+		ServerURL:   server.url,
+		StreamModel: "stream",
+		RepairModel: "refine",
+		Sink:        sink,
 		NewCapture: func() (audio.Capture, error) {
-			// Real time, deliberately: the fake engine emits partials on a timer,
-			// and the interesting interleavings (a partial arriving before the
-			// utterance ends, a repair finishing after it) only happen when audio
-			// arrives at the rate it would from a microphone. A fast replay would
-			// end the utterance before the first partial existed.
+			// Real time, deliberately: the fake server emits partials as audio
+			// arrives, and the interesting interleavings (a partial arriving before
+			// the utterance ends, a repair finishing after it) only happen when audio
+			// arrives at the rate it would from a microphone.
 			return audio.NewFileReplay(wav, true)
 		},
 	}, sink
@@ -113,11 +84,16 @@ func runSession(t *testing.T, options Options) Result {
 // The happy path: live partials shown as a composition, then the repaired sentence
 // committed once.
 func TestSessionCommitsTheRepairedText(t *testing.T) {
-	options, sink := sessionOptions(t, t.TempDir(), `echo "task=asr"; echo "text_output=修复后的句子。"`, true)
+	server := newFakeASRServer(t)
+	server.repairText = "修复后的句子。"
+	options, sink := sessionOptions(t, server, true)
 	result := runSession(t, options)
 
 	if result.Partials == 0 {
 		t.Error("no partials were recorded, so the recognition path never ran")
+	}
+	if server.repairCount() == 0 {
+		t.Error("no repair was requested, so the offline pass never ran")
 	}
 	if len(sink.commits()) == 0 {
 		t.Fatalf("nothing was delivered: %v", sink.events)
@@ -131,9 +107,11 @@ func TestSessionCommitsTheRepairedText(t *testing.T) {
 	}
 }
 
-// With repair switched off the stream text is what reaches the application.
+// With repair switched off the stream text is what reaches the application, and the
+// repair endpoint is never called.
 func TestSessionCommitsStreamTextWhenRepairIsOff(t *testing.T) {
-	options, sink := sessionOptions(t, t.TempDir(), `echo "should not run"`, false)
+	server := newFakeASRServer(t)
+	options, sink := sessionOptions(t, server, false)
 	runSession(t, options)
 
 	if len(sink.commits()) == 0 {
@@ -142,12 +120,17 @@ func TestSessionCommitsStreamTextWhenRepairIsOff(t *testing.T) {
 	if got := strings.Join(sink.commits(), ""); !strings.Contains(got, "片段") {
 		t.Errorf("committed %q, want the streaming text", got)
 	}
+	if server.repairCount() != 0 {
+		t.Errorf("the repair endpoint was called %d time(s) with repair off", server.repairCount())
+	}
 }
 
 // A repair that fails must still release the utterance: otherwise the text stays
 // provisional forever and the user sees it never arrive.
 func TestSessionReleasesTextWhenRepairFails(t *testing.T) {
-	options, sink := sessionOptions(t, t.TempDir(), `echo "repair exploded" >&2; exit 1`, true)
+	server := newFakeASRServer(t)
+	server.repairStatus = 503
+	options, sink := sessionOptions(t, server, true)
 	runSession(t, options)
 
 	if len(sink.commits()) == 0 {
@@ -160,7 +143,8 @@ func TestSessionReleasesTextWhenRepairFails(t *testing.T) {
 
 // A session that is cancelled must still finish cleanly and deliver what it had.
 func TestSessionStopsCleanlyWhenCancelled(t *testing.T) {
-	options, sink := sessionOptions(t, t.TempDir(), `echo "task=asr"; echo "text_output=。"; echo "done"`, true)
+	server := newFakeASRServer(t)
+	options, sink := sessionOptions(t, server, true)
 	// Long enough for the utterance to be recognised, short enough to land in the
 	// middle of the trailing silence.
 	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
@@ -175,11 +159,12 @@ func TestSessionStopsCleanlyWhenCancelled(t *testing.T) {
 }
 
 // One session owns one capture: the options take a factory because a replay is
-// consumed by a run and a microphone should be reopened per activation. A second
-// run must therefore work.
+// consumed by a run and a microphone should be reopened per activation. A second run
+// must therefore work - and it must work against the same server, because the server is
+// a service rather than something the session starts.
 func TestSessionCanRunTwiceWithAFactory(t *testing.T) {
-	dir := t.TempDir()
-	options, sink := sessionOptions(t, dir, `echo "task=asr"; echo "text_output=。"`, true)
+	server := newFakeASRServer(t)
+	options, sink := sessionOptions(t, server, true)
 
 	runSession(t, options)
 	first := len(sink.commits())
@@ -190,10 +175,20 @@ func TestSessionCanRunTwiceWithAFactory(t *testing.T) {
 	if len(sink.commits()) <= first {
 		t.Errorf("second run delivered nothing new: %v", sink.events)
 	}
+	if got := server.liveCount(); got != 2 {
+		t.Errorf("opened %d streaming sessions over two dictations, want 2", got)
+	}
 }
 
-// silence builds a block of digital silence for the synthetic sessions. It is
-// local because audio.Silence existed only for tests.
+// writeWAV lays down a 16 kHz mono file the replay can read.
+func writeWAV(t *testing.T, path string, pcm []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, audio.EncodeWAV(pcm, audio.SampleRate, 1), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// silence builds a block of digital silence for the synthetic sessions.
 func silence(seconds float64) []byte {
 	return make([]byte, int(seconds*audio.SampleRate)*audio.BytesPerSample)
 }
@@ -202,45 +197,27 @@ func silence(seconds float64) []byte {
 // withheld.
 //
 // Committing anyway is the regression the rule exists to prevent: streaming ASR
-// produces plausible words for almost any input, and twenty seconds of an empty
-// room once committed 被。。。。。。嗯。 into the focused application. Withholding is
-// only acceptable because it is not silent - the text was visible at the user's
-// caret as preedit, so the session reports the size of what it dropped, which is
-// what tells "the detector never heard me" apart from "the session was lost".
+// produces plausible words for almost any input, and twenty seconds of an empty room
+// once committed 被。。。。。。嗯。 into the focused application. Withholding is only
+// acceptable because it is not silent - the text was visible at the user's caret as
+// preedit, so the session reports the size of what it dropped, which is what tells "the
+// detector never heard me" apart from "the session was lost".
 func TestSessionWithholdsTextWhenNoSpeechIsDetected(t *testing.T) {
+	server := newFakeASRServer(t)
 	dir := t.TempDir()
-	binary := writeFakeEngine(t, dir, `echo "task=asr"; echo "text_output=幻觉。"`)
-
 	wav := filepath.Join(dir, "silence.wav")
-	if err := audio.WriteWAV(wav, silence(1.5), audio.SampleRate, 1); err != nil {
-		t.Fatalf("write wav: %v", err)
-	}
+	writeWAV(t, wav, silence(1.5))
 
-	cfg := config.Default()
-	cfg.AudioCPPDir = dir
-	cfg.Threads = 1
-	sink := &recordingSink{}
-
-	// Skipped is called from the capture and repair goroutines, so the list is
-	// guarded rather than appended to from three places at once.
 	var mu sync.Mutex
 	var skipped []string
-	options := Options{
-		Config: cfg,
-		Binary: binary,
-		Model:  "not-a-real-model",
-		Sink:   sink,
-		Observer: Observer{Skipped: func(reason string) {
-			mu.Lock()
-			defer mu.Unlock()
-			skipped = append(skipped, reason)
-		}},
-		NewCapture: func() (audio.Capture, error) {
-			return audio.NewFileReplay(wav, true)
-		},
-	}
-	// The fake engine emits partials regardless of what the audio contains, which
-	// is exactly the hallucination the rule is about.
+	options, sink := sessionOptionsForWAV(t, server, true, wav)
+	options.Observer = Observer{Skipped: func(reason string) {
+		mu.Lock()
+		defer mu.Unlock()
+		skipped = append(skipped, reason)
+	}}
+	// The fake server emits partials regardless of what the audio contains, which is
+	// exactly the hallucination the rule is about.
 	result := runSession(t, options)
 
 	if got := sink.commits(); len(got) != 0 {
@@ -260,20 +237,18 @@ func TestSessionWithholdsTextWhenNoSpeechIsDetected(t *testing.T) {
 	}
 }
 
-// A session whose audio begins with speech - no quiet frame to measure first -
-// must still find the utterance and commit it, including when the recording simply
-// ends and the boundary comes from Flush rather than from silence.
+// A session whose audio begins with speech - no quiet frame to measure first - must
+// still find the utterance and commit it, including when the recording simply ends and
+// the boundary comes from Flush rather than from silence.
 //
-// This is the end-to-end form of the endpointer bug. The detector compared every
-// frame against twice the configured threshold until it had measured the room, so
-// a user who started speaking the instant dictation was activated was never heard:
-// the text appeared as preedit, no segment was ever accepted, and stopping the
-// session discarded it (only an accepted segment is committed). The tone here has
-// an RMS of ~850: above the configured 600, below the 1200 that was in force.
+// This is the end-to-end form of the endpointer bug. The detector compared every frame
+// against twice the configured threshold until it had measured the room, so a user who
+// started speaking the instant dictation was activated was never heard: the text
+// appeared as preedit, no segment was ever accepted, and stopping the session discarded
+// it. The tone here has an RMS of ~850: above the configured 600, below the 1200 that
+// was in force.
 func TestSessionCommitsWhenSpeechStartsImmediately(t *testing.T) {
-	dir := t.TempDir()
-	binary := writeFakeEngine(t, dir, `echo "task=asr"; echo "text_output=修复后的句子。"`)
-
+	server := newFakeASRServer(t)
 	spoken := make([]int16, int(0.8*audio.SampleRate))
 	frequency := 2 * math.Pi * 220 / audio.SampleRate
 	for i := range spoken {
@@ -282,33 +257,18 @@ func TestSessionCommitsWhenSpeechStartsImmediately(t *testing.T) {
 	// Less trailing silence than the 800ms hangover, so the utterance is closed by
 	// Flush: the session ends with the user still in it, which is the reported case.
 	payload := append(audio.SamplesToBytes(spoken), silence(0.6)...)
-	wav := filepath.Join(dir, "immediate.wav")
-	if err := audio.WriteWAV(wav, payload, audio.SampleRate, 1); err != nil {
-		t.Fatalf("write wav: %v", err)
-	}
+	wav := filepath.Join(t.TempDir(), "immediate.wav")
+	writeWAV(t, wav, payload)
 
-	cfg := config.Default()
-	cfg.AudioCPPDir = dir
-	cfg.Threads = 1
-	sink := &recordingSink{}
-	options := Options{
-		Config: cfg,
-		Binary: binary,
-		Model:  "not-a-real-model",
-		Sink:   sink,
-		NewCapture: func() (audio.Capture, error) {
-			return audio.NewFileReplay(wav, true)
-		},
-	}
-
+	options, sink := sessionOptionsForWAV(t, server, true, wav)
 	runSession(t, options)
 	if len(sink.commits()) == 0 {
 		t.Fatalf("a session that began with speech committed nothing: %v", sink.events)
 	}
 }
 
-// fakeTranscriber stands in for a resident server: it is handed the utterance's
-// PCM and answers with text of the test's choosing.
+// fakeTranscriber stands in for an injected decode: it is handed the utterance's PCM
+// and answers with text of the test's choosing.
 type fakeTranscriber struct {
 	text  string
 	err   error
@@ -322,24 +282,19 @@ func (f *fakeTranscriber) Transcribe(_ context.Context, pcm []byte) (string, err
 	return f.text, f.err
 }
 
-// The offline decode belongs to whatever Transcriber the session is handed, which
-// is what lets a resident server replace the process-per-utterance route without
-// the session knowing. If the injected one were ignored, configuring a server
-// would keep spawning the CLI and the only symptom would be the per-utterance
-// model load the server exists to remove - a silent, expensive no-op.
+// The offline decode belongs to whatever Transcriber the session is handed. It is how
+// a test can pin the repair contract without a server, and the seam a future reader
+// would use.
 func TestSessionRepairsWithTheInjectedTranscriber(t *testing.T) {
-	options, sink := sessionOptions(t, t.TempDir(),
-		`echo "task=asr"; echo "text_output=命令行解码的句子。"`, true)
-	injected := &fakeTranscriber{text: "服务器解码的句子。"}
+	server := newFakeASRServer(t)
+	options, sink := sessionOptions(t, server, true)
+	injected := &fakeTranscriber{text: "注入的解码结果。"}
 	options.Transcriber = injected
 	runSession(t, options)
 
 	got := strings.Join(sink.commits(), "")
-	if !strings.Contains(got, "服务器解码的句子") {
+	if !strings.Contains(got, "注入的解码结果") {
 		t.Fatalf("committed %q, want the injected transcriber's text", got)
-	}
-	if strings.Contains(got, "命令行解码的句子") {
-		t.Error("the CLI repairer ran even though a transcriber was injected")
 	}
 	if injected.calls == 0 {
 		t.Fatal("the injected transcriber was never called, so the repair pass did not run")
@@ -347,15 +302,19 @@ func TestSessionRepairsWithTheInjectedTranscriber(t *testing.T) {
 	if len(injected.audio) == 0 {
 		t.Error("the transcriber was handed no audio: the utterance's PCM must reach it")
 	}
+	if server.repairCount() != 0 {
+		t.Errorf("the server was asked to repair %d time(s) despite an injected transcriber", server.repairCount())
+	}
 }
 
-// A transcriber that fails must release the utterance exactly as a failed CLI
+// A transcriber that fails must release the utterance exactly as a failed server
 // repair does, or the text stays provisional and the user sees it never arrive.
 func TestSessionReleasesTextWhenTheInjectedTranscriberFails(t *testing.T) {
-	options, sink := sessionOptions(t, t.TempDir(), `echo "should not run"`, true)
+	server := newFakeASRServer(t)
+	options, sink := sessionOptions(t, server, true)
 	options.Transcriber = &fakeTranscriber{err: fmt.Errorf("server repair: 503 Service Unavailable")}
-	errorSeen := make(chan error, 4)
-	options.Observer = Observer{Error: func(err error) { errorSeen <- err }}
+	errors := make(chan error, 4)
+	options.Observer = Observer{Error: func(err error) { errors <- err }}
 	runSession(t, options)
 
 	if len(sink.commits()) == 0 {
@@ -365,7 +324,7 @@ func TestSessionReleasesTextWhenTheInjectedTranscriberFails(t *testing.T) {
 		t.Errorf("committed %q, want the stream text as the fallback", got)
 	}
 	select {
-	case err := <-errorSeen:
+	case err := <-errors:
 		if !strings.Contains(err.Error(), "503") {
 			t.Errorf("reported %v, want the server's reason", err)
 		}
@@ -374,55 +333,25 @@ func TestSessionReleasesTextWhenTheInjectedTranscriberFails(t *testing.T) {
 	}
 }
 
-// routeStub stands in for a brought-up repair route: it answers with text of the
-// test's choosing and records that it was stopped.
-type routeStub struct {
-	text   string
-	onStop func()
-}
-
-func (r *routeStub) Transcribe(context.Context, []byte) (string, error) { return r.text, nil }
-func (r *routeStub) Stop() {
-	if r.onStop != nil {
-		r.onStop()
+// A session with no server configured cannot run at all now: there is no process to
+// fall back to. It has to say so instead of ending silently.
+func TestSessionWithoutAServerFailsWithAReason(t *testing.T) {
+	cfg := config.Default()
+	cfg.ASRServerURL = ""
+	options := Options{
+		Config:      cfg,
+		StreamModel: "stream",
+		RepairModel: "refine",
+		Sink:        &recordingSink{},
+		NewCapture: func() (audio.Capture, error) {
+			return audio.NewFileReplay(speechWAV(t), true)
+		},
 	}
-}
-
-// An engine handler serves every activation, so the route a repair prefers is built
-// per session and stopped with it. A held route would send the second dictation to
-// the server the first one stopped - and the failure this replaces was worse than
-// that: Routed closed its readiness channel twice, which panicked inside the
-// dictation path on the second activation of an engine that had already dictated.
-func TestSessionBringsUpAndStopsARepairRoutePerRun(t *testing.T) {
-	options, sink := sessionOptions(t, t.TempDir(), `echo "task=asr"; echo "text_output=命令行解码。"`, true)
-
-	var mu sync.Mutex
-	brought, stopped := 0, 0
-	options.PreferredRepair = func(context.Context) (asr.Transcriber, error) {
-		mu.Lock()
-		brought++
-		mu.Unlock()
-		return &routeStub{text: "服务器解码。", onStop: func() {
-			mu.Lock()
-			stopped++
-			mu.Unlock()
-		}}, nil
-	}
-
-	for run := 1; run <= 2; run++ {
-		runSession(t, options)
-		committed := strings.Join(sink.commits(), "")
-		if !strings.Contains(committed, "服务器解码") {
-			t.Errorf("run %d committed %q, want the preferred route's text", run, committed)
-		}
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	if brought != 2 {
-		t.Errorf("brought up the route %d time(s), want once per session (2)", brought)
-	}
-	if stopped != 2 {
-		t.Errorf("stopped the route %d time(s), want once per session (2)", stopped)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := options.Run(ctx); err == nil {
+		t.Fatal("a session with no server ran anyway")
+	} else if !strings.Contains(err.Error(), "server") {
+		t.Errorf("error %q does not say what is missing", err)
 	}
 }

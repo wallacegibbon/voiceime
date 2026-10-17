@@ -165,10 +165,10 @@ the machine has a working GPU. The numbers are measured on the reference machine
 | Machine | Package | Role | Measured |
 |---|---|---|---|
 | **CPU only** | `sensevoice_small_q8` | streaming **and** repair | 242 MiB on disk, 428 MiB RSS; decode RTF 0.047 (~21x realtime, Chinese); one process per dictation session with a ~0.3 s load; repair 0.55 s for a 4.2 s utterance |
-| **CPU only** | *nothing else* | — | Leave `refine_model` empty so repairs reuse the streaming model. Adding `qwen3_asr_0_6b_q8_0` here makes every repair cost ~5.7 s for a 4.2 s utterance - slower than the person speaking - unless you also set `asr_server_url`, which moves the decode to a resident server and brings it to ~0.7 s (below) |
+| **CPU only** | *nothing else* | — | Leave `refine_model` empty so both entries serve the streaming model: two copies of 242 MiB, and repairs that cost the decode rather than a load. Adding `qwen3_asr_0_6b_q8_0` gives the more accurate reader, at 1.07 GiB resident extra (below) |
 | **With a GPU** | `sensevoice_small_q8` | streaming | same model, same reason: see below |
 | **With a GPU** | `qwen3_asr_0_6b_q8_0` | repair (`refine_model`) | 1.07 GiB on disk, 2110 MiB RSS; decode RTF 0.28 (3.5x realtime); its offline decode of the reference Chinese sample matched the reference transcript exactly where the streaming model produced one wrong character |
-| **CPU, resident server** | `qwen3_asr_0_6b_q8_0` | repair (`refine_model` + `asr_server_url`) | same weights; the server is started when a session begins and stopped at the end, so the load is paid once per dictation instead of once per utterance. Measured: 0.56/0.60/0.59 s per sentence over three sentences, against 5.13/8.45/11.67 s as a process per utterance |
+| **CPU, accurate repair** | `qwen3_asr_0_6b_q8_0` | repair (`refine_model`) | 1.07 GiB extra resident; measured 0.54-0.84 s per sentence through the service, against 5.13/8.45/11.67 s as a process per utterance |
 
 CPU only:
 
@@ -217,23 +217,37 @@ be run by hand: it is spawned as dictation begins and stopped when the session e
 and a server already listening on that address is used and left alone. The session
 log, or `stream --events` (`repair_route`), names the route in use.
 
-That route adds nothing to this deployment. There is no unit to install and no
-service to enable, because its lifetime is one dictation session, and updating an
-installed copy needs no step for it either - the next session starts the new binary.
-What it does need is present at deploy time and easy to get wrong, so it is worth
-knowing where the moving parts are:
+**The server is a deployment step of its own**, because dictation cannot work without
+it: there is no process to fall back to. It is installed the same way the shortcut
+listener is, and it loads both models at startup so a session only opens a connection:
 
-| Piece | Where | What it means for deployment |
+```sh
+"$BIN" server install            # writes the config and the unit, starts it, sets asr_server_url
+"$BIN" server status --json      # assert: data.unit_active == true, data.listening == true
+```
+
+What it writes and where to look when something is wrong:
+
+| Piece | Where | What it means |
 |---|---|---|
-| `audiocpp_server` | beside `audiocpp_cli` in the same audio.cpp build tree | Nothing to install separately: the build produces it, and discovery looks in the same places as for the CLI. A build without it makes the route fall back to a process per utterance, which `doctor` reports as `asr_server` failing |
-| generated config | `~/.cache/voiceime/asr-server-<port>.json` | Rewritten at the start of every session from `refine_model`, so editing it by hand is pointless - change the setting instead. This is the file to read when a start fails |
-| server log | `~/.cache/voiceime/asr-server-<port>.log` | Truncated per session, and the reason a start failed is at the end of it (`audiocpp_server failed: ...`). `doctor` and the session log quote its tail |
-| model family | `voiceime models refresh` cache | The server requires the model's audio.cpp family, which comes from `audiocpp_cli --inspect`. A model the cache cannot see is a `doctor` failure, not a runtime surprise |
+| `audiocpp_server` | beside `audiocpp_cli` in the audio.cpp build tree | Nothing to install separately: the build produces it. A build without it makes `server install` fail rather than leaving dictation broken |
+| generated config | `~/.config/voiceime/asr-server.json` | Two entries - `stream` (live partials) and `refine` (offline repair) - with `lazy_load: false`. Rewritten by `server install`, so change settings and re-run it rather than editing this |
+| unit | `~/.config/systemd/user/voiceime-asr-server.service` | `systemctl --user status voiceime-asr-server`, `journalctl --user -u voiceime-asr-server` |
+| model families | `voiceime models refresh` cache | The server requires each model's audio.cpp family, from `audiocpp_cli --inspect`; an unknown family is a `server install` failure |
 
-The state to check after enabling it is `doctor`'s `asr_server` line: `off` when the
-route is not in use, `started on demand at ... serving ...` when it will work, a
-`fail` naming the setting that is wrong, and a `warn` when it is configured for a
-server that is not running and cannot be started from this machine.
+Two entries rather than one because the server holds a model for the whole length of a
+request: a repair sent to the entry a live dictation owns waits for that dictation to
+end (measured: 10.9s). The two may point at the same GGUF - that costs two resident
+copies, and is what a machine with one small model should do.
+
+#### Why the server needs the model memory
+
+The service keeps its entries resident, so the machine holds both models all the time
+(1403 MB with SenseVoice Q8 and Qwen3-ASR-0.6B Q8 on the reference machine). That is the
+whole trade: a repair is a 0.5s request instead of a 5s process, and a dictation starts
+in microseconds instead of loading a model. If that memory is not available,
+`voiceime server uninstall` puts the machine back to "no dictation" rather than quietly
+degrading - there is no slower route left to fall back to, by design (D22).
 
 **The GPU half of this table is an inference, not a measurement.** No GPU backend
 has been benchmarked for this project (`docs/measurements.md`, "Not measured yet");
@@ -430,9 +444,10 @@ if the key seems to do nothing.
 "$BIN" doctor --json >/dev/null;                                    doctor=$?
 "$BIN" engine status --json | grep -q '"engine_registered": *true';  engine=$?
 "$BIN" hotkey status --json  | grep -q '"service_active": *true';    listener=$?
+"$BIN" server status --json  | grep -q '"listening": *true';         server=$?
 pgrep -f "ibus-engine --ibus" >/dev/null;                          engine_process=$?
-echo "doctor=$doctor engine=$engine listener=$listener engine_process=$engine_process"
-[ "$doctor" = 0 ] && [ "$engine" = 0 ] && [ "$listener" = 0 ]
+echo "doctor=$doctor engine=$engine listener=$listener server=$server engine_process=$engine_process"
+[ "$doctor" = 0 ] && [ "$engine" = 0 ] && [ "$listener" = 0 ] && [ "$server" = 0 ]
 ```
 
 `doctor=0`, `engine=0` and `listener=0` are the deployable state, and the closing
@@ -459,6 +474,8 @@ were measured on the reference machine rather than reasoned about.
 
 ```sh
 make build && make install                 # replaces ~/.local/bin/voiceime and ~/.local/docs
+"$BIN" server install                      # rewrite the config for any changed settings
+systemctl --user restart voiceime-asr-server   # the service runs the build it started with
 "$BIN" engine install --apply              # component, activation env, ibus restart
 "$BIN" engine status --json                # assert: engine_registered == true
 "$BIN" hotkey install                      # only if the unit or the keybinding changed
@@ -579,8 +596,7 @@ the problem is capture (`voiceime devices`) or the model (`voiceime doctor`).
 "$BIN" engine uninstall              # removes the component file
 make uninstall                       # removes ~/.local/bin/voiceime
 "$BIN" models uninstall sensevoice_small_q8
-pkill -f audiocpp_server             # only if one outlived a killed session
-rm -f ~/.cache/voiceime/asr-server-*  # the server config/log the repair route writes
+"$BIN" server uninstall              # stops and removes the service and its config
 ```
 
 `engine uninstall` leaves `IBUS_COMPONENT_PATH` pointing at an empty directory;
@@ -603,11 +619,8 @@ Stated so nobody mistakes an assumption for a result:
   - but it is the less-travelled half, and it was the half with the defect.
 * **Multi-user machines.** IBus component paths and the wire format for committed
   text are recorded in `docs/ibus-protocol.md`.
-* **A repair server that outlives its session.** The spawned server is stopped when
-  the session ends, but a voiceime process killed outright (`SIGKILL`, a crash) cannot
-  run that stop, so the child survives. It is harmless and reused: the next session
-  finds it listening and uses it, and `idle_unload_ms` releases its weights two
-  minutes after the last request. `pgrep -af audiocpp_server` is the check, and
-  `pkill -f audiocpp_server` the cleanup. A systemd user unit would close this gap and
-  is what to reach for if the route ever needs to be supervised rather than merely
-  started.
+* **The server's own lifetime.** It is a systemd user unit, so it is started at login
+  and stopped at logout like the shortcut listener; nothing here restarts it for you if
+  the audio.cpp build is replaced underneath it. `systemctl --user restart
+  voiceime-asr-server` is the step, and `server status` says whether the entries it
+  serves are the ones the client asks for.

@@ -365,5 +365,5 @@ func modelChecks(ctx *Context, refresh bool, report func(Check)) {
 
 	// The optional resident server: the one part of a working installation nothing
 	// else verifies, because dictation keeps working when it cannot start.
-	report(asrServerCheck(cfg, scanned))
+	report(asrServerCheck(cfg, scanned, serverUnitInstalled()))
 }

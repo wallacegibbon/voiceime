@@ -5,7 +5,6 @@ import (
 	"errors"
 	"time"
 
-	"github.com/wallacegibbon/voiceime/internal/asr"
 	"github.com/wallacegibbon/voiceime/internal/audio"
 	"github.com/wallacegibbon/voiceime/internal/config"
 	"github.com/wallacegibbon/voiceime/internal/models"
@@ -69,20 +68,4 @@ func readPCM(path string) ([]byte, error) {
 		return nil, err
 	}
 	return wav.Data, nil
-}
-
-// newRepairer builds the offline decoder from configuration. A zero repairer
-// model falls back to the streaming model, which is a legitimate configuration:
-// the same model in offline mode already removes window-boundary damage.
-func newRepairer(ctx *Context, model, binary string, threads int, language string) asr.Repairer {
-	return asr.Repairer{
-		Binary:         binary,
-		WorkDir:        ctx.Config.AudioCPPDirPath(),
-		Model:          model,
-		Backend:        ctx.Config.Backend,
-		Threads:        threads,
-		Language:       language,
-		RequestOptions: ctx.Config.RequestOptions,
-		SessionOptions: ctx.Config.SessionOptions,
-	}
 }

@@ -4,8 +4,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -13,123 +11,94 @@ import (
 	"github.com/wallacegibbon/voiceime/internal/models"
 )
 
-// The resident-server route is the one part of a working installation that nothing
-// else verifies: when it cannot start, dictation falls back to a process per
-// utterance and keeps working, so a clean `doctor` would be telling the user their
-// faster route is fine when it is not. These cases are the states it has to tell
-// apart, and the answer each one is worth.
+// The server is the one prerequisite dictation cannot work without, and nothing else
+// in an installation verifies it: voiceime no longer starts processes, so a missing
+// service is not a slow repair, it is no dictation at all. These are the states the
+// check has to tell apart, and the fix each one is worth.
 func TestASRServerCheckStates(t *testing.T) {
-	// A server that answers /health and offers the id the route asks for.
-	mux := http.NewServeMux()
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	})
-	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"refine"}]}`))
-	})
-	serving := httptest.NewServer(mux)
+	// A server serving both entries the checks ask for.
+	serving := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		case "/v1/models":
+			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"stream"},{"id":"refine"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
 	defer serving.Close()
 
-	// A server that answers but offers a different id: the hand-written config
-	// mistake that otherwise shows up per utterance as a repair that fell back.
-	otherMux := http.NewServeMux()
-	otherMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	})
-	otherMux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"stream"}]}`))
-	})
-	other := httptest.NewServer(otherMux)
-	defer other.Close()
-
-	installed := []models.Model{{
-		Path:   "/models/refine.gguf",
-		Family: "qwen3_asr",
-		Tasks:  []models.Task{{Name: "asr", Modes: []string{"offline"}}},
-	}}
+	// A server that answers but offers neither entry.
+	wrongEntries := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		default:
+			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"something-else"}]}`))
+		}
+	}))
+	defer wrongEntries.Close()
 
 	cases := []struct {
 		name       string
 		mutate     func(*config.Config)
+		unit       bool
+		wantFix    string
 		wantStatus string
 		wantDetail string
 	}{
 		{
-			name:       "not configured is not a problem",
+			name:       "nothing configured",
 			mutate:     func(c *config.Config) { c.ASRServerURL = "" },
-			wantStatus: "ok",
-			wantDetail: "off:",
+			wantStatus: "fail",
+			wantDetail: "no server is configured",
 		},
 		{
-			name:       "a server that is up and serving the model",
+			name:       "serving both entries",
 			mutate:     func(c *config.Config) { c.ASRServerURL = serving.URL },
 			wantStatus: "ok",
-			wantDetail: "is serving model refine",
+			wantDetail: "is serving stream (partials) and refine (repair)",
 		},
 		{
-			name:       "a server that is up but does not offer the id",
-			mutate:     func(c *config.Config) { c.ASRServerURL = other.URL },
+			name:       "the same entry for both roles",
+			mutate:     func(c *config.Config) { c.ASRServerURL = serving.URL; c.ASRServerModel = "stream" },
+			wantStatus: "fail",
+			wantDetail: "wait for the dictation",
+		},
+		{
+			name:       "a server without the entries",
+			mutate:     func(c *config.Config) { c.ASRServerURL = wrongEntries.URL },
 			wantStatus: "fail",
 			wantDetail: "has no model",
 		},
 		{
-			name: "unparseable address",
-			mutate: func(c *config.Config) {
-				c.ASRServerURL = "127.0.0.1:18080"
-			},
+			name:       "unparseable address",
+			mutate:     func(c *config.Config) { c.ASRServerURL = "127.0.0.1:18080" },
 			wantStatus: "fail",
 			wantDetail: "asr_server_url",
 		},
 		{
-			name: "nothing listening and autostart off",
-			mutate: func(c *config.Config) {
-				c.ASRServerURL = deadURL(t)
-				c.ASRServerAutostart = false
-			},
-			wantStatus: "warn",
-			wantDetail: "asr_server_autostart is off",
-		},
-		{
-			name: "autostart with no model to serve",
-			mutate: func(c *config.Config) {
-				c.ASRServerURL = deadURL(t)
-				c.RefineModel = ""
-			},
+			name:       "nothing listening and no unit installed",
+			mutate:     func(c *config.Config) { c.ASRServerURL = deadURL(t) },
 			wantStatus: "fail",
-			wantDetail: "refine_model is empty",
+			wantDetail: "no service on this machine is installed",
 		},
 		{
-			name: "autostart with a model it cannot see",
-			mutate: func(c *config.Config) {
-				c.ASRServerURL = deadURL(t)
-				c.RefineModel = "/models/missing.gguf"
-			},
+			name:       "nothing listening but the unit exists",
+			mutate:     func(c *config.Config) { c.ASRServerURL = deadURL(t) },
+			unit:       true,
 			wantStatus: "fail",
-			wantDetail: "not a model voiceime can see",
-		},
-		{
-			name: "autostart with everything it needs",
-			mutate: func(c *config.Config) {
-				c.ASRServerURL = deadURL(t)
-				c.RefineModel = "/models/refine.gguf"
-			},
-			wantStatus: "ok",
-			wantDetail: "started on demand",
+			wantDetail: "is not answering",
+			wantFix:    "systemctl --user start",
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := config.Default()
-			cfg.ASRServerModel = "refine"
-			cfg.ASRServerAutostart = true
-			// The binary has to resolve as if audio.cpp were installed, whatever this
-			// machine has: the check is about configuration, not about the developer's
-			// checkout.
-			cfg.ASRBin = selfBinary(t)
 			tc.mutate(cfg)
-
-			check := asrServerCheck(cfg, installed)
+			check := asrServerCheck(cfg, []models.Model{}, tc.unit)
 			if check.ID != "asr_server" {
 				t.Fatalf("check id = %q, want asr_server", check.ID)
 			}
@@ -141,6 +110,9 @@ func TestASRServerCheckStates(t *testing.T) {
 			}
 			if check.Status == "fail" && check.Fix == "" {
 				t.Error("a failing check without a fix is not actionable")
+			}
+			if tc.wantFix != "" && !strings.Contains(check.Fix, tc.wantFix) {
+				t.Errorf("fix %q does not mention %q", check.Fix, tc.wantFix)
 			}
 		})
 	}
@@ -158,18 +130,39 @@ func deadURL(t *testing.T) string {
 	return "http://" + address
 }
 
-// selfBinary returns an audiocpp_cli path whose directory also holds
-// audiocpp_server, which is how an audio.cpp build tree looks and what
-// FindServerBinary() discovery expects. The check is about configuration, so it must
-// not depend on the developer's own checkout.
-func selfBinary(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	for _, name := range []string{"audiocpp_cli", "audiocpp_server"} {
-		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
-			t.Fatalf("write %s: %v", name, err)
-		}
+// The server entry ids are a client-side mirror of what `server install` wrote, so a
+// silent mismatch would send every request to an entry that does not exist.
+func TestServerEntryDefaults(t *testing.T) {
+	cfg := config.Default()
+	if got := serverStreamModelID(cfg); got != "stream" {
+		t.Errorf("stream entry = %q, want the installed default", got)
 	}
-	return filepath.Join(dir, "audiocpp_cli")
+	if got := serverModelID(cfg); got != "refine" {
+		t.Errorf("repair entry = %q, want the installed default", got)
+	}
+	cfg.ASRServerStreamModel = "live"
+	cfg.ASRServerModel = "accurate"
+	if serverStreamModelID(cfg) != "live" || serverModelID(cfg) != "accurate" {
+		t.Error("configured entry ids are not honoured")
+	}
+}
+
+// The unit file is what makes the server exist across reboots, and what it starts
+// decides whether the service is useful: a unit whose ExecStart names no config starts
+// a server with no models, which is worse than not starting one.
+func TestServerUnitNamesBothPaths(t *testing.T) {
+	unit := serverUnit("/opt/audio.cpp/build/linux-cpu-release/bin/audiocpp_server", "/home/u/.config/voiceime/asr-server.json")
+	if !strings.Contains(unit, "ExecStart=/opt/audio.cpp/build/linux-cpu-release/bin/audiocpp_server --config /home/u/.config/voiceime/asr-server.json") {
+		t.Errorf("unit does not start the server on its config:\n%s", unit)
+	}
+	if !strings.Contains(unit, "Restart=on-failure") {
+		t.Error("unit does not restart a server that dies")
+	}
+	if !strings.Contains(unit, "WantedBy=default.target") {
+		t.Error("unit is not enabled for the user session")
+	}
+	// filepath.Join cleans the "..", so the documented path is the resolved one.
+	if !strings.Contains(unit, "Documentation=file:///opt/audio.cpp/build/linux-cpu-release/docs/AGENT.md") {
+		t.Errorf("unit does not document itself beside the binary:\n%s", unit)
+	}
 }

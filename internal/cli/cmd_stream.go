@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -14,7 +15,6 @@ import (
 	"github.com/wallacegibbon/voiceime/internal/audio"
 	"github.com/wallacegibbon/voiceime/internal/config"
 	"github.com/wallacegibbon/voiceime/internal/daemon"
-	"github.com/wallacegibbon/voiceime/internal/models"
 )
 
 // cmdStream is the observable end of the pipeline: it captures audio, streams it
@@ -43,11 +43,11 @@ func cmdStream() *Command {
 		set.Float64Var(&seconds, "seconds", 0, "stop after this many seconds of capture (0 = until end of input)")
 		set.Float64Var(&chunk, "chunk", 0, "streaming window in seconds (default: from config)")
 		set.BoolVar(&refine, "refine", true, "re-transcribe finished segments offline")
-		set.StringVar(&refineModel, "refine-model", "", "model for the repair pass (default: from config)")
+		set.StringVar(&refineModel, "refine-model", "", "server entry for the repair pass (default: asr_server_model)")
 		set.BoolVar(&events, "events", false, "print one JSON object per event instead of text")
 		set.BoolVar(&quiet, "quiet", false, "print only committed text")
 		set.IntVar(&threads, "threads", 0, "worker threads (default: from config)")
-		set.StringVar(&model, "model", "", "streaming model path (default: from config)")
+		set.StringVar(&model, "model", "", "server entry for live partials (default: asr_server_stream_model)")
 	}
 	return &Command{
 		Name:    "stream",
@@ -154,17 +154,15 @@ func runStream(ctx *Context, options streamOptions) error {
 	if options.threads == 0 {
 		options.threads = ctx.Config.Threads
 	}
-	binary, err := ctx.Config.FindASRBinary()
-	if err != nil {
-		return PreconditionError("voiceime config set audio_cpp_dir /path/to/audio.cpp", "%v", err)
+	if strings.TrimSpace(ctx.Config.ASRServerURL) == "" {
+		return PreconditionError("voiceime server install",
+			"nothing is configured to decode audio: run `voiceime server install`")
 	}
-	target := options.model
-	if target == "" {
-		target = resolveModel(ctx, false)
-	}
-	if target == "" {
-		return PreconditionError("voiceime models install "+models.RecommendedPackages()[0].ID,
-			"no streaming model available")
+	// --model and --refine-model now name server *entries*, not checkpoint paths: the
+	// service owns the weights. They exist for measuring one entry against another.
+	streamModel := strings.TrimSpace(options.model)
+	if streamModel == "" {
+		streamModel = serverStreamModelID(ctx.Config)
 	}
 
 	// A per-run copy of the config: chunk and refine are per-invocation knobs, and
@@ -197,30 +195,24 @@ func runStream(ctx *Context, options streamOptions) error {
 	}
 
 	started := time.Now()
-	// The repair model follows the same rule as the engine's: the flag, then
-	// refine_model, then the streaming model. The middle step used to be missing
-	// here, so `stream` repaired with the streaming model no matter what was
-	// configured - the flag's own help says "default: from config", and the effect
-	// was that measuring with this command described a different pipeline from the
-	// one dictation runs.
-	repairModel := options.refineModel
+	// The repair entry follows the same rule as the engine's: the flag, then
+	// asr_server_model.
+	repairModel := strings.TrimSpace(options.refineModel)
 	if repairModel == "" {
-		repairModel = resolveModel(ctx, true)
+		repairModel = serverModelID(&cfg)
 	}
-	route := repairRoute(&cfg, repairModel)
-	out.write("repair_route", map[string]any{"detail": repairRouteDescription(&cfg, route)})
+	out.write("repair_route", map[string]any{"detail": serverDescription(&cfg, repairModel)})
 	session := daemon.Options{
-		Config:          &cfg,
-		Binary:          binary,
-		Model:           target,
-		RepairModel:     repairModel,
-		PreferredRepair: route,
-		NewCapture:      newCapture,
-		Sink:            streamSink{emitter: out},
+		Config:      &cfg,
+		ServerURL:   cfg.ASRServerURL,
+		StreamModel: streamModel,
+		RepairModel: repairModel,
+		NewCapture:  newCapture,
+		Sink:        streamSink{emitter: out},
 		Observer: daemon.Observer{
 			Ready: func(load time.Duration) {
 				out.write("ready", map[string]any{
-					"load": load, "model": target, "chunk_seconds": cfg.ChunkSeconds,
+					"load": load, "model": streamModel,
 				})
 			},
 			Partial: func(text string, fedSeconds float64) {
@@ -245,8 +237,8 @@ func runStream(ctx *Context, options streamOptions) error {
 	wall := time.Since(started)
 
 	lines := []string{
-		fmt.Sprintf("model=%s chunk=%.2fs load=%v", target, cfg.ChunkSeconds, result.LoadTime),
-		fmt.Sprintf("repair_model=%s", repairModel),
+		fmt.Sprintf("server=%s stream_entry=%s load=%v", cfg.ASRServerURL, streamModel, result.LoadTime),
+		fmt.Sprintf("repair_entry=%s", repairModel),
 		fmt.Sprintf("audio=%.2fs wall=%.2fs partials=%d", result.AudioFed.Seconds(), wall.Seconds(), result.Partials),
 		fmt.Sprintf("stream_text=%s", result.StreamText),
 		fmt.Sprintf("voiceime_text=%s", result.FinalText),
@@ -261,7 +253,7 @@ func runStream(ctx *Context, options streamOptions) error {
 		return FailureError("%v", runErr)
 	}
 	return ctx.Emit("stream", map[string]any{
-		"model":         target,
+		"model":         streamModel,
 		"chunk_seconds": cfg.ChunkSeconds,
 		"load_ms":       result.LoadTime.Milliseconds(),
 		"audio_seconds": result.AudioFed.Seconds(),

@@ -1,5 +1,12 @@
 # Resident-server repair: prototype harness
 
+> **Historical as of D22.** These probes measured the design in which only the repair
+> pass used a server, started on demand. That design is gone: one resident service now
+> serves both passes (docs/decisions.md D22). The scripts are kept because the numbers
+> they produced are what retired it, and because `latency.py` and `model_lock.py` still
+> describe the current service accurately - a warm server, and the per-model lock that
+> forces two entries.
+
 This directory is the measurement rig for the one change on this branch: letting
 the repair pass decode a finished utterance through a resident `audiocpp_server`
 instead of a fresh `audiocpp_cli` process.

@@ -717,3 +717,61 @@ server - it needs a second entry and therefore a second resident copy of the
 streaming weights, with no gain while the CLI route already streams. Falling back
 silently when the server cannot start - a user who configured it needs to know, so
 the failure is reported once per session and the CLI route carries the utterance.
+
+## D22 — One resident service serves both recognition roles. (Supersedes D21.)
+
+**Decision.** Both passes run against a single `audiocpp_server` that voiceime installs
+as a systemd user unit (`voiceime server install`) with `lazy_load: false`, so its two
+models are resident from startup. A dictation session opens a streaming connection and
+posts one request per finished utterance; nothing is spawned and nothing is loaded.
+
+**Why the earlier shape was wrong.** D21 made the server an on-demand process for the
+repair pass only, and left the streaming pass as `audiocpp_cli --mode streaming` - a
+fresh process per dictation. That is internally inconsistent in the way a user notices
+immediately: the whole argument for the server was "load the weights once", and the
+*first* thing every session did was load weights. It also put the load on the critical
+path whenever the first utterance was short (measured: 1.20-1.49s to commit a 0.5s
+sentence that closed before the model was ready, against 0.33s warm), which is why D21's
+text needed a paragraph of caveats about overlapping the load with speech.
+
+**Why one service can serve both.** The two roles are different *uses* of the model, not
+different models: streaming decodes fixed windows and emits a draft, the offline pass
+re-reads a finished utterance with its full context and decides what is final. That
+distinction stays (D20). What changed is where they run. They cannot share one *entry*,
+because the server holds a model for the whole length of a request: measured, a 215ms
+repair sent to the id a live session owned waited 10.9s for that dictation to end. So
+the config has two entries and the client uses two ids - and audio.cpp needs no
+concurrency at all beyond that, because a dictation is one live request and the repair
+pass is one request at a time by design.
+
+**Why not `--parallel-jobs`.** It exists, but its own contract calls it experimental
+with incomplete coverage, and "a model without a parallel factory therefore supports one
+slot" - most real checkpoints get no extra slot. Nothing here needs one.
+
+**Measured on the reference machine** (SenseVoice streaming + Qwen3-ASR-0.6B repair,
+bge models resident: 1403 MB RSS):
+
+| | on-demand (D21) | one service (D22) |
+| --- | --- | --- |
+| session start | spawn + 325ms model load | **144µs** (connect only) |
+| first repair of a session | 0.71-0.86s (waits for the spawn) | 0.84s for a 2.38s span, 0.54s for 1.68s |
+| second dictation | same again | same, with nothing loaded |
+| CPU at idle | none | none (the service sleeps) |
+
+The streaming side is not a downgrade: the server's live endpoint emits deltas *while*
+audio is arriving - measured, the first at 2.01s into a 12s clip, then about one a
+second - so the draft appears during speech exactly as the CLI's did.
+
+**Consequence.** `asr_server_url` is no longer optional: with no process to fall back to,
+`doctor` fails and says `voiceime server install`, and `stream` refuses to start. That is
+the trade for deleting the fallback - one dependency, one failure mode, one message -
+and it is why the unit is installed by the same command shape as the shortcut listener.
+`chunk_seconds` moved into the generated server config, so changing it needs
+`voiceime server install` again; `doctor` reports the entries the server actually serves.
+
+**Rejected.** Keeping the CLI for streaming (D21) - it pays a model load per session and
+keeps two transport implementations alive. Two entries for one model id - the live
+session would block repairs, measured above. Putting the server behind an on-demand
+lifecycle - the complexity D21 accumulated (spawn, health wait, warm-up, process
+ownership, orphan cleanup, a bounded wait on the repair path) existed only to avoid
+holding a process, and it did not even achieve that for streaming.

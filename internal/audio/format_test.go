@@ -2,6 +2,7 @@ package audio
 
 import (
 	"math"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -66,8 +67,8 @@ func TestWAVRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sample.wav")
 	original := SamplesToBytes([]int16{0, 500, -500, 1000, -1000})
-	if err := WriteWAV(path, original, SampleRate, 1); err != nil {
-		t.Fatalf("WriteWAV: %v", err)
+	if err := os.WriteFile(path, EncodeWAV(original, SampleRate, 1), 0o644); err != nil {
+		t.Fatalf("write wav: %v", err)
 	}
 	wav, err := ReadWAV(path)
 	if err != nil {

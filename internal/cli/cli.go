@@ -130,7 +130,6 @@ func commands() []*Command {
 		cmdIBusEngine(),
 		cmdModels(),
 		cmdStream(),
-		cmdTranscribe(),
 	}
 }
 

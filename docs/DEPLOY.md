@@ -124,7 +124,7 @@ review download_mirror        https://hf-mirror.com  (...)
 
 The list is also in `--json` under `data.review`. Only the entries that are
 genuinely machine-specific are on it; everything else in the file is either a hard
-constraint (`capture_rate`) or policy that is the same everywhere.
+constraint (the 16 kHz capture rate) or policy that is the same everywhere.
 
 Then set what the list flagged, plus anything you know better than it does:
 
@@ -314,7 +314,7 @@ another `download_mirror` and retry the same package.
 Deliver-boundary check with no audio at all:
 
 ```sh
-"$BIN" transcribe some.wav     # prints the text; the same code path repair uses
+"$BIN" stream --file some.wav --realtime --events   # the real pipeline: drafts, repairs, timing
 ```
 
 ## 6. Verify the microphone path

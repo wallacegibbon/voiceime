@@ -9,7 +9,7 @@ Wayland session, CPU-only inference (no GPU used). audio.cpp built from source a
 `RelWithDebInfo` with the CPU backend. Threads = 4 unless stated.
 
 Reproduce with `voiceime stream --file <wav> --realtime --chunk <seconds>` and
-`voiceime transcribe <wav> --model <path>`; both print the numbers below.
+`voiceime stream --file <wav> --realtime --events`, which prints the numbers below.
 
 ## Models on this machine
 

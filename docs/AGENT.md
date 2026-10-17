@@ -39,7 +39,7 @@ systemd does for you, is
   it is a flag or a config key.
 * **`--json` may be placed anywhere** on the command line, before or after the
   subcommand: `voiceime doctor --json`, `voiceime --json doctor` and
-  `voiceime transcribe f.wav --json` all work. Flags and positional arguments may
+  `voiceime stream --file f.wav --json` all work. Flags and positional arguments may
   also be interspersed.
 * **One JSON object per invocation**, on stdout on success, on stderr on failure:
   `{"command": ..., "ok": true, "data": {...}}` or
@@ -113,12 +113,11 @@ Settings that matter, and the reasoning a caller needs to pick values:
 | `language` | `zh` | Passed to the model; empty asks it to auto-detect. |
 | `chunk_seconds` | `3` | The streaming window: how much audio a draft is decoded from. Below 1.5 measurably corrupts CJK output; validate warns. It does not gate when text is committed - a finished utterance is decoded offline and delivered when it closes - so it can be raised for accuracy without making delivery wait. |
 | `refine_on_segment_end` | `true` | The pass that repairs window-boundary damage. |
-| `capture_rate` | `16000` | Must stay 16000 (models' VAD). Validation error otherwise. |
 | `capture_source` | `""` | PipeWire source name; empty uses the default input. |
 | `silence_rms_threshold` | `600` | **Floor**, not a fixed threshold: the detector adapts up to twice the noise floor it measures in the stream, and never below this value. 600 clears the reference room's idle noise (20ms p90 = 436 RMS) and stays under normal speech; too high a value makes quiet speech silently ignored, so measure before raising it - see [measurements.md](measurements.md#endpointing-in-a-real-room). |
 | `endpoint_min_speech_ms` | `300` | Speech shorter than this is not an utterance. Raise it in a room with impulsive noise (keystrokes, chair). A phrase shorter than it is treated as noise and is **not committed at all** when dictation stops — if it is the only thing in the session, nothing is delivered and the session reports how much it withheld. Lower it only if you dictate short words, and expect more noise to be taken for speech. |
 | `download_mirror` | `https://hf-mirror.com` | Endpoint downloads go through, written to `HF_ENDPOINT`. Any Hugging Face protocol host works: `https://huggingface.co`, a company cache, a LAN address. |
-| `session_options` / `request_options` | `{}` | Passed straight to `audiocpp_cli`. |
+| `request_options` | `{}` | Extra audio.cpp request options for the repair entry, written into the server config. |
 
 Some settings are read by the recognition service at startup rather than per request:
 the model paths, `chunk_seconds`, `threads`, `backend`, `language`, and the option maps.
@@ -195,7 +194,7 @@ Both of these print their own timings, which is what makes quality questions
 answerable without a human listening:
 
 ```
-voiceime transcribe speech.wav --model <path> --json
+voiceime stream --file speech.wav --realtime --events
 voiceime stream --file speech.wav --realtime --chunk 3 --json
 voiceime stream --seconds 5                    # capture from the microphone (the default source)
 ```
@@ -315,7 +314,7 @@ Run the engine by hand (as above) to see the same log on stderr instead.
 | `doctor` fails `download_mirror` | the value is not an `http(s)` URL, e.g. a preset name from an older config | `voiceime config set download_mirror https://hf-mirror.com` |
 | Repair fails with `Silero VAD model path does not exist` | the CLI's bundled assets resolved relative to the working directory | voiceime already sets the working directory and disables chunking for repairs; if it recurs, set `audio_cpp_dir` correctly |
 | Text is corrupted and windows are short | `chunk_seconds` below 1.5 | `voiceime config set chunk_seconds 3` |
-| Model aborts with `only supports sample_rate=16000` | input is not 16 kHz | `voiceime config set capture_rate 16000` |
+| Model aborts with `only supports sample_rate=16000` | capture is not producing 16 kHz | `voiceime doctor`; capture is fixed at 16 kHz, so this means the PipeWire source is resampling badly |
 | `models list` shows unrelated files | the models directory is shared | expected; discovery filters to ASR models and reports the count it ignored |
 | Text stays underlined and never commits | the detector has not closed an utterance, so it is still preedit; Escape discards preedit | measure the room and set `silence_rms_threshold` / `endpoint_min_speech_ms` (see [measurements.md](measurements.md#endpointing-in-a-real-room)); `stream --events` shows whether a `segment` event happens |
 | Dictation produces nothing, and `stream --events` reports `no speech detected` | the threshold is above the speaker's voice | lower `silence_rms_threshold` and retry |

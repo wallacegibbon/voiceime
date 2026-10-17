@@ -11,21 +11,6 @@ func TestDefaultsAreCoherent(t *testing.T) {
 	if issues := Errors(cfg.Validate()); len(issues) != 0 {
 		t.Fatalf("default config has blocking issues: %+v", issues)
 	}
-	if cfg.CaptureRate != TargetRate {
-		t.Errorf("CaptureRate = %d, want %d: the models' VAD rejects other rates", cfg.CaptureRate, TargetRate)
-	}
-}
-
-func TestValidateRejectsANonSixteenKilohertzCaptureRate(t *testing.T) {
-	cfg := Default()
-	cfg.CaptureRate = 48000
-	issues := Errors(cfg.Validate())
-	if len(issues) == 0 {
-		t.Fatal("a 48 kHz capture rate was accepted")
-	}
-	if issues[0].Key != "capture_rate" || issues[0].Fix == "" {
-		t.Errorf("issue = %+v, want a capture_rate issue carrying a fix command", issues[0])
-	}
 }
 
 func TestValidateWarnsAboutShortWindows(t *testing.T) {

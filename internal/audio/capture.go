@@ -205,7 +205,9 @@ type microphone struct {
 // preferred because its PulseAudio-compatible interface is what PipeWire's pulse
 // server implements most completely, including --device selection by source name.
 func NewMicrophone(cfg *config.Config) (Capture, error) {
-	rate := cfg.CaptureRate
+	// The rate is not a setting: audio.cpp's bundled VAD rejects anything but 16 kHz,
+	// so a configurable value could only ever be wrong in one direction.
+	rate := SampleRate
 	if rate == 0 {
 		rate = SampleRate
 	}

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"time"
 
-	"github.com/wallacegibbon/voiceime/internal/audio"
 	"github.com/wallacegibbon/voiceime/internal/config"
 	"github.com/wallacegibbon/voiceime/internal/models"
 )
@@ -58,14 +57,4 @@ func newModelManager(ctx *Context) (*models.Manager, error) {
 		return nil, PreconditionError("voiceime config set audio_cpp_dir /path/to/audio.cpp", "%v", err)
 	}
 	return manager, nil
-}
-
-// readPCM loads a WAV file as 16 kHz mono PCM, which is the format every model
-// path expects.
-func readPCM(path string) ([]byte, error) {
-	wav, err := audio.ReadWAV(path)
-	if err != nil {
-		return nil, err
-	}
-	return wav.Data, nil
 }

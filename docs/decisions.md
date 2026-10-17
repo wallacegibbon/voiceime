@@ -782,3 +782,49 @@ session would block repairs, measured above. Putting the server behind an on-dem
 lifecycle - the complexity D21 accumulated (spawn, health wait, warm-up, process
 ownership, orphan cleanup, a bounded wait on the repair path) existed only to avoid
 holding a process, and it did not even achieve that for streaming.
+
+## D23 — Delete what stopped paying for itself; the installation is the product.
+
+**Decision.** The design is settled: a user configures which models are served and can
+start and stop the service, and that is the whole surface. Anything that exists for another
+reason is a candidate for deletion, and the test is not "is it useful" but "does it still
+have a reason to exist *here*".
+
+**What this removed, and why each had stopped earning its place:**
+
+* `models.RepairIsRealtime`, `models.SuggestRepair`, the family table behind them,
+  `doctor`'s `refine_model_advice`, and the cost sentence on the `refine_model` check. They
+  measured the 5.7s a *process per utterance* paid to load 1.07 GiB and advised against the
+  accurate model. With the service holding the weights, that trade is gone, so the advice
+  argued against the reason the service exists. Advice that is merely stale is clutter;
+  advice pointing the wrong way is a defect.
+* `voiceime transcribe`. It decoded one file through the repair entry; `voiceime stream
+  --file` runs the whole pipeline on the same file and prints more. Two commands for one
+  job is one too many.
+* `stream --chunk` and `stream --threads`. Both reached only a per-run copy of the
+  configuration, and the values they set are read when the *service* starts - so they
+  changed nothing. A flag that silently does nothing is worse than a missing feature: it
+  invites a measurement that describes a pipeline nobody runs.
+* `session_options`. Nothing read it once voiceime stopped being a CLI caller.
+  `request_options` stays: it reaches the generated server config.
+* `capture_rate`. It could only ever be 16000 - the models' VAD rejects everything else, and
+  validation refused the rest - so it was a setting whose only power was to break a working
+  installation. The rate is a constant now.
+* `scripts/asr-server-prototype/`. The probes that measured the on-demand design (D21),
+  which no longer exists. Their numbers are quoted here and in measurements.md; keeping the
+  scripts meant shipping a measurement rig for a deleted architecture.
+
+**Why this is a stability argument, not tidiness.** This is a foundational component: it
+runs in the background, it types into whatever is focused, and its failure is silent. Every
+path that cannot be exercised is a path that will break unnoticed. A flag that does nothing,
+a setting that can only be wrong, and a command that duplicates another are all surface with
+no benefit and a maintenance cost - and each one had already produced a bug in this codebase
+(in D22: four names for two models, an install that reported success without restarting, and
+a config that could not say which model was running).
+
+**What was deliberately kept, and the bar for keeping it.** The two-pass design (D20) -
+deleting it removes live drafts, which is the feature. Two server entries - the server holds
+a model per request; measured 10.9s of waiting otherwise. `asr_server_timeout_ms` - a safety
+valve. `refine_on_segment_end` and `--refine` - the only switch that trades accuracy for
+speed, and the tests use it to pin both behaviours. `voiceime stream` - the only view into a
+session that does not need IBus, and what `make measure` runs.

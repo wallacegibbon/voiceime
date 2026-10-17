@@ -5,10 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
-	"github.com/wallacegibbon/voiceime/internal/asr"
-	"github.com/wallacegibbon/voiceime/internal/config"
 	"github.com/wallacegibbon/voiceime/internal/models"
 )
 
@@ -266,63 +263,4 @@ func pathOf(model *models.Model) string {
 		return ""
 	}
 	return model.Path
-}
-
-// cmdTranscribe is the offline one-shot: useful for checking an entry, and the exact
-// code path the repair pass uses.
-func cmdTranscribe() *Command {
-	var model string
-	var language string
-	return &Command{
-		Name:    "transcribe",
-		Summary: "Transcribe a WAV file through the repair server and print the text",
-		Usage:   "voiceime transcribe <file.wav> [--entry ID] [--language CODE]",
-		Flags: func(set *flag.FlagSet) {
-			set.StringVar(&model, "entry", "", "server entry to decode with (default: asr_server_model)")
-			set.StringVar(&language, "language", "", "language code (default: from config)")
-		},
-		Run: func(ctx *Context, args []string) error {
-			if len(args) != 1 {
-				return UsageError("transcribe needs exactly one WAV file")
-			}
-			if strings.TrimSpace(ctx.Config.ASRServerURL) == "" {
-				return PreconditionError("voiceime server install",
-					"nothing is configured to decode audio: run `voiceime server install`")
-			}
-			languageValue := language
-			if languageValue == "" {
-				languageValue = ctx.Config.Language
-			}
-			entry := strings.TrimSpace(model)
-			if entry == "" {
-				entry = serverModelID()
-			}
-			from := config.Expand(args[0])
-			wav, err := readPCM(from)
-			if err != nil {
-				return FailureError("%v", err)
-			}
-			// One route for decoding, in a diagnostic as much as in dictation: the
-			// server is what holds the models, so a measurement here describes the
-			// pipeline that actually runs.
-			transcriber := asr.ServerTranscriber{
-				BaseURL:  ctx.Config.ASRServerURL,
-				Model:    entry,
-				Language: languageValue,
-				Timeout:  10 * time.Minute,
-			}
-			transcribeCtx, cancelTranscribe := timeout(600)
-			defer cancelTranscribe()
-			text, err := transcriber.Transcribe(transcribeCtx, wav)
-			if err != nil {
-				return FailureError("%v", err)
-			}
-			ctx.Print("%s", text)
-			return ctx.Emit("transcribe", map[string]any{
-				"file":     from,
-				"entry":    entry,
-				"language": languageValue,
-			})
-		},
-	}
 }

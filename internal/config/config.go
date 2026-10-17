@@ -89,7 +89,6 @@ type Config struct {
 
 	// Capture.
 	CaptureSource string `toml:"capture_source" desc:"PipeWire source name; empty uses the default input."`
-	CaptureRate   int    `toml:"capture_rate" desc:"Capture rate; must stay 16000, the models' VAD rejects other rates."`
 
 	// Downloads. The value is an endpoint URL, not a preset name: every package
 	// audio.cpp's registry ships downloads over Hugging Face's protocol, so any
@@ -106,10 +105,10 @@ type Config struct {
 	HotkeyShortcutType int    `toml:"hotkey_shortcut_type" desc:"Consumer byte for the IBus global shortcut registration."`
 	IBusEngineName     string `toml:"ibus_engine_name" desc:"IBus engine name registered for text delivery."`
 
-	// Escape hatches passed straight through to audio.cpp. Keeping these maps
-	// means a new framework option becomes usable without a voiceime release.
-	SessionOptions map[string]string `toml:"session_options" desc:"Passed to audiocpp_cli as --session-option key=value."`
-	RequestOptions map[string]string `toml:"request_options" desc:"Passed to audiocpp_cli as --request-option key=value."`
+	// Escape hatch passed straight into the generated server config, so a new
+	// audio.cpp request option is usable without a voiceime release. One map, not two:
+	// session options have no reader now that voiceime is not a CLI caller.
+	RequestOptions map[string]string `toml:"request_options" desc:"Extra request options for the server's repair entry, as key=value."`
 }
 
 // Default returns the settings tuned for a stock GNOME/Wayland machine with
@@ -140,7 +139,6 @@ func Default() *Config {
 		// speech is heard as silence, the failure that is invisible to the user
 		// because nothing at all comes out.
 		SilenceRMSThreshold: 600,
-		CaptureRate:         TargetRate,
 		DownloadMirror:      DefaultDownloadEndpoint,
 		// A function key, not a modifier combination: IBus's global-shortcut
 		// mechanism consumes the key's release, so a shortcut containing a modifier
@@ -150,7 +148,6 @@ func Default() *Config {
 		Hotkey:             "<F9>",
 		HotkeyShortcutType: 1,
 		IBusEngineName:     "voiceime",
-		SessionOptions:     map[string]string{},
 		RequestOptions:     map[string]string{},
 	}
 }
@@ -271,9 +268,6 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("%s: unknown setting(s) %s (run `voiceime capabilities` for valid keys)",
 			path, strings.Join(unknown, ", "))
 	}
-	if cfg.SessionOptions == nil {
-		cfg.SessionOptions = map[string]string{}
-	}
 	if cfg.RequestOptions == nil {
 		cfg.RequestOptions = map[string]string{}
 	}
@@ -331,11 +325,6 @@ func (c *Config) Validate() []Issue {
 		add("warning", "chunk_seconds",
 			"windows below 1.5s measurably corrupt CJK output with SenseVoice (docs/measurements.md)",
 			"voiceime config set chunk_seconds 3")
-	}
-	if c.CaptureRate != TargetRate {
-		add("error", "capture_rate",
-			"the models' bundled Silero VAD only accepts 16000 Hz",
-			fmt.Sprintf("voiceime config set capture_rate %d", TargetRate))
 	}
 	if c.Language == "" {
 		add("warning", "language", "empty; the model will be asked to auto-detect",

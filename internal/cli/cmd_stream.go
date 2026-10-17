@@ -39,11 +39,9 @@ func cmdStream() *Command {
 		set.StringVar(&filePath, "file", "", "replay a WAV file instead of the microphone")
 		set.BoolVar(&realtime, "realtime", true, "with --file, pace the replay at real time")
 		set.Float64Var(&seconds, "seconds", 0, "stop after this many seconds of capture (0 = until end of input)")
-		set.Float64Var(&chunk, "chunk", 0, "streaming window in seconds (default: from config)")
 		set.BoolVar(&refine, "refine", true, "re-transcribe finished segments offline")
 		set.BoolVar(&events, "events", false, "print one JSON object per event instead of text")
 		set.BoolVar(&quiet, "quiet", false, "print only committed text")
-		set.IntVar(&threads, "threads", 0, "worker threads (default: from config)")
 	}
 	return &Command{
 		Name:    "stream",
@@ -145,9 +143,6 @@ func (s streamSink) Preedit(text string, cursor int, visible bool) error {
 }
 
 func runStream(ctx *Context, options streamOptions) error {
-	if options.threads == 0 {
-		options.threads = ctx.Config.Threads
-	}
 	if strings.TrimSpace(ctx.Config.ASRServerURL) == "" {
 		return PreconditionError("voiceime server install",
 			"nothing is configured to decode audio: run `voiceime server install`")
@@ -157,11 +152,7 @@ func runStream(ctx *Context, options streamOptions) error {
 	// A per-run copy of the config: chunk and refine are per-invocation knobs, and
 	// mutating the loaded config would leak them into anything else that reads it.
 	cfg := *ctx.Config
-	if options.chunk > 0 {
-		cfg.ChunkSeconds = options.chunk
-	}
 	cfg.RefineOnSegmentEnd = options.refine
-	cfg.Threads = options.threads
 
 	newCapture := func() (audio.Capture, error) { return audio.NewMicrophone(&cfg) }
 	if options.filePath != "" {

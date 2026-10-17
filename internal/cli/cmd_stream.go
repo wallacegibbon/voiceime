@@ -197,16 +197,23 @@ func runStream(ctx *Context, options streamOptions) error {
 	}
 
 	started := time.Now()
-	// The same checkpoint the session's own repairer will use: --refine-model can
-	// override it per run, and a server serving a different model than the fallback
-	// would make the two routes incomparable.
-	route := repairRoute(&cfg, effectiveRepairModel(options.refineModel, target))
+	// The repair model follows the same rule as the engine's: the flag, then
+	// refine_model, then the streaming model. The middle step used to be missing
+	// here, so `stream` repaired with the streaming model no matter what was
+	// configured - the flag's own help says "default: from config", and the effect
+	// was that measuring with this command described a different pipeline from the
+	// one dictation runs.
+	repairModel := options.refineModel
+	if repairModel == "" {
+		repairModel = resolveModel(ctx, true)
+	}
+	route := repairRoute(&cfg, repairModel)
 	out.write("repair_route", map[string]any{"detail": repairRouteDescription(&cfg, route)})
 	session := daemon.Options{
 		Config:          &cfg,
 		Binary:          binary,
 		Model:           target,
-		RepairModel:     options.refineModel,
+		RepairModel:     repairModel,
 		PreferredRepair: route,
 		NewCapture:      newCapture,
 		Sink:            streamSink{emitter: out},
@@ -239,6 +246,7 @@ func runStream(ctx *Context, options streamOptions) error {
 
 	lines := []string{
 		fmt.Sprintf("model=%s chunk=%.2fs load=%v", target, cfg.ChunkSeconds, result.LoadTime),
+		fmt.Sprintf("repair_model=%s", repairModel),
 		fmt.Sprintf("audio=%.2fs wall=%.2fs partials=%d", result.AudioFed.Seconds(), wall.Seconds(), result.Partials),
 		fmt.Sprintf("stream_text=%s", result.StreamText),
 		fmt.Sprintf("voiceime_text=%s", result.FinalText),

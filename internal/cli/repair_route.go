@@ -167,13 +167,3 @@ func repairRouteDescription(cfg *config.Config, route func(ctx context.Context) 
 	return fmt.Sprintf("repair: server at %s (model %s, %s), falling back to a process per utterance",
 		strings.TrimRight(cfg.ASRServerURL, "/"), model, mode)
 }
-
-// effectiveRepairModel mirrors the session's rule for which checkpoint the offline
-// decode uses: an explicit one, else the streaming model, which is what "empty
-// means reuse the streaming model" means for repair.
-func effectiveRepairModel(explicit, streaming string) string {
-	if strings.TrimSpace(explicit) != "" {
-		return explicit
-	}
-	return streaming
-}

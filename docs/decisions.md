@@ -815,6 +815,9 @@ have a reason to exist *here*".
   everything else was a wrapper around the model manager's own verbs, and each one cost a
   command name, a JSON shape, and a help line. `list --refresh` keeps the one capability
   that was not otherwise reachable (forcing a re-inspection).
+* `voiceime devices`. It listed capture sources for a setting `doctor` already explains
+  in place - and `doctor` reports the source it would use beside the check that proves
+  capture works, which is the question a user actually has.
 * `scripts/asr-server-prototype/`. The probes that measured the on-demand design (D21),
   which no longer exists. Their numbers are quoted here and in measurements.md; keeping the
   scripts meant shipping a measurement rig for a deleted architecture.

@@ -40,7 +40,6 @@ DEADCODE    ?= golang.org/x/tools/cmd/deadcode@v0.36.0
 # A speech file to measure against. `make measure AUDIO=speech.wav` replays it at
 # real time and prints latency and repair numbers; see docs/measurements.md.
 AUDIO       ?=
-CHUNK       ?= 3
 
 # --- build ------------------------------------------------------------------ #
 
@@ -161,13 +160,13 @@ capabilities: build ## Print the machine-readable command and config surface
 	$(BIN_DIR)/$(BINARY) capabilities --pretty
 
 .PHONY: measure
-measure: build ## Replay a file and print latency/repair numbers (AUDIO=file CHUNK=3)
+measure: build ## Replay a file and print latency/repair numbers (AUDIO=file)
 	@if [ -z "$(AUDIO)" ]; then \
-		echo "usage: make measure AUDIO=speech.wav [CHUNK=3]"; \
+		echo "usage: make measure AUDIO=speech.wav"; \
 		echo "see docs/measurements.md for what the numbers mean"; \
 		exit 2; \
 	fi
-	$(BIN_DIR)/$(BINARY) stream --file "$(AUDIO)" --realtime --chunk $(CHUNK)
+	$(BIN_DIR)/$(BINARY) stream --file "$(AUDIO)" --realtime --events
 
 .PHONY: verify
 verify: check doctor ## Run the tests and then check the machine

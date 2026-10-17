@@ -59,7 +59,7 @@ Go 1.24 or newer. Nothing else: capture is a subprocess, so there is no audio
 library, no development headers and no cgo — which is why the same source
 cross-compiles to four platforms from Linux with no toolchain per platform.
 
-The stripped binary is 4.8 MB, 2.0 MB compressed, plus the documentation.
+The stripped binary is 8.3 MB, 3.4 MB compressed, plus the documentation.
 
 ## Use
 
@@ -114,14 +114,20 @@ microphone ──► capture (parec, 16 kHz mono)
                    ├──► segmenter ── voice activity ──┐
                    │                                 │
                    ▼                                 │
-        audiocpp_cli --mode streaming  ── partials ──►├──► transcript
-                   (one process per session)         │      │  committed  ──► (IBus)
+   POST /v1/audio/transcriptions/live ──► deltas ───►├──► transcript
+     (one SSE connection per session)                │      │  committed  ──► (IBus)
                    │                                 │      └─ provisional ─┐
                    ▼                                 │                     │
         rolling audio buffer ─────────────────────────┘                     │
                    │                                                       │
-                   └──► audiocpp_cli offline ── re-decode ──────────────────┘
+                   └──► POST /v1/audio/transcriptions ── re-decode ─────────┘
+                          (the same service, its offline entry)
 ```
+
+Both arrows go to **one resident service** - a systemd user unit whose models are loaded
+at startup - so a dictation opens a connection instead of starting a process, and no
+sentence pays a model load. The price is memory: the service holds both entries
+(1.4-1.9 GB with SenseVoice plus Qwen3-ASR; docs/decisions.md D22).
 
 Two layers of text, and the split is the whole design:
 
@@ -130,11 +136,11 @@ Two layers of text, and the split is the whole design:
 * **Committed** text has been delivered to an application and is final. The
   endpoint detector decides the moment of commitment.
 
-When an utterance ends, the audio for it is re-decoded with the offline path and
-replaces the provisional text for that same span — or is placed directly when the
-streaming layer had not reached it yet, which is the normal case for a short
-utterance. That is what corrects words the user has already seen — a measured cost of
-0.55 s for a 4.2 s sentence when the repair uses the streaming model.
+When an utterance ends, the audio for it is re-decoded through the service's offline
+entry and replaces the provisional text for that same span — or is placed directly when
+the streaming layer had not reached it yet, which is the normal case for a short
+utterance. That is what corrects words the user has already seen, at a measured 0.5-0.8 s
+per sentence whatever the checkpoint, because the weights are already loaded.
 
 ## Layout
 

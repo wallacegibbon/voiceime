@@ -13,8 +13,8 @@ fails, it prints a `fix` command; run it and continue.
   IBus engine. Everything is local: no network is used at dictation time.
 - **How you know it worked.** `voiceime doctor` exits 0, `voiceime engine status`
   reports `engine_registered: true`, `voiceime hotkey status` reports
-  `service_active: true`, and activating the engine spawns `parec` plus
-  `audiocpp_cli`. Step 10 is a single command that checks all four.
+  `service_active: true`, and `voiceime server status` reports `listening: true` with both
+  entries served. Step 10 is a single command that checks all four.
 
 Conventions below: `$REPO` is the checkout (`git rev-parse --show-toplevel`),
 `$BIN` is the built binary (`$REPO/bin/voiceime`). Commands are run from `$REPO`.
@@ -36,11 +36,12 @@ over ssh, copy the session's environment first (`DISPLAY=:0` or whatever `ps` sh
 
 | Requirement | Why | Check |
 |---|---|---|
-| `audiocpp_cli` from an audio.cpp checkout | all inference | `ls ~/playground/audio.cpp/build/*/bin/audiocpp_cli` |
+| `audiocpp_cli` from an audio.cpp checkout | model inspection and the model manager | `ls ~/playground/audio.cpp/build/*/bin/audiocpp_cli` |
+| `audiocpp_server`, in the same build tree | **all inference**: one resident service serves both the live draft and the offline repair | `ls ~/playground/audio.cpp/build/*/bin/audiocpp_server` |
 | `python3` | audio.cpp's model manager is a Python script | `python3 -V` |
 | `ibus` CLI and a running `ibus-daemon` | text delivery | `ibus version && ibus engine` |
 | `parec` (PipeWire or PulseAudio) | audio capture | `parec --version` |
-| `systemctl --user` | keeps the shortcut listener running | `systemctl --user is-system-running` |
+| `systemctl --user` | keeps the recognition server and the shortcut listener running | `systemctl --user is-system-running` |
 | Build tools: Go ≥ 1.24 | building the binary | `go version` |
 
 Optional, and only cosmetic if missing: `notify-send` (status notifications),
@@ -156,7 +157,7 @@ If you need a non-default endpoint:
 "$BIN" config set download_mirror https://huggingface.co
 ```
 
-## 4. Install a model
+## 4. Install a model and start the server
 
 Two models are in use on the reference machine. Which you need depends on whether
 the machine has a working GPU. The numbers are measured on the reference machine
@@ -164,7 +165,7 @@ the machine has a working GPU. The numbers are measured on the reference machine
 
 | Machine | Package | Role | Measured |
 |---|---|---|---|
-| **CPU only** | `sensevoice_small_q8` | streaming **and** repair | 242 MiB on disk, 428 MiB RSS; decode RTF 0.047 (~21x realtime, Chinese); one process per dictation session with a ~0.3 s load; repair 0.55 s for a 4.2 s utterance |
+| **CPU only** | `sensevoice_small_q8` | streaming **and** repair | 242 MiB on disk; decode RTF 0.047 (~21x realtime, Chinese); both entries resident in the service; repair 0.55 s for a 4.2 s utterance, and a dictation starts in microseconds |
 | **CPU only** | *nothing else* | — | Leave `refine_model` empty so both entries serve the streaming model: two copies of 242 MiB, and repairs that cost the decode rather than a load. Adding `qwen3_asr_0_6b_q8_0` gives the more accurate reader, at 1.07 GiB resident extra (below) |
 | **With a GPU** | `sensevoice_small_q8` | streaming | same model, same reason: see below |
 | **With a GPU** | `qwen3_asr_0_6b_q8_0` | repair (`refine_model`) | 1.07 GiB on disk, 2110 MiB RSS; decode RTF 0.28 (3.5x realtime); its offline decode of the reference Chinese sample matched the reference transcript exactly where the streaming model produced one wrong character |
@@ -198,12 +199,12 @@ Why the roles are split that way:
   utterance with the whole utterance as context. That is exactly the difference
   measured above: the sentence split and the wrong character, repaired.
 * **On CPU that accuracy used to be unaffordable**: 5.66 s for a 4.24 s segment, most
-  of it loading a 1.07 GiB checkpoint once per segment. The repair would still be
-  running when the user starts the next sentence, so `doctor` reports it as advice
-  rather than switching to it. Setting `asr_server_url` removes that cost rather than
-  hiding it: the checkpoint is loaded once per dictation session instead of once per
-  sentence, and the measured repair drops to about 0.7 s. What remains per session is
-  the load itself (~1.4 s here), overlapped with the user's first sentence.
+  of it loading a 1.07 GiB checkpoint once per segment, and it accumulated - the third
+  sentence of a run landed 11.7 s after it was spoken. The resident service removes that
+  cost rather than hiding it: the checkpoint is loaded when the *service* starts and
+  never again, so the same repair is a 0.5-0.8 s request and a dictation begins in
+  microseconds. The price is memory: both entries stay resident (1403 MB at startup,
+  1907 MB once both have run).
 
 CPU with the resident repair server:
 
@@ -273,9 +274,9 @@ that looks like it did nothing is the failure this project keeps running into.
 The unit runs `voiceime server run` rather than audio.cpp directly: that subcommand
 renders `~/.config/voiceime/asr-server.json` from the settings and then runs the server.
 There is therefore one source of truth - the configuration - and no generated file that
-can disagree with it. `server restart` waits until the entries being served are the ones
+can disagree with it. `config apply` waits until the entries being served are the ones
 the settings name, because a restart that has not finished loading is a service that
-answers the old requests.
+still answers the old requests.
 
 `doctor` compares the *paths* being served with the paths configured, so a service left
 on the previous checkpoint cannot hide: the entry ids never change, and the symptom of a
@@ -315,9 +316,7 @@ another `download_mirror` and retry the same package.
 ```sh
 "$BIN" doctor --json           # exit 0; every check ok. A `warn` is informational,
                                # never a failure: `backend` on a machine with a GPU
-                               # whose audio.cpp was built for cpu, or
-                               # `refine_model_advice` when a more accurate refine
-                               # model is installed but not selected.
+                               # whose audio.cpp was built for cpu is the usual one.
 "$BIN" capabilities --json     # commands, settings and detected environment
 ```
 
@@ -406,15 +405,18 @@ Verify:
 ibus engine voiceime && ibus engine            # switch, then read back
 ```
 
-A healthy activation spawns children of the engine process - this is the
-end-to-end proof that capture and the model work:
+A healthy activation starts capture and connects to the recognition service - the
+end-to-end proof that both work:
 
 ```sh
 pgrep -af "ibus-engine --ibus"
-pgrep -af parec                                 # capture
-pgrep -af audiocpp_cli                          # streaming recogniser
-ibus engine xkb:us::eng                         # switching away stops both
+pgrep -af parec                                 # capture, a child of the engine
+pgrep -af "voiceime server run"                 # the service: one process, all dictations
+ibus engine xkb:us::eng                         # switching away stops capture, not the service
 ```
+
+The service is a user unit, not a child of the engine, so it is running whether or not
+anyone is dictating. That is the point of it: no dictation pays a model load.
 
 The engine's own session log has nowhere to go when the daemon spawns it (its
 stdout is discarded). To see it, run the engine by hand as described in

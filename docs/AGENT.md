@@ -175,15 +175,19 @@ voiceime doctor --json                # every prerequisite, each with its fix
 voiceime doctor --refresh --json      # re-inspect models instead of using the cache
 ```
 
-`doctor` covers: the config file, the `audiocpp_cli` binary and its version, the
-model manager script, the models directory, model selection for streaming and
-repair, capture tooling and default source, IBus engine registration, the settings
-that are properties of the machine (`threads` against the physical core count,
-`backend` against what the local binary was built with), the installed
-artifacts (the component file's `<exec>` and the systemd unit's `ExecStart`, both of
-which record an absolute path), whether the running engine and listener are the
-binary running `doctor`, and optional notification/sound tooling. Exit code 3 means
-at least one check failed; the `fix` of each failure is the next command to run.
+`doctor` covers: the config file, the `audiocpp_cli` and `audiocpp_server` binaries, the
+model manager script, the models directory, model selection for streaming and repair,
+capture tooling and default source, **the recognition service** (is it answering, does it
+serve the entries the client will ask for, and are those the *files* the settings name -
+the entry ids never change, so a service left on the previous checkpoint is invisible
+otherwise), IBus engine registration, the settings that are properties of the machine
+(`threads` against the physical core count, `backend` against what the local binary was
+built with), the installed artifacts (the component file's `<exec>` and both systemd
+units' `ExecStart` - each records an absolute path, and a server unit written by a
+checkout binary is a `make install` that does not reach the running service), whether the
+running engine and listener are the binary running `doctor`, and optional
+notification/sound tooling. Exit code 3 means at least one check failed; the `fix` of each
+failure is the next command to run.
 Loop until it exits 0.
 
 ## Exercise the pipeline
@@ -193,7 +197,7 @@ answerable without a human listening:
 
 ```
 voiceime stream --file speech.wav --realtime --events
-voiceime stream --file speech.wav --realtime --chunk 3 --json
+voiceime stream --file speech.wav --realtime --events --json
 voiceime stream --seconds 5                    # capture from the microphone (the default source)
 ```
 
@@ -262,7 +266,8 @@ voiceime hotkey status --json         # data.session, data.mechanisms, data.gnom
 voiceime hotkey toggle                # the one-shot toggle the keybinding runs
 voiceime server install               # the resident recognition server (required for dictation)
 voiceime config apply                 # apply a changed setting or a hand-edited file
-voiceime server status --json         # data.unit_active, data.listening, data.entries_served
+voiceime server status --json         # data.unit_active, data.listening,
+                                      # data.served[] = {id, mode, file, path}
 voiceime server uninstall             # stop and remove it
 voiceime hotkey run --log-events      # foreground, prints every event the daemon sends
 ```

@@ -8,8 +8,9 @@ Machine: AMD Ryzen 7 5800U (8 cores / 16 threads), 14 GiB RAM, Ubuntu 24.04,
 Wayland session, CPU-only inference (no GPU used). audio.cpp built from source as
 `RelWithDebInfo` with the CPU backend. Threads = 4 unless stated.
 
-Reproduce with `voiceime stream --file <wav> --realtime --chunk <seconds>` and
-`voiceime stream --file <wav> --realtime --events`, which prints the numbers below.
+Reproduce with `voiceime stream --file <wav> --realtime --events`, which prints the
+numbers below. The streaming window lives in the server configuration now
+(`chunk_seconds`, applied with `voiceime config apply`), not on the command line.
 
 ## Models on this machine
 
@@ -40,8 +41,9 @@ Two models were deliberately not installed, and the reasons matter:
 The "process + load" column is `time` around a whole `audiocpp_cli` invocation, so
 it includes process start and weight loading. Three consecutive runs of a 1 s clip
 took 0.24 s / 0.22 s / 0.22 s, which is where the ~150 ms model-load figure for
-SenseVoice comes from — cheap enough that one process per dictation session is
-fine and no warm daemon is needed.
+SenseVoice comes from. That was the whole cost of a dictation when voiceime spawned a
+CLI per session; it is now paid once, by the service, and no dictation pays it at all
+(docs/decisions.md D22).
 
 ## Streaming latency and quality
 
@@ -110,8 +112,8 @@ is chosen for them:
 
 A package's availability is a property of the endpoint *and* the package, so
 voiceime reports the failing package id and the error text instead of silently
-falling back, and `models sizes <pkg>` answers "is it reachable" without
-downloading.
+falling back, and `models install` reports the failing package without leaving a
+half-installed one behind.
 
 ## Endpointing in a real room
 
@@ -234,7 +236,8 @@ rather than left in commit history:
 1. **Input must be 16 kHz mono.** Feeding 24 kHz makes offline decoding abort:
    `Silero VAD 16k model only supports sample_rate=16000 (VAD audio chunking
    failed)`. Capture therefore converts up front (PipeWire does it server-side),
-   and `capture_rate` other than 16000 is a validation error.
+   and the rate is a constant rather than a setting - a configurable one could only
+   ever break this.
 
 2. **Bundled assets resolve relative to the working directory.** Running the CLI
    from `/tmp` failed with `Silero VAD model path does not exist:

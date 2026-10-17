@@ -62,7 +62,7 @@ func asrServerCheck(cfg *config.Config, scanned []models.Model, unitInstalled bo
 				ID:     "asr_server",
 				Status: "fail",
 				Detail: fmt.Sprintf("%s is not answering: %v", strings.TrimRight(raw, "/"), probeErr),
-				Fix:    "systemctl --user start " + serverUnitName,
+				Fix:    "voiceime config apply",
 			}
 		}
 		fix := "voiceime server install"
@@ -126,8 +126,8 @@ func asrServerCheck(cfg *config.Config, scanned []models.Model, unitInstalled bo
 				return Check{
 					ID:     "asr_server",
 					Status: "fail",
-					Detail: matchErr.Error() + " (the service was not restarted after the model changed)",
-					Fix:    "voiceime server install",
+					Detail: matchErr.Error() + " (the service has not been restarted since the setting changed)",
+					Fix:    "voiceime config apply",
 				}
 			}
 		}

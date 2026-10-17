@@ -248,17 +248,27 @@ is actually loaded instead of saying "pick one". Clear a setting (`config set
 streaming_model ""`) and re-run install to have it pick again - for instance after
 installing a better model.
 
-#### Changing a model
+#### Changing a model, or editing the file by hand
 
-Two commands, and no second file to remember:
+The configuration file is the single source of truth, so editing it directly is
+legitimate. Three processes read it, each when it starts - the recognition service (which
+models, the streaming window, threads), the engine (endpoints, language, the server
+address), and the shortcut listener (the key) - and one command applies it to all three:
 
 ```sh
-"$BIN" config set refine_model ~/models/Other-GGUF/other.gguf   # what the repair entry serves
-"$BIN" server restart                                            # re-render, restart, wait for it
+# either edit the file, or:
+"$BIN" config set refine_model ~/models/Other-GGUF/other.gguf
+
+"$BIN" config apply        # restarts the service, the listener, and drops the engine
+"$BIN" doctor              # asr_server must be ok
 ```
 
-`config set` prints that second command when the setting is one the service reads at
-startup (models, `chunk_seconds`, `threads`, `backend`, `language`, the option maps).
+`config apply` prints what it did, including the models the service ended up serving. The
+engine is *dropped* rather than restarted: ibus-daemon starts a fresh one on the next
+activation, which is the same thing without disturbing the selected input method.
+
+`config set` prints `voiceime config apply` as the next step, for every setting: an edit
+that looks like it did nothing is the failure this project keeps running into.
 
 The unit runs `voiceime server run` rather than audio.cpp directly: that subcommand
 renders `~/.config/voiceime/asr-server.json` from the settings and then runs the server.

@@ -84,7 +84,7 @@ func TestASRServerCheckStates(t *testing.T) {
 			unit:       true,
 			wantStatus: "fail",
 			wantDetail: "is not answering",
-			wantFix:    "systemctl --user start",
+			wantFix:    "config apply",
 		},
 	}
 
@@ -147,8 +147,8 @@ func TestASRServerCheckCatchesAStaleModel(t *testing.T) {
 	if !strings.Contains(check.Detail, "qwen.gguf") || !strings.Contains(check.Detail, "other.gguf") {
 		t.Errorf("detail %q does not name both files", check.Detail)
 	}
-	if !strings.Contains(check.Fix, "server install") {
-		t.Errorf("fix %q does not say how to fix it", check.Fix)
+	if !strings.Contains(check.Fix, "config apply") {
+		t.Errorf("fix %q does not say how to apply the changed setting", check.Fix)
 	}
 }
 

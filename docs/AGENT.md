@@ -121,9 +121,11 @@ Settings that matter, and the reasoning a caller needs to pick values:
 
 Some settings are read by the recognition service at startup rather than per request:
 the model paths, `chunk_seconds`, `threads`, `backend`, `language`, and the option maps.
-`voiceime config set` names the command that applies them (`voiceime server restart`),
-which re-renders the service config from the settings and waits until it serves them. The
-unit runs `voiceime server run`, so the settings are the only source of truth.
+`voiceime config set` names the command that applies them - `voiceime config apply` - which
+restarts the service (re-rendering its config and waiting until it serves the new models),
+restarts the shortcut listener, and drops the IBus engine so it respawns with the new
+configuration. Editing the file by hand is equally supported, and needs the same command.
+The unit runs `voiceime server run`, so the settings remain the only source of truth.
 
 Validate after changing anything:
 
@@ -259,7 +261,7 @@ voiceime hotkey install               # systemd --user unit, starts at login;
 voiceime hotkey status --json         # data.session, data.mechanisms, data.gnome_binding
 voiceime hotkey toggle                # the one-shot toggle the keybinding runs
 voiceime server install               # the resident recognition server (required for dictation)
-voiceime server restart               # apply changed models/chunk_seconds (re-render + restart)
+voiceime config apply                 # apply a changed setting or a hand-edited file
 voiceime server status --json         # data.unit_active, data.listening, data.entries_served
 voiceime server uninstall             # stop and remove it
 voiceime hotkey run --log-events      # foreground, prints every event the daemon sends

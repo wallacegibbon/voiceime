@@ -1,14 +1,18 @@
 package cli
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/wallacegibbon/voiceime/internal/config"
 	"github.com/wallacegibbon/voiceime/internal/models"
+	"github.com/wallacegibbon/voiceime/internal/server"
 )
 
 // cmdConfig is the only supported way to edit settings from a script. It exists
@@ -24,7 +28,7 @@ func cmdConfig() *Command {
 	return &Command{
 		Name:    "config",
 		Summary: "Inspect and edit the configuration file",
-		Usage:   "voiceime config <path|show|init|get|set|validate> [args]",
+		Usage:   "voiceime config <path|show|init|get|set|apply|validate> [args]",
 		Flags: func(set *flag.FlagSet) {
 			set.BoolVar(&force, "force", false, "config init: overwrite an existing file")
 			set.BoolVar(&yes, "yes", false, "accepted and ignored; keeps scripts uniform")
@@ -66,6 +70,69 @@ func resolvedModels(ctx *Context) map[string]string {
 	return resolved
 }
 
+// applyConfig restarts the three processes that load the configuration, so a hand-edited
+// file takes effect, and reports what actually happened rather than what was attempted.
+func applyConfig(ctx *Context) error {
+	result := map[string]any{}
+	systemctl, _ := exec.LookPath("systemctl")
+
+	// 1. The service: it renders the server config from this file at its own start, so a
+	// model change lands here and nowhere else.
+	if systemctl != "" && fileExists(serverUnitPath()) {
+		if err := runCommand("systemctl --user restart " + serverUnitName); err != nil {
+			return FailureError("restart %s: %v", serverUnitName, err)
+		}
+		scanned, scanErr := models.Scan(ctx.Config, false, nil)
+		host, port, parseErr := server.ParseURL(ctx.Config.ASRServerURL)
+		if scanErr == nil && parseErr == nil && server.IsLocalHost(host) {
+			if spec, specErr := buildServerSpec(ctx.Config, scanned, port, "", ""); specErr == nil {
+				probeCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+				err := waitForEntries(probeCtx, ctx.Config.ASRServerURL, spec)
+				cancel()
+				if err != nil {
+					return FailureError("the service restarted but is not serving the configured models: %v", err)
+				}
+				result["served"] = []string{filepath.Base(spec.StreamModel), filepath.Base(spec.RepairModel)}
+			}
+		}
+		result["service"] = "restarted"
+	} else {
+		result["service"] = "not installed"
+	}
+
+	// 2. The listener: the shortcut itself is read once, when it starts.
+	if systemctl != "" && fileExists(servicePath()) {
+		if err := runCommand("systemctl --user restart voiceime-hotkey"); err == nil {
+			result["listener"] = "restarted"
+		} else {
+			result["listener"] = "restart failed"
+		}
+	} else {
+		result["listener"] = "not installed"
+	}
+
+	// 3. The engine: it is spawned by ibus-daemon and stays, holding the configuration it
+	// started with. Ending it is enough - IBus starts a fresh one on the next activation.
+	result["engine"] = "was not running"
+	if out, err := exec.Command("pgrep", "-f", "voiceime ibus-engine").Output(); err == nil && len(out) > 0 {
+		if err := exec.Command("pkill", "-f", "voiceime ibus-engine").Run(); err == nil {
+			result["engine"] = "dropped; it restarts on the next activation"
+		} else {
+			result["engine"] = "could not be stopped"
+		}
+	}
+
+	if !ctx.JSON {
+		ctx.Print("service:  %v", result["service"])
+		if served, ok := result["served"].([]string); ok {
+			ctx.Print("serving:  %s", strings.Join(served, " and "))
+		}
+		ctx.Print("listener: %v", result["listener"])
+		ctx.Print("engine:   %v", result["engine"])
+	}
+	return ctx.Emit("config apply", result)
+}
+
 // serviceSetting reports whether a setting is one the recognition service reads when it
 // starts, rather than one the session reads per request.
 func serviceSetting(key string) bool {
@@ -80,7 +147,7 @@ func serviceSetting(key string) bool {
 
 func runConfig(ctx *Context, args []string, force bool) error {
 	if len(args) == 0 {
-		return UsageError("config needs an action: path, show, init, get, set or validate")
+		return UsageError("config needs an action: path, show, init, get, set, apply or validate")
 	}
 	action, rest := args[0], args[1:]
 
@@ -211,13 +278,21 @@ func runConfig(ctx *Context, args []string, force bool) error {
 		// between a setting that works and one that looks like it did nothing.
 		applies := ""
 		if serviceSetting(key) {
-			applies = "voiceime server restart"
+			applies = "voiceime config apply"
 			ctx.Print("this reaches the recognition service at startup: run `%s`", applies)
 		}
 		return ctx.Emit("config set", map[string]any{
 			"key": key, "previous": previous, "value": value, "written": true, "valid": true,
 			"apply_with": applies,
 		})
+
+	case "apply":
+		// Editing the file by hand is legitimate - it is the documented single source of
+		// truth - but three processes read it at their own start: the recognition service
+		// (models, window, threads), the engine (endpoints, language, server address) and
+		// the shortcut listener (the key). One verb for "make the running system match the
+		// file" is simpler than expecting a user to know which of the three to restart.
+		return applyConfig(ctx)
 
 	case "validate":
 		issues := ctx.Config.Validate()

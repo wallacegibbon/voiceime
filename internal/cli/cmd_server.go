@@ -79,27 +79,11 @@ func serverConfigFile() string {
 
 func runServerInstall(ctx *Context, port int, streamFlag, repairFlag string) error {
 	cfg := ctx.Config
-
-	streamPath := modelPath(ctx, streamFlag, cfg.StreamingModel, false)
-	if streamPath == "" {
-		streamPath = modelPath(ctx, "", "", true)
-	}
-	repairPath := modelPath(ctx, repairFlag, cfg.RefineModel, true)
-	if streamPath == "" && repairPath == "" {
-		return PreconditionError("voiceime models install "+models.RecommendedPackages()[0].ID,
-			"no model to serve: install one first")
-	}
-	if streamPath == "" {
-		streamPath = repairPath
-	}
-	if repairPath == "" {
-		repairPath = streamPath
-	}
-	streamFamily, err := modelFamily(cfg, streamPath)
+	scanned, err := models.Scan(cfg, false, nil)
 	if err != nil {
-		return PreconditionError("voiceime models refresh", "%v", err)
+		return FailureError("%v", err)
 	}
-	repairFamily, err := modelFamily(cfg, repairPath)
+	spec, err := buildServerSpec(cfg, scanned, port, streamFlag, repairFlag)
 	if err != nil {
 		return PreconditionError("voiceime models refresh", "%v", err)
 	}
@@ -108,23 +92,8 @@ func runServerInstall(ctx *Context, port int, streamFlag, repairFlag string) err
 		return PreconditionError("voiceime config set asr_bin /path/to/audio.cpp/build/<backend>/bin/audiocpp_cli",
 			"%v", err)
 	}
-
-	spec := server.Spec{
-		StreamModel:  streamPath,
-		StreamFamily: streamFamily,
-		RepairModel:  repairPath,
-		RepairFamily: repairFamily,
-		StreamID:     serverStreamModelID(cfg),
-		RepairID:     serverModelID(cfg),
-		Host:         "127.0.0.1",
-		Port:         port,
-		Backend:      cfg.Backend,
-		Threads:      cfg.Threads,
-		ChunkSeconds: cfg.ChunkSeconds,
-		// The decode contract the repair route has always used, in the one place a
-		// multipart request can carry it.
-		RequestOptions: asr.RepairRequestOptions(cfg.RequestOptions),
-	}
+	streamPath, repairPath := spec.StreamModel, spec.RepairModel
+	streamFamily, repairFamily := spec.StreamFamily, spec.RepairFamily
 	configPath := serverConfigFile()
 	if err := server.WriteConfig(spec, configPath); err != nil {
 		return FailureError("%v", err)
@@ -165,7 +134,14 @@ func runServerInstall(ctx *Context, port int, streamFlag, repairFlag string) err
 			streamPath, streamFamily, repairPath, repairFamily)
 		ctx.Print("config: asr_server_url = %s", baseURL)
 	}
-	commands := []string{"systemctl --user daemon-reload", "systemctl --user enable --now " + serverUnitName}
+	// enable for the next login, restart for this one: `enable --now` starts a unit that
+	// is stopped and does nothing to one that is running, which would leave a changed
+	// model unserved while reporting success.
+	commands := []string{
+		"systemctl --user daemon-reload",
+		"systemctl --user enable " + serverUnitName,
+		"systemctl --user restart " + serverUnitName,
+	}
 	applied := false
 	if _, err := exec.LookPath("systemctl"); err == nil {
 		for _, command := range commands {
@@ -189,8 +165,8 @@ func runServerInstall(ctx *Context, port int, streamFlag, repairFlag string) err
 	// to load its models before it answers, and the failures worth catching - a port
 	// already taken, a model the build cannot load - only exist afterwards.
 	if applied {
-		probeCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		err := waitForServer(probeCtx, baseURL)
+		probeCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		err := waitForEntries(probeCtx, baseURL, spec)
 		cancel()
 		if err != nil {
 			return FailureError("the service was installed but is not serving: %v (see `systemctl --user status %s`)",
@@ -211,16 +187,18 @@ func runServerInstall(ctx *Context, port int, streamFlag, repairFlag string) err
 	})
 }
 
-// waitForServer waits until the unit answers, because starting a service and being
-// able to use it are different moments: the server loads its models first.
-func waitForServer(ctx context.Context, baseURL string) error {
-	deadline := time.Now().Add(60 * time.Second)
+// waitForEntries waits until the service serves the models it was just given.
+//
+// Waiting for /health would not be enough: a server that is still running the previous
+// config answers it too, so install would report success while the old weights kept
+// serving every request.
+func waitForEntries(ctx context.Context, baseURL string, spec server.Spec) error {
+	deadline := time.Now().Add(120 * time.Second)
 	var last error
 	for time.Now().Before(deadline) {
-		if err := server.Probe(ctx, baseURL); err == nil {
+		last = entriesMatch(ctx, baseURL, spec)
+		if last == nil {
 			return nil
-		} else {
-			last = err
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -228,6 +206,74 @@ func waitForServer(ctx context.Context, baseURL string) error {
 		time.Sleep(500 * time.Millisecond)
 	}
 	return last
+}
+
+// entriesMatch reports whether the server serves the two checkpoints the spec names.
+func entriesMatch(ctx context.Context, baseURL string, spec server.Spec) error {
+	entries, err := server.Entries(ctx, baseURL)
+	if err != nil {
+		return err
+	}
+	byID := map[string]string{}
+	for _, entry := range entries {
+		byID[entry.ID] = filepath.Clean(entry.Path)
+	}
+	want := map[string]string{
+		spec.StreamIDOrDefault(): filepath.Clean(spec.StreamModel),
+		spec.RepairIDOrDefault(): filepath.Clean(spec.RepairModel),
+	}
+	for id, path := range want {
+		served, found := byID[id]
+		switch {
+		case !found:
+			return fmt.Errorf("the server does not serve an entry called %q", id)
+		case served != path:
+			return fmt.Errorf("entry %q is serving %s, not %s", id, filepath.Base(served), filepath.Base(path))
+		}
+	}
+	return nil
+}
+
+// buildServerSpec decides which checkpoints the two entries serve. It is shared with
+// doctor so the check can say what *should* be running.
+func buildServerSpec(cfg *config.Config, scanned []models.Model, port int, streamFlag, repairFlag string) (server.Spec, error) {
+	streamPath := modelPath(cfg, scanned, streamFlag, cfg.StreamingModel, false)
+	if streamPath == "" {
+		streamPath = modelPath(cfg, scanned, "", "", true)
+	}
+	repairPath := modelPath(cfg, scanned, repairFlag, cfg.RefineModel, true)
+	switch {
+	case streamPath == "" && repairPath == "":
+		return server.Spec{}, fmt.Errorf("no model to serve: install one first")
+	case streamPath == "":
+		streamPath = repairPath
+	case repairPath == "":
+		repairPath = streamPath
+	}
+	streamFamily, err := modelFamily(scanned, streamPath)
+	if err != nil {
+		return server.Spec{}, err
+	}
+	repairFamily, err := modelFamily(scanned, repairPath)
+	if err != nil {
+		return server.Spec{}, err
+	}
+	return server.Spec{
+		StreamModel:  streamPath,
+		StreamFamily: streamFamily,
+		RepairModel:  repairPath,
+		RepairFamily: repairFamily,
+		StreamID:     serverStreamModelID(cfg),
+		RepairID:     serverModelID(cfg),
+		Host:         "127.0.0.1",
+		Port:         port,
+		Backend:      cfg.Backend,
+		Threads:      cfg.Threads,
+		ChunkSeconds: cfg.ChunkSeconds,
+		// The decode contract the repair route has always used, in the one place a
+		// multipart request can carry it.
+		RequestOptions: asr.RepairRequestOptions(cfg.RequestOptions),
+	}, nil
 }
 
 // serverUnit renders the systemd user unit that keeps the server running.
@@ -334,7 +380,7 @@ func runServerStatus(ctx *Context) error {
 
 // modelPath resolves a model argument the way the rest of the CLI does: the flag, then
 // the setting, then (optionally) the model auto-selection would pick.
-func modelPath(ctx *Context, flagValue, setting string, pick bool) string {
+func modelPath(cfg *config.Config, scanned []models.Model, flagValue, setting string, pick bool) string {
 	for _, candidate := range []string{flagValue, setting} {
 		if strings.TrimSpace(candidate) != "" {
 			return config.Expand(candidate)
@@ -343,17 +389,17 @@ func modelPath(ctx *Context, flagValue, setting string, pick bool) string {
 	if !pick {
 		return ""
 	}
-	return resolveModel(ctx, false)
+	// "Empty means pick automatically", the same rule the rest of the CLI uses.
+	if picked := models.PickStreaming(scanned, cfg.Language); picked != nil {
+		return picked.Path
+	}
+	return ""
 }
 
 // modelFamily reports a model's audio.cpp family, which the server requires. It comes
 // from the CLI's own inspection, cached against the file's size and mtime, because
 // guessing it from a file name is the kind of guess this project does not make.
-func modelFamily(cfg *config.Config, path string) (string, error) {
-	scanned, err := models.Scan(cfg, false, nil)
-	if err != nil {
-		return "", err
-	}
+func modelFamily(scanned []models.Model, path string) (string, error) {
 	found := models.Lookup(scanned, path)
 	switch {
 	case found == nil:

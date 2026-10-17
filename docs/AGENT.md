@@ -122,6 +122,11 @@ Settings that matter, and the reasoning a caller needs to pick values:
 | `download_mirror` | `https://hf-mirror.com` | Endpoint downloads go through, written to `HF_ENDPOINT`. Any Hugging Face protocol host works: `https://huggingface.co`, a company cache, a LAN address. |
 | `session_options` / `request_options` | `{}` | Passed straight to `audiocpp_cli`. |
 
+Two settings are compiled into the service rather than read per request:
+`chunk_seconds` and the model paths. After changing either, run `voiceime server install`
+(which rewrites `~/.config/voiceime/asr-server.json` and restarts the unit) - a `config
+set` on its own has no effect on what is running, and `doctor` reports the mismatch.
+
 Validate after changing anything:
 
 ```

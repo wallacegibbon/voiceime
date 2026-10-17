@@ -176,6 +176,49 @@ func Probe(ctx context.Context, base string) error {
 	return nil
 }
 
+// Entry is one model the server is serving, as /v1/models reports it.
+type Entry struct {
+	ID     string `json:"id"`
+	Path   string `json:"path"`
+	Mode   string `json:"mode"`
+	Family string `json:"family"`
+	Loaded bool   `json:"loaded"`
+}
+
+// Entries asks the server what it serves.
+//
+// It exists so a mismatch between what was configured and what is running can be
+// seen: the entry ids never change when a user points one at another checkpoint, so
+// nothing else in the installation would notice that the service is still serving the
+// old weights.
+func Entries(ctx context.Context, base string) ([]Entry, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(base, "/")+"/v1/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	payload, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%s/v1/models: %s", base, response.Status)
+	}
+	var listing struct {
+		Data []Entry `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &listing); err != nil {
+		return nil, fmt.Errorf("decode %s/v1/models: %w", base, err)
+	}
+	return listing.Data, nil
+}
+
 // ParseURL splits the configured server address into host and port.
 func ParseURL(raw string) (host string, port int, err error) {
 	parsed, err := url.Parse(strings.TrimSpace(raw))

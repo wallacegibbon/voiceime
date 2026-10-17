@@ -118,6 +118,46 @@ func TestASRServerCheckStates(t *testing.T) {
 	}
 }
 
+// A service left on the previous checkpoint is the failure this check exists for: the
+// entry ids do not change when a setting does, so nothing else notices, and the symptom
+// is slightly different text rather than an error.
+func TestASRServerCheckCatchesAStaleModel(t *testing.T) {
+	stale := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		case "/v1/models":
+			_, _ = w.Write([]byte(`{"object":"list","data":[
+				{"id":"stream","path":"/models/sense.gguf","mode":"streaming"},
+				{"id":"refine","path":"/models/other.gguf","mode":"offline"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer stale.Close()
+
+	scanned := []models.Model{
+		{Path: "/models/sense.gguf", Family: "sense_asr", Tasks: []models.Task{{Name: "asr"}}},
+		{Path: "/models/qwen.gguf", Family: "qwen3_asr", Tasks: []models.Task{{Name: "asr"}}},
+	}
+	cfg := config.Default()
+	cfg.ASRServerURL = stale.URL
+	cfg.StreamingModel = "/models/sense.gguf"
+	cfg.RefineModel = "/models/qwen.gguf"
+	cfg.ASRBin = "/bin/true" // not used by the check, but keeps the spec resolvable
+
+	check := asrServerCheck(cfg, scanned, true)
+	if check.Status != "fail" {
+		t.Fatalf("status = %q, want fail: the service serves other.gguf but the setting names qwen.gguf", check.Status)
+	}
+	if !strings.Contains(check.Detail, "qwen.gguf") || !strings.Contains(check.Detail, "other.gguf") {
+		t.Errorf("detail %q does not name both files", check.Detail)
+	}
+	if !strings.Contains(check.Fix, "server install") {
+		t.Errorf("fix %q does not say how to fix it", check.Fix)
+	}
+}
+
 // deadURL returns an address on this machine that nothing listens on.
 func deadURL(t *testing.T) string {
 	t.Helper()

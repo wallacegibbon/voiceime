@@ -240,6 +240,33 @@ request: a repair sent to the entry a live dictation owns waits for that dictati
 end (measured: 10.9s). The two may point at the same GGUF - that costs two resident
 copies, and is what a machine with one small model should do.
 
+#### Changing a model
+
+The models are not read from voiceime's settings at runtime: `server install` writes them
+into the service config and the service loads them when it starts. So changing a setting
+alone changes nothing until the config is rewritten and the service restarted:
+
+```sh
+"$BIN" config set refine_model ~/models/Other-GGUF/other.gguf   # what the repair entry serves
+"$BIN" server install                                           # rewrite the config, restart
+"$BIN" doctor                                                   # asr_server must be ok
+```
+
+`server install` restarts the unit and then waits until it serves the checkpoints it was
+given. Both halves matter: `systemctl enable --now` starts a stopped unit and does
+*nothing* to a running one, so without the restart the previous weights would keep
+answering every request while the report said `serving at ...`. And waiting for `/health`
+would not be enough either, since the old server answers that too.
+
+`doctor` compares the *paths* the service is serving with the ones the settings name, for
+the same reason: the entry ids never change when a user points one at another checkpoint,
+so a service left on the old weights is otherwise invisible - the failure mode is not an
+error, it is slightly different text.
+
+The same applies to anything else baked into the generated config: `chunk_seconds`,
+`threads`, `backend`, `streaming_model`, and `request_options` all reach the service
+through `server install`, not at request time.
+
 #### Why the server needs the model memory
 
 The service keeps its entries resident, so the machine holds both models all the time

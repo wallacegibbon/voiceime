@@ -100,6 +100,25 @@ func asrServerCheck(cfg *config.Config, scanned []models.Model, unitInstalled bo
 			}
 		}
 	}
+
+	// What it serves, not only what it calls itself. Changing a model means changing a
+	// setting and re-running install, and the entry ids stay the same either way - so a
+	// service still serving the previous checkpoint is invisible unless the paths are
+	// compared. That is also the case where `server install` used to report success
+	// while the old weights kept answering.
+	host2, port, err := server.ParseURL(raw)
+	if err == nil && server.IsLocalHost(host2) {
+		if spec, specErr := buildServerSpec(cfg, scanned, port, "", ""); specErr == nil {
+			if matchErr := entriesMatch(ctx, raw, spec); matchErr != nil {
+				return Check{
+					ID:     "asr_server",
+					Status: "fail",
+					Detail: matchErr.Error() + " (the service was not restarted after the model changed)",
+					Fix:    "voiceime server install",
+				}
+			}
+		}
+	}
 	return Check{
 		ID:     "asr_server",
 		Status: "ok",

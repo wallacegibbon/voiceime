@@ -109,9 +109,7 @@ Settings that matter, and the reasoning a caller needs to pick values:
 | `threads` | `4` | Worker threads for both the streaming engine and repairs. The default is the reference machine's 8-core setting; `doctor` warns when it exceeds this machine's physical cores, because the two passes compete for the same ones. |
 | `streaming_model` | `""` | Empty means pick automatically. |
 | `refine_model` | `""` | Empty means reuse the streaming model (fastest). |
-| `asr_server_url` | `""` | Where the resident recognition server listens. `voiceime server install` sets it; empty means dictation cannot run, and `doctor` says so. Both passes go through this one service, so nothing is started per session and no model is loaded per request. |
-| `asr_server_stream_model` | `stream` | The server entry that serves live partials. |
-| `asr_server_model` | `refine` | The server entry the offline repair uses. It must differ from the streaming entry: the server holds a model for a whole live session, so a repair on the same id waits for the dictation to end (measured 10.9 s). |
+| `asr_server_url` | `""` | Where the resident recognition server listens. `voiceime server install` sets it; empty means dictation cannot run, and `doctor` says so. Both passes go through this one service, which serves two entries - `stream` (partials) and `refine` (repair) - whose ids are fixed by what `server run` writes. |
 | `language` | `zh` | Passed to the model; empty asks it to auto-detect. |
 | `chunk_seconds` | `3` | The streaming window: how much audio a draft is decoded from. Below 1.5 measurably corrupts CJK output; validate warns. It does not gate when text is committed - a finished utterance is decoded offline and delivered when it closes - so it can be raised for accuracy without making delivery wait. |
 | `refine_on_segment_end` | `true` | The pass that repairs window-boundary damage. |

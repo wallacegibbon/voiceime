@@ -299,7 +299,7 @@ func cmdTranscribe() *Command {
 			}
 			entry := strings.TrimSpace(model)
 			if entry == "" {
-				entry = serverModelID(ctx.Config)
+				entry = serverModelID()
 			}
 			from := config.Expand(args[0])
 			wav, err := readPCM(from)

@@ -162,7 +162,7 @@ func runStream(ctx *Context, options streamOptions) error {
 	// service owns the weights. They exist for measuring one entry against another.
 	streamModel := strings.TrimSpace(options.model)
 	if streamModel == "" {
-		streamModel = serverStreamModelID(ctx.Config)
+		streamModel = serverStreamModelID()
 	}
 
 	// A per-run copy of the config: chunk and refine are per-invocation knobs, and
@@ -199,7 +199,7 @@ func runStream(ctx *Context, options streamOptions) error {
 	// asr_server_model.
 	repairModel := strings.TrimSpace(options.refineModel)
 	if repairModel == "" {
-		repairModel = serverModelID(&cfg)
+		repairModel = serverModelID()
 	}
 	out.write("repair_route", map[string]any{"detail": serverDescription(&cfg, repairModel)})
 	session := daemon.Options{

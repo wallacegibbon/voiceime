@@ -231,7 +231,7 @@ What it writes and where to look when something is wrong:
 | Piece | Where | What it means |
 |---|---|---|
 | `audiocpp_server` | beside `audiocpp_cli` in the audio.cpp build tree | Nothing to install separately: the build produces it. A build without it makes `server install` fail rather than leaving dictation broken |
-| generated config | `~/.config/voiceime/asr-server.json` | Two entries - `stream` (live partials) and `refine` (offline repair) - with `lazy_load: false`. Rewritten by `server install`, so change settings and re-run it rather than editing this |
+| generated config | `~/.config/voiceime/asr-server.json` | Two entries - `stream` (live partials) and `refine` (offline repair), ids fixed - with `lazy_load: false`. Rewritten by `voiceime server run` from the settings at every service start, so edit the settings, not this |
 | unit | `~/.config/systemd/user/voiceime-asr-server.service` | `systemctl --user status voiceime-asr-server`, `journalctl --user -u voiceime-asr-server` |
 | model families | `voiceime models refresh` cache | The server requires each model's audio.cpp family, from `audiocpp_cli --inspect`; an unknown family is a `server install` failure |
 

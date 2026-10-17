@@ -272,8 +272,8 @@ func buildServerSpec(cfg *config.Config, scanned []models.Model, port int, strea
 		StreamFamily: streamFamily,
 		RepairModel:  repairPath,
 		RepairFamily: repairFamily,
-		StreamID:     serverStreamModelID(cfg),
-		RepairID:     serverModelID(cfg),
+		StreamID:     serverStreamModelID(),
+		RepairID:     serverModelID(),
 		Host:         "127.0.0.1",
 		Port:         port,
 		Backend:      cfg.Backend,
@@ -454,8 +454,8 @@ func runServerStatus(ctx *Context) error {
 		"unit":         serverUnitPath(),
 		"config":       serverConfigFile(),
 		"url":          cfg.ASRServerURL,
-		"stream_entry": serverStreamModelID(cfg),
-		"repair_entry": serverModelID(cfg),
+		"stream_entry": serverStreamModelID(),
+		"repair_entry": serverModelID(),
 		"unit_active":  false,
 		"listening":    false,
 	}
@@ -477,7 +477,7 @@ func runServerStatus(ctx *Context) error {
 	if err := server.Probe(probeCtx, base); err == nil {
 		status["listening"] = true
 		served := []string{}
-		for _, entry := range []string{serverStreamModelID(cfg), serverModelID(cfg)} {
+		for _, entry := range []string{serverStreamModelID(), serverModelID()} {
 			transcriber := asr.ServerTranscriber{BaseURL: base, Model: entry}
 			if err := transcriber.Check(probeCtx); err != nil {
 				status["model_error"] = err.Error()

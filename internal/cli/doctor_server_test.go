@@ -61,12 +61,6 @@ func TestASRServerCheckStates(t *testing.T) {
 			wantDetail: "is serving stream (partials) and refine (repair)",
 		},
 		{
-			name:       "the same entry for both roles",
-			mutate:     func(c *config.Config) { c.ASRServerURL = serving.URL; c.ASRServerModel = "stream" },
-			wantStatus: "fail",
-			wantDetail: "wait for the dictation",
-		},
-		{
 			name:       "a server without the entries",
 			mutate:     func(c *config.Config) { c.ASRServerURL = wrongEntries.URL },
 			wantStatus: "fail",
@@ -168,23 +162,6 @@ func deadURL(t *testing.T) string {
 	address := listener.Addr().String()
 	listener.Close()
 	return "http://" + address
-}
-
-// The server entry ids are a client-side mirror of what `server install` wrote, so a
-// silent mismatch would send every request to an entry that does not exist.
-func TestServerEntryDefaults(t *testing.T) {
-	cfg := config.Default()
-	if got := serverStreamModelID(cfg); got != "stream" {
-		t.Errorf("stream entry = %q, want the installed default", got)
-	}
-	if got := serverModelID(cfg); got != "refine" {
-		t.Errorf("repair entry = %q, want the installed default", got)
-	}
-	cfg.ASRServerStreamModel = "live"
-	cfg.ASRServerModel = "accurate"
-	if serverStreamModelID(cfg) != "live" || serverModelID(cfg) != "accurate" {
-		t.Error("configured entry ids are not honoured")
-	}
 }
 
 // The unit file is what makes the server exist across reboots, and what it starts

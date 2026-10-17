@@ -339,12 +339,12 @@ func newPipelineHandler(runCtx context.Context, ctx *Context, logf func(string, 
 	}
 	repairModel := strings.TrimSpace(repairModelOverride)
 	if repairModel == "" {
-		repairModel = serverModelID(ctx.Config)
+		repairModel = serverModelID()
 	}
 	handler := &daemon.EngineHandler{
 		Config:      ctx.Config,
 		ServerURL:   serverURL,
-		StreamModel: serverStreamModelID(ctx.Config),
+		StreamModel: serverStreamModelID(),
 		RepairModel: repairModel,
 		Log:         logf,
 	}

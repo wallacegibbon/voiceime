@@ -79,10 +79,8 @@ type Config struct {
 	// the process-per-utterance route, which needs no daemon and is fast enough
 	// for a small model; a server pays the model load once instead of per
 	// utterance, which is what a large refine model needs.
-	ASRServerURL         string `toml:"asr_server_url" desc:"Resident audiocpp_server root, e.g. http://127.0.0.1:18080; 'voiceime server install' sets it."`
-	ASRServerStreamModel string `toml:"asr_server_stream_model" desc:"Server entry that serves live partials."`
-	ASRServerModel       string `toml:"asr_server_model" desc:"Server entry the offline repair decode uses; must not be the streaming entry."`
-	ASRServerTimeoutMS   int    `toml:"asr_server_timeout_ms" desc:"Deadline for one server-side repair decode."`
+	ASRServerURL       string `toml:"asr_server_url" desc:"Resident audiocpp_server root, e.g. http://127.0.0.1:18080; 'voiceime server install' sets it."`
+	ASRServerTimeoutMS int    `toml:"asr_server_timeout_ms" desc:"Deadline for one server-side repair decode."`
 
 	// Endpointing.
 	EndpointSilenceMS   int `toml:"endpoint_silence_ms" desc:"Silence after speech before a segment is closed."`
@@ -131,15 +129,9 @@ func Default() *Config {
 		// 30s is generous for one utterance: the point of a deadline here is to
 		// abandon a repair that has stopped being worth waiting for, not to bound
 		// a decode that is running normally.
-		ASRServerTimeoutMS: 30000,
-		// The ids `voiceime server install` writes into its config. They are settings
-		// rather than constants because a server someone else runs may name its
-		// entries anything, and the failure that causes (a repair that falls back
-		// silently) is the kind that costs an afternoon.
-		ASRServerModel:       "refine",
-		ASRServerStreamModel: "stream",
-		EndpointSilenceMS:    800,
-		EndpointMinSpeechMS:  300,
+		ASRServerTimeoutMS:  30000,
+		EndpointSilenceMS:   800,
+		EndpointMinSpeechMS: 300,
 		// This is a floor, not a fixed threshold: the detector raises its
 		// threshold to twice the noise floor it measures in the stream, and never
 		// lowers it below this. 600 sits above the reference room's idle noise

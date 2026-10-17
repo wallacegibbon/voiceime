@@ -80,7 +80,7 @@ func asrServerCheck(cfg *config.Config, scanned []models.Model, unitInstalled bo
 	// Something answers. The remaining question is whether it serves the entries the
 	// client will ask for - a wrong id otherwise shows up per utterance as a repair
 	// that fell back, or as a stream that never starts.
-	streamEntry, repairEntry := serverStreamModelID(cfg), serverModelID(cfg)
+	streamEntry, repairEntry := serverStreamModelID(), serverModelID()
 	if streamEntry == repairEntry {
 		return Check{
 			ID:     "asr_server",

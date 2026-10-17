@@ -150,15 +150,6 @@ func (o Options) Run(ctx context.Context) (Result, error) {
 	// streaming window, since a segment can end a window late.
 	buffer := audio.NewRollingBuffer(cfg.MaxUtteranceSeconds + cfg.ChunkSeconds)
 
-	engine, err := asr.Start(ctx, engineConfig)
-	if err != nil {
-		return Result{}, err
-	}
-	defer engine.Close()
-	if notify.Ready != nil {
-		notify.Ready(engine.LoadTime())
-	}
-
 	pipeline := &session{
 		options:    o,
 		transcript: asr.NewTranscript(),
@@ -167,7 +158,27 @@ func (o Options) Run(ctx context.Context) (Result, error) {
 		buffer:     buffer,
 		padSamples: int64(cfg.EndpointSilenceMS) * int64(audio.SampleRate) / 2000,
 	}
+	// The repair route is brought up before the streaming model is loaded, not after.
+	// A route that has to load its own model starts doing so in the background, and
+	// it is the first sentence that waits for it - so the ~330ms the streaming load
+	// used to hold it back is time the user spends waiting after they stop talking.
 	pipeline.startRepairWorker(ctx, o, engineConfig)
+
+	engine, err := asr.Start(ctx, engineConfig)
+	if err != nil {
+		// The route may already own a process, so it is released on this path rather
+		// than left for a session that will never run.
+		pipeline.closeRepairs()
+		pipeline.waitForRepairs()
+		if pipeline.stopRoute != nil {
+			pipeline.stopRoute()
+		}
+		return Result{}, err
+	}
+	defer engine.Close()
+	if notify.Ready != nil {
+		notify.Ready(engine.LoadTime())
+	}
 
 	// Recognition events run on their own goroutine so the capture loop is never
 	// blocked by publishing text.

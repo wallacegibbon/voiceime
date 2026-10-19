@@ -140,9 +140,9 @@ func applyService(ctx *Context) (status string, served []string, err error) {
 	if _, lookupErr := exec.LookPath("systemctl"); lookupErr != nil || !fileExists(serverUnitPath()) {
 		return "not installed", nil, nil
 	}
-	scanned, scanErr := models.Cached(ctx.Config)
+	scanned, scanErr := cachedModels(ctx)
 	if scanErr != nil {
-		return "", nil, FailureError("cannot tell what the service would serve: %v", scanErr)
+		return "", nil, scanErr
 	}
 	local, port := false, 0
 	if strings.TrimSpace(ctx.Config.ASRServerURL) != "" {
@@ -154,8 +154,7 @@ func applyService(ctx *Context) (status string, served []string, err error) {
 	}
 	spec, specErr := buildServerSpec(ctx.Config, scanned, port, "", "")
 	if specErr != nil {
-		return "", nil, PreconditionError("voiceime models list --refresh",
-			"cannot serve what the configuration names: %v", specErr)
+		return "", nil, specErr
 	}
 	if restartErr := runCommand("systemctl --user restart " + serverUnitName); restartErr != nil {
 		return "", nil, FailureError("restart %s: %v", serverUnitName, restartErr)

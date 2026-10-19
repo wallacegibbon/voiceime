@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -121,5 +122,53 @@ func TestServerSpecSaysWhenModelsAreUninspected(t *testing.T) {
 	if _, err := buildServerSpec(cfg, nil, 18080, "", ""); err == nil ||
 		!strings.Contains(err.Error(), "install one first") {
 		t.Errorf("error = %v, want the install advice when no file exists", err)
+	}
+}
+
+// The failure names the command that fixes it, and it is not the one that just failed.
+//
+// Measured before this test: `voiceime server run` on a cold cache printed "15 model file(s)
+// have not been inspected yet; run `voiceime models list --refresh`" and, on the next line,
+// `fix: voiceime server install` - the command that had just failed, which would fail the
+// same way. Three call sites each guessed a fix for the spec builder's errors; the builder
+// owns the reason, so it owns the fix now.
+func TestServerRunNamesTheRefreshWhenModelsAreUninspected(t *testing.T) {
+	cacheDir := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cacheDir)
+	configPath, modelsDir := freshConfig(t)
+	if err := os.WriteFile(filepath.Join(modelsDir, "sample.gguf"), []byte("gguf"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runForTest(t, "--config", configPath, "server", "run")
+	if code != ExitPrecondition {
+		t.Fatalf("exit %d, want %d\nstdout: %s\nstderr: %s", code, ExitPrecondition, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "have not been inspected") {
+		t.Fatalf("the failure does not say what is missing:\n%s", stderr)
+	}
+	if !strings.Contains(stderr, "fix: voiceime models list --refresh") {
+		t.Errorf("the fix is not the command that classifies models:\n%s", stderr)
+	}
+	if strings.Contains(stderr, "fix: voiceime server install") {
+		t.Errorf("the fix re-runs the command that failed:\n%s", stderr)
+	}
+	// Nothing was inspected and nothing was written: `server run` reads, and refuses.
+	if _, err := os.Stat(filepath.Join(cacheDir, "voiceime", "model_index.json")); !os.IsNotExist(err) {
+		t.Error("server run wrote the cache")
+	}
+}
+
+// With nothing installed at all, the fix is the install, and it names a package.
+func TestServerRunSaysToInstallWhenNothingIsThere(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	configPath, _ := freshConfig(t)
+
+	code, _, stderr := runForTest(t, "--config", configPath, "server", "run")
+	if code != ExitPrecondition {
+		t.Fatalf("exit %d, want %d\nstderr: %s", code, ExitPrecondition, stderr)
+	}
+	if !strings.Contains(stderr, "fix: voiceime models install ") {
+		t.Errorf("the fix does not name a package to install:\n%s", stderr)
 	}
 }

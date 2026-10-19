@@ -84,13 +84,13 @@ func serverConfigFile() string {
 
 func runServerInstall(ctx *Context, port int, streamFlag, repairFlag string) error {
 	cfg := ctx.Config
-	scanned, err := models.Cached(cfg)
+	scanned, err := cachedModels(ctx)
 	if err != nil {
-		return FailureError("%v", err)
+		return err
 	}
 	spec, err := buildServerSpec(cfg, scanned, port, streamFlag, repairFlag)
 	if err != nil {
-		return PreconditionError("voiceime models list --refresh", "%v", err)
+		return err
 	}
 	binary, err := cfg.FindServerBinary()
 	if err != nil {
@@ -257,12 +257,16 @@ func buildServerSpec(cfg *config.Config, scanned []models.Model, port int, strea
 	case streamPath == "" && repairPath == "":
 		// "Install one first" is wrong when the models are there and nobody has looked at
 		// them yet: nothing can be picked because nothing is classified, and the fix is the
-		// refresh, not an install.
+		// refresh, not an install. The fix belongs here rather than at the call site: three
+		// call sites each guessed one, and `server run` guessed `voiceime server install`,
+		// which re-runs the command that had just failed.
 		if pending := models.Uninspected(scanned); len(pending) > 0 {
-			return server.Spec{}, fmt.Errorf("%d model file(s) have not been inspected yet; run `voiceime models list --refresh`",
-				len(pending))
+			return server.Spec{}, PreconditionError("voiceime models list --refresh",
+				"%d model file(s) have not been inspected yet", len(pending))
 		}
-		return server.Spec{}, fmt.Errorf("no model to serve: install one first")
+		recommendation := models.RecommendedPackages()[0]
+		return server.Spec{}, PreconditionError("voiceime models install "+recommendation.ID,
+			"no model to serve: install one first   # %s", recommendation.Reason)
 	case streamPath == "":
 		// Nothing that can stream is installed, but a repair checkpoint is named: serve it
 		// for both roles rather than refusing to start.
@@ -330,13 +334,13 @@ WantedBy=default.target
 // serve it - there is no generated file that can disagree with the configuration.
 func runServerForeground(ctx *Context, port int, streamFlag, repairFlag string) error {
 	cfg := ctx.Config
-	scanned, err := models.Cached(cfg)
+	scanned, err := cachedModels(ctx)
 	if err != nil {
-		return FailureError("%v", err)
+		return err
 	}
 	spec, err := buildServerSpec(cfg, scanned, port, streamFlag, repairFlag)
 	if err != nil {
-		return PreconditionError("voiceime server install", "%v", err)
+		return err
 	}
 	path := serverConfigFile()
 	if err := server.WriteConfig(spec, path); err != nil {
@@ -512,16 +516,28 @@ func modelFamily(scanned []models.Model, path string) (string, error) {
 	found := models.Lookup(scanned, path)
 	switch {
 	case found == nil:
-		return "", fmt.Errorf("%s is not a model voiceime can see; check models_dir", path)
+		return "", PreconditionError("voiceime models list",
+			"%s is not a model voiceime can see; check models_dir", path)
 	case !found.Inspected:
 		// The cache has no answer and nothing but `models list --refresh` may ask: this is
 		// a service that will not start, so the message has to carry the one command that
 		// fixes it rather than spending six seconds here and hiding the missing step.
-		return "", fmt.Errorf("%s has not been inspected yet; run `voiceime models list --refresh`", path)
+		return "", PreconditionError("voiceime models list --refresh",
+			"%s has not been inspected yet", path)
 	case found.Error != "":
-		return "", fmt.Errorf("%s: %s", path, found.Error)
+		return "", PreconditionError("voiceime models list", "%s: %s", path, found.Error)
 	case found.Family == "":
-		return "", fmt.Errorf("%s: audio.cpp did not report a family", path)
+		return "", FailureError("%s: audio.cpp did not report a family", path)
 	}
 	return found.Family, nil
+}
+
+// cachedModels reads the inspection cache, turning a missing models directory into the
+// command that creates it. The failure is the same at every call site, and so is the fix.
+func cachedModels(ctx *Context) ([]models.Model, error) {
+	cached, err := models.Cached(ctx.Config)
+	if err != nil {
+		return nil, PreconditionError("voiceime models install "+models.RecommendedPackages()[0].ID, "%v", err)
+	}
+	return cached, nil
 }

@@ -1248,3 +1248,11 @@ edit, and this is a setting like any other.
 Pinned by `TestWithConfiguredEngineAppliesOnlyWhatTheConfigOwns`,
 `TestComponentRoundTripsThroughTheInstalledFile` and
 `TestReadComponentRejectsAFileWithoutAnEngine`.
+
+**Addendum (the installed files already in the wild).** The symbol repair only helps a
+file that `config apply` is willing to rewrite, and a file written by the buggy writer is
+*stable* under a naive round trip: it carries the literal text `&#x1F3A4;`, which parses to
+that text, which escapes back to the same bytes. So `ReadComponent` decodes a numeric
+character reference on the way in (`decodeCharacterReference`), which makes the re-render
+differ, which is what lets apply heal an installation that already has the wrong symbol
+instead of reporting it as unchanged.

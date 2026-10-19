@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/wallacegibbon/voiceime/internal/config"
@@ -179,11 +180,41 @@ func ReadComponent(path string) (Component, error) {
 		Language:    engine.Language,
 		LongName:    engine.LongName,
 		EngineDesc:  engine.Description,
-		Symbol:      engine.Symbol,
-		Icon:        engine.Icon,
-		Rank:        engine.Rank,
+		// Older versions stored the symbol as an XML entity and then escaped it, so an
+		// installed file carries the literal text "&#x1F3A4;" and IBus has been showing
+		// that in the panel instead of a microphone. Decoding it here is what lets
+		// `config apply` repair such a file rather than reporting it as unchanged.
+		Symbol: decodeCharacterReference(engine.Symbol),
+		Icon:   engine.Icon,
+		Rank:   engine.Rank,
 	}
 	return component, nil
+}
+
+// decodeCharacterReference turns a numeric character reference that was written escaped
+// back into the character it names ("&#x1F3A4;" -> the microphone). Anything that is not
+// one is returned unchanged.
+func decodeCharacterReference(value string) string {
+	digits, found := strings.CutPrefix(value, "&#")
+	if !found {
+		return value
+	}
+	digits, found = strings.CutSuffix(digits, ";")
+	if !found {
+		return value
+	}
+	base := 10
+	if trimmed, hex := strings.CutPrefix(digits, "x"); hex {
+		base, digits = 16, trimmed
+	}
+	if digits == "" {
+		return value
+	}
+	codepoint, err := strconv.ParseUint(digits, base, 32)
+	if err != nil {
+		return value
+	}
+	return string(rune(codepoint))
 }
 
 // ComponentExec reads an installed component file and returns the executable its

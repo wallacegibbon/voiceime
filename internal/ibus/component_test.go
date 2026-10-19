@@ -3,6 +3,7 @@ package ibus
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/wallacegibbon/voiceime/internal/config"
@@ -55,5 +56,71 @@ func TestReadComponentRejectsAFileWithoutAnEngine(t *testing.T) {
 	}
 	if _, err := ReadComponent(path); err == nil {
 		t.Fatal("ReadComponent accepted a component with no engine")
+	}
+}
+
+// A component written by an older version is healed on the way through.
+//
+// <symbol> was stored as the entity and escaped, so the installed file carries the
+// literal text "&#x1F3A4;" and IBus has been drawing that instead of a microphone. Read
+// decodes it, which makes the re-render differ and is what lets `config apply` repair the
+// file rather than calling it unchanged.
+func TestReadComponentHealsAnEscapedSymbol(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "voiceime.xml")
+	body := `<?xml version="1.0" encoding="utf-8"?>
+<component>
+	<name>org.freedesktop.IBus.Voiceime</name>
+	<description>Voiceime speech input method</description>
+	<exec>/home/u/.local/bin/voiceime ibus-engine --ibus</exec>
+	<version>0.1.0</version>
+	<author>voiceime</author>
+	<license>GPL</license>
+	<homepage>https://github.com/wallacegibbon/voiceime</homepage>
+	<textdomain>voiceime</textdomain>
+	<engines>
+		<engine>
+			<name>voiceime</name>
+			<language>zh</language>
+			<license>GPL</license>
+			<author>voiceime</author>
+			<layout>default</layout>
+			<longname>Voiceime (speech)</longname>
+			<description>Dictate into any application</description>
+			<rank>1</rank>
+			<symbol>&amp;#x1F3A4;</symbol>
+		</engine>
+	</engines>
+</component>
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	component, err := ReadComponent(path)
+	if err != nil {
+		t.Fatalf("ReadComponent: %v", err)
+	}
+	if component.Symbol != "🎤" {
+		t.Fatalf("symbol = %q, want the decoded character", component.Symbol)
+	}
+	if !strings.Contains(component.XML(), "<symbol>🎤</symbol>") {
+		t.Errorf("re-rendered symbol is not the character:\n%s", component.XML())
+	}
+}
+
+// Anything that is not a character reference is left exactly as it was: a symbol may be a
+// name or a plain character, and rewriting those would be a change nobody asked for.
+func TestDecodeCharacterReferenceLeavesOtherSymbolsAlone(t *testing.T) {
+	for _, value := range []string{"🎤", "microphone", "&#xZZ;", "&#;", "&amp;", ""} {
+		if got := decodeCharacterReference(value); got != value {
+			t.Errorf("decodeCharacterReference(%q) = %q, want it unchanged", value, got)
+		}
+	}
+	for value, want := range map[string]string{
+		"&#x1F3A4;": "🎤",
+		"&#127908;": "🎤",
+	} {
+		if got := decodeCharacterReference(value); got != want {
+			t.Errorf("decodeCharacterReference(%q) = %q, want %q", value, got, want)
+		}
 	}
 }

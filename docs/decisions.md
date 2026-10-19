@@ -1132,3 +1132,47 @@ application showed, and the file is 0600 in their own cache directory.
 Pinned by `TestEngineLogPathIsInTheCacheDir`, `TestAppendLogLineTimestampsAndRestricts`,
 `TestRotateLogOnlyDropsWhatIsTooBig`, `TestEngineLogsWhatItCommits` and
 `TestFirstRunesShortensWithoutSplittingCharacters`.
+
+## D31 — Stop what you own, and never guess a keyboard.
+
+**Decision.** `config apply` stops engine processes by pid, chosen by executable, and asks
+them to exit with SIGTERM before insisting. The one-shot `hotkey toggle` refuses to switch
+when it does not know the engine to go back to, instead of falling back to a layout.
+`stream --seconds` applies to `--file` as well.
+
+**Why the pid.** The stop was `pkill -f "voiceime ibus-engine"`, which matches any process
+whose *command line* contains that string. Measured while deploying this work: it killed
+the shell that ran it, twice, because the shell's own command line contained the pattern -
+and it would as easily kill an editor with these docs open. The pattern also made the
+command miss its real target when the binary lived somewhere else. `processesRunning`
+already answered this question correctly for `doctor` (it matches the executable, which
+only this binary can be), so the stop now uses it: SIGTERM, wait up to the drain budget,
+then SIGKILL. SIGTERM first because the engine's shutdown path is what commits the
+sentence in progress (D25); SIGKILL as the fallback because a process that will not exit
+keeps running the old binary, which is the thing `apply` exists to prevent.
+
+**Why no layout guess.** The X11 toggle path remembers the engine it switched away from in
+a file, and when that file was missing it fell back to `xkb:us::eng`. On any machine whose
+layout is not US English, "stop dictating" silently changed the user's keyboard - and the
+only trace was a line saying "back to xkb:us::eng". The listener path already refuses this
+case ("the previous engine is not known; not switching"); the toggle now refuses the same
+way, with the reason and a fix a person can act on. A missing state file is a normal state
+(the first toggle after a reboot), not an invitation to choose for the user.
+
+**Why `--seconds` with `--file`.** The timer was armed only for the microphone, so
+`stream --file x --seconds 5` replayed the whole file and said nothing about the flag. That
+is the failure D23 names - a flag that silently does nothing - and the fix is the condition
+it should always have had.
+
+**Rejected.** `pkill -x voiceime` - it still matches by name, kills any voiceime process
+including the listener and the server, and misses a binary that was renamed. Matching on
+`/proc/<pid>/exe` and killing only pids whose command line also contains `ibus-engine` -
+that is what `processesRunning` does. Remembering the previous engine in the toggle by
+asking IBus - the only call that answers "what was selected before" is the one that now
+returns `voiceime`, so there is nothing to ask; the listener's in-memory copy is the only
+honest record, which is why the failure is reported rather than papered over.
+
+Pinned by `TestProcessesRunningIgnoresProcessesThatMerelyMentionThePattern`. The other two
+are conditions in code paths that need a live IBus daemon and a running server; both were
+verified by hand on this machine (the shell that ran `config apply` survived, and a 1.6s
+replay stopped at 1.0s with `--seconds 1`).

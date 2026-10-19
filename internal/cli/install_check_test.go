@@ -2,6 +2,7 @@ package cli
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -123,5 +124,29 @@ func TestCommandLineNormalizesNulSeparatedArguments(t *testing.T) {
 	}
 	if strings.Contains(got, "\\x00") {
 		t.Errorf("commandLine = %q, want the NUL separators replaced", got)
+	}
+}
+
+// A process that merely mentions the pattern is not an engine.
+//
+// `config apply` used to stop the engine with `pkill -f "voiceime ibus-engine"`, which
+// matches any process whose *command line* contains that string - measured: it killed
+// the shell that ran the command, twice, and would as easily kill an editor with the docs
+// open. Matching is on the executable now, which only this binary can be.
+func TestProcessesRunningIgnoresProcessesThatMerelyMentionThePattern(t *testing.T) {
+	// A shell whose command line contains the pattern: exactly what pkill -f matched.
+	command := exec.Command("/bin/sh", "-c", "sleep 5 # voiceime ibus-engine")
+	if err := command.Start(); err != nil {
+		t.Fatalf("start the decoy: %v", err)
+	}
+	defer func() {
+		_ = command.Process.Kill()
+		_, _ = command.Process.Wait()
+	}()
+
+	for _, found := range processesRunning("ibus-engine") {
+		if found.PID == command.Process.Pid {
+			t.Fatalf("pid %d mentions the pattern but was taken for an engine (exe %s)", found.PID, found.Binary)
+		}
 	}
 }

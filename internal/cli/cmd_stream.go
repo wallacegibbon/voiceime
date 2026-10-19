@@ -161,7 +161,10 @@ func runStream(ctx *Context, options streamOptions) error {
 	runCtx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	if options.seconds > 0 && options.filePath == "" {
+	if options.seconds > 0 {
+		// Also for a file: --seconds used to arm this only for the microphone, so
+		// `stream --file x --seconds 5` silently replayed the whole file - a flag that
+		// does nothing is worse than a missing one (D23).
 		go func() {
 			time.Sleep(time.Duration(options.seconds * float64(time.Second)))
 			cancel()

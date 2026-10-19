@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/wallacegibbon/voiceime/internal/config"
@@ -139,13 +140,20 @@ func applyConfig(ctx *Context) error {
 
 	// 3. The engine: it is spawned by ibus-daemon and stays, holding the configuration it
 	// started with. Ending it is enough - IBus starts a fresh one on the next activation.
-	result["engine"] = "was not running"
-	if out, err := exec.Command("pgrep", "-f", "voiceime ibus-engine").Output(); err == nil && len(out) > 0 {
-		if err := exec.Command("pkill", "-f", "voiceime ibus-engine").Run(); err == nil {
-			result["engine"] = "dropped; it restarts on the next activation"
-		} else {
-			result["engine"] = "could not be stopped"
-		}
+	//
+	// By pid, never by a pkill pattern: `pkill -f "voiceime ibus-engine"` matches any
+	// process whose command line merely mentions that string - a shell running a command
+	// that contains it, an editor with the docs open - and measured here, it killed the
+	// shell that ran this command twice. SIGTERM first, because the engine's shutdown
+	// path commits the sentence in progress (D25).
+	stopped, forced := stopEngines()
+	switch {
+	case stopped == 0:
+		result["engine"] = "was not running"
+	case forced:
+		result["engine"] = fmt.Sprintf("%d dropped (one had to be killed); they restart on the next activation", stopped)
+	default:
+		result["engine"] = fmt.Sprintf("%d dropped; they restart on the next activation", stopped)
 	}
 
 	if !ctx.JSON {
@@ -157,6 +165,36 @@ func applyConfig(ctx *Context) error {
 		ctx.Print("engine:   %v", result["engine"])
 	}
 	return ctx.Emit("config apply", result)
+}
+
+// stopEngines asks every running engine process to exit, and reports how many there were
+// and whether any had to be killed.
+//
+// A process matches on its executable, not on a substring of its command line: only a
+// process started from this binary can be an engine (see processesRunning).
+func stopEngines() (stopped int, forced bool) {
+	engines := processesRunning("ibus-engine")
+	for _, engine := range engines {
+		if process, err := os.FindProcess(engine.PID); err == nil {
+			_ = process.Signal(syscall.SIGTERM)
+		}
+	}
+	// Give the engine the time its shutdown path needs to commit the sentence in
+	// progress; the drain budget is 5s (D25), so six is enough.
+	deadline := time.Now().Add(6 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(processesRunning("ibus-engine")) == 0 {
+			return len(engines), false
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	for _, engine := range processesRunning("ibus-engine") {
+		if process, err := os.FindProcess(engine.PID); err == nil {
+			_ = process.Kill()
+			forced = true
+		}
+	}
+	return len(engines), forced
 }
 
 func runConfig(ctx *Context, args []string, force bool) error {

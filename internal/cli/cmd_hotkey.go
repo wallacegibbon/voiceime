@@ -486,7 +486,22 @@ func toggleHotkey(ctx *Context) error {
 	if current == target {
 		previous := firstLineOfFile(statePath)
 		if previous == "" {
-			previous = "xkb:us::eng"
+			// Nothing recorded to go back to. Guessing is worse than saying so: the old
+			// fallback was "xkb:us::eng", which moved a user on any other layout to a US
+			// keyboard without a word. The listener path knows the previous engine in
+			// memory and refuses the same way (D13's "not switching" case).
+			if !ctx.JSON {
+				ctx.Print("dictation off: the engine to return to is not recorded")
+			}
+			if err := ctx.Emit("hotkey toggle", map[string]any{
+				"dictation": true,
+				"engine":    target,
+				"switched":  false,
+				"reason":    "previous engine unknown",
+			}); err != nil {
+				return err
+			}
+			return FailureError("the engine to return to is not recorded, so the input method was left on %s: switch it manually (the shortcut listener remembers it; the one-shot toggle does not across a reboot)", target)
 		}
 		if err := ibus.SetEngine(address, previous); err != nil {
 			return FailureError("%v", err)

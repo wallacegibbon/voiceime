@@ -132,7 +132,10 @@ func runningBinaryChecks(ctx *Context, report func(Check)) {
 		pattern string
 		fix     string
 	}{
-		{"engine_process", "ibus-engine", "ibus engine xkb:us::eng && pkill -f 'voiceime ibus-engine' && ibus engine voiceime"},
+		// `config apply` stops the engine by pid (its SIGTERM path commits the sentence in
+		// progress) and restarts the listener; a pkill pattern here would also match the
+		// shell of anyone who pasted the suggestion.
+		{"engine_process", "ibus-engine", "voiceime config apply"},
 		{"hotkey_process", "hotkey run", "systemctl --user restart voiceime-hotkey"},
 	} {
 		processes := processesRunning(kind.pattern)

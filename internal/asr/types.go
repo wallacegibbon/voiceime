@@ -55,6 +55,8 @@ type Result struct {
 	TotalTime time.Duration     `json:"-"`
 	AudioFed  time.Duration     `json:"-"`
 	// ProcessErr is what ended the session badly, if anything did: the server
-	// refused it, died during it, or answered with an error event.
+	// answered with an error event, or the connection ended without the
+	// terminating chunk. Close returns the same value, so a caller that checks
+	// only one of the two cannot lose the failure.
 	ProcessErr error `json:"-"`
 }

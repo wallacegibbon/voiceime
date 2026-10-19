@@ -33,6 +33,10 @@ type fakeASRServer struct {
 	deltaEvery time.Duration
 	// partial is the text each delta carries.
 	partial string
+	// liveFail, when set, ends the live session with an SSE error event carrying
+	// this message once the first partial has been sent - a model that dies
+	// mid-dictation.
+	liveFail string
 
 	mu           sync.Mutex
 	repairs      int
@@ -171,6 +175,14 @@ func (f *fakeASRServer) handleLive(conn net.Conn, reader *bufio.Reader) {
 		for received/perDelta > len(partials) {
 			partials = append(partials, f.partial)
 			sendSSE(conn, fmt.Sprintf(`{"type":"transcript.text.delta","delta":%q}`, f.partial))
+		}
+		if f.liveFail != "" && len(partials) >= 1 {
+			// The server's failure shape: a nested reason, then the terminating
+			// chunk instead of a done event, so nothing can mistake this for a
+			// finished transcript.
+			sendSSE(conn, fmt.Sprintf(`{"type":"error","error":{"message":%q}}`, f.liveFail))
+			io.WriteString(conn, "0\r\n\r\n")
+			return
 		}
 	}
 	sendSSE(conn, fmt.Sprintf(`{"type":"transcript.text.done","text":%q}`, strings.Join(partials, "")))

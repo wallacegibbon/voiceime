@@ -225,6 +225,11 @@ func (s *Stream) LoadTime() time.Duration { return s.ready }
 // terminating chunk is the end-of-audio signal: the server flushes the model and
 // answers done, which is what makes a push-to-talk stop work without a special
 // command.
+//
+// The error it returns is how the session ended, and a session that ended badly is a
+// failure rather than a short transcript: an error event, a stall past the server's
+// idle timeout and a connection that closed without the terminating chunk all come
+// back as an error carrying the server's reason.
 func (s *Stream) Close() (Result, error) {
 	s.closeOne.Do(func() {
 		s.writeMu.Lock()
@@ -243,6 +248,15 @@ func (s *Stream) Close() (Result, error) {
 		}
 		s.cancel()
 		_ = s.conn.Close()
+		// A failed session has to be a failed call, not a Result field nobody reads.
+		// The server refuses to answer "done" for a body that was truncated, an error
+		// event, or a stall - precisely so that those cannot be mistaken for the
+		// speaker stopping - and this is the half that makes that true for a caller.
+		if s.closeErr == nil {
+			if result := s.Result(); result.ProcessErr != nil {
+				s.closeErr = result.ProcessErr
+			}
+		}
 	})
 	return s.Result(), s.closeErr
 }
@@ -281,12 +295,20 @@ func (s *Stream) readEvents() {
 		if payload == "" || payload == "[DONE]" {
 			continue
 		}
+		// The error event nests its reason: the server answers
+		// {"type":"error","error":{"message":...}} (app/server/http.cpp), so a
+		// reader that only looks at the top level gets a failure with no cause.
+		// The top-level field is kept because it costs nothing and a different
+		// server may use it.
 		var event struct {
-			Type    string          `json:"type"`
-			Delta   string          `json:"delta"`
-			Text    string          `json:"text"`
-			Message string          `json:"message"`
-			Timing  json.RawMessage `json:"timing"`
+			Type    string `json:"type"`
+			Delta   string `json:"delta"`
+			Text    string `json:"text"`
+			Message string `json:"message"`
+			Error   *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+			Timing json.RawMessage `json:"timing"`
 		}
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
 			continue
@@ -311,12 +333,18 @@ func (s *Stream) readEvents() {
 			s.resultMu.Unlock()
 		case "error":
 			message := event.Message
+			if message == "" && event.Error != nil {
+				message = event.Error.Message
+			}
 			if message == "" {
-				message = "the streaming server reported an error"
+				// Nothing to quote. The payload is then the only evidence left,
+				// and replacing it with "something went wrong" is how a failure
+				// becomes unreportable.
+				message = "the streaming server reported an error: " + firstLine(payload)
 			}
 			s.resultMu.Lock()
 			if s.result.ProcessErr == nil {
-				s.result.ProcessErr = fmt.Errorf("%s", message)
+				s.result.ProcessErr = fmt.Errorf("streaming server: %s", message)
 			}
 			s.resultMu.Unlock()
 		}

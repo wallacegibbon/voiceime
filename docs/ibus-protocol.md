@@ -260,5 +260,24 @@ be that engine.
 
 Not yet verified: text visibly landing in an application's field. The GTK entry
 probe used for it never received window focus (its `notify::is-active` stayed
-false), so there was no focused input context to commit into. The remaining doubt
-is therefore about the probe, not the protocol.
+false), so there was no focused input context to commit into - the same thing was
+measured again on a Wayland session: a GTK4 window created from a shell is mapped but
+never activated, and Wayland gives no way to focus it from there.
+
+What *is* measured is the signal path up to that boundary, with `dbus-monitor` on the
+daemon's own bus while an engine dictated from a WAV file:
+
+```
+:1.145  path=/org/freedesktop/IBus/Engine/1  member=UpdatePreeditText   "嗯。"
+:1.145  path=/org/freedesktop/IBus/Engine/1  member=CommitText
+   ↓ the daemon forwards, to the input context it has focused
+org.freedesktop.IBus  path=/org/freedesktop/IBus/InputContext_3
+   member=UpdatePreeditTextWithMode  "嗯。"
+org.freedesktop.IBus  path=/org/freedesktop/IBus/InputContext_3
+   member=CommitText
+```
+
+So the engine emits, the daemon routes, and a focused input context receives - the same
+signals a working engine (pinyin) produces on the same machine. What has not been
+observed is a *window* consuming them, which is IBus's client library and the
+application's business rather than this protocol's.

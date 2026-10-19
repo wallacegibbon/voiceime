@@ -94,8 +94,8 @@ models' bundled Silero VAD rejects anything else and aborts (measurement 1), so
 the conversion has to happen before a model sees the audio, and the earliest
 correct place is the capture client.
 
-**Consequence.** `capture_rate` other than 16000 is a validation error rather than
-a slow path. Dropped chunks are counted and reported, because the alternative
+**Consequence.** `capture_rate` other than 16000 was a validation error rather than a slow
+path, until the setting itself was deleted (D23) and the rate became a constant. Dropped chunks are counted and reported, because the alternative
 (unbounded buffering) would grow with session length; when a chunk is dropped the
 rolling buffer restarts rather than splicing unrelated audio.
 

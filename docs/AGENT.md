@@ -59,6 +59,12 @@ systemd does for you, is
   precondition failures carry one.
 * **Nothing is destructive without a flag.** `models install` writes into the
   models directory; `config init` refuses to overwrite without `--force`.
+* **Writing is not applying.** `config set` writes the file and names `voiceime config
+  apply` as the next step; a value that leaves the file unusable is still written - staging a
+  model path before the download finishes is how a deployment is scripted - but the command
+  exits `3` and carries the fix. `models list --refresh` is the only command that writes the
+  model cache; every other command reads it and refuses with that command as its fix when the
+  cache has no answer.
 
 ## Configure
 
@@ -84,7 +90,7 @@ review language               zh  (the reference user's language; ...)
 ...
 ```
 
-The same list is in `--json` under `data.review`, with a `fix` for the entries that
+The same list is in `config init --json` under `data.review`, with a `fix` for the entries that
 have one. Nothing is changed silently: a value is only written when the file did
 not exist or `--force` was given.
 
@@ -110,7 +116,7 @@ Settings that matter, and the reasoning a caller needs to pick values:
 | `threads` | `4` | Worker threads for both the streaming engine and repairs. The default is the reference machine's 8-core setting; `doctor` warns when it exceeds this machine's physical cores, because the two passes compete for the same ones. |
 | `streaming_model` | `""` | Which checkpoint drafts while the user speaks. Empty means "pick the best installed streaming model", which is what `voiceime server install` does once and then **writes here** - so after deployment this setting names the file that runs. Clear it and re-run install to pick again. |
 | `refine_model` | `""` | Which checkpoint decides the final text. Empty means reuse the streaming model, and install records that too. A machine with one model ends up with both settings naming the same file - two entries, because the server holds a model per request, so two resident copies. |
-| `asr_server_url` | `""` | Where the resident recognition server listens. `voiceime server install` sets it; empty means dictation cannot run, and `doctor` says so. Both passes go through this one service, which serves two entries - `stream` (partials) and `refine` (repair) - whose ids are fixed by what `server run` writes. |
+| `asr_server_url` | `""` | Where the resident recognition server listens. `voiceime server install` sets it; empty means dictation cannot run, and `doctor` says so. It must be `http://`: the live stream is spoken over a raw socket and cannot do TLS, so `config validate` rejects `https://` rather than letting the repair path work while dictation fails. Both passes go through this one service, which serves two entries - `stream` (partials) and `refine` (repair) - whose ids are fixed by what `server run` writes. |
 | `language` | `zh` | Passed to the model; empty asks it to auto-detect. |
 | `chunk_seconds` | `3` | The streaming window: how much audio a draft is decoded from. Below 1.5 measurably corrupts CJK output; validate warns. It does not gate when text is committed - a finished utterance is decoded offline and delivered when it closes - so it can be raised for accuracy without making delivery wait. |
 | `refine_on_segment_end` | `true` | The pass that repairs window-boundary damage. |
@@ -156,7 +162,12 @@ seconds per file, so the answer is cached against the file's size and mtime. **O
 `server install`, `server run` - reads it and, when a file has no answer yet, says so and
 names this command rather than spending the six seconds itself. That is why `models install`
 does not register what it downloaded: it tells you to run `models list --refresh`, and
-`server install` refuses to start a service on a model it cannot identify until you do.```
+`server install` refuses to start a service on a model it cannot identify until you do.
+
+`models list --json` says which of the two situations a file is in: each model carries
+`inspected` (false when the cache has no answer for it) and the report carries `uninspected`
+(how many such files there are). Without that distinction an agent cannot tell "this is not
+a speech model" from "nobody has looked at this yet", and those have different fixes.
 
 Downloads go through the single endpoint in `download_mirror`, which must be an
 absolute `http(s)` URL; `config validate` rejects anything else, and the value is
@@ -281,7 +292,8 @@ to stop), or run the shortcut listener so one key does it:
 voiceime config set hotkey "<F9>"     # a tap toggles dictation
 voiceime hotkey install               # systemd --user unit, starts at login;
                                       # on X11 also a GNOME keybinding (see below)
-voiceime hotkey status --json         # data.session, data.mechanisms, data.gnome_binding
+voiceime hotkey status --json         # data.session, data.mechanisms; data.gnome_binding
+                                      # only when a GNOME keybinding exists (X11)
 voiceime hotkey toggle                # the one-shot toggle the keybinding runs
 voiceime server install               # the resident recognition server (required for dictation)
 voiceime config apply                 # apply a changed setting or a hand-edited file
@@ -299,8 +311,8 @@ there. It reads the session from `XDG_SESSION_TYPE`, then `WAYLAND_DISPLAY`/`DIS
 when neither names a display server (a bare ssh or console shell) it installs only the
 unit and returns a `warning` - re-run it from a terminal inside the session, or the
 key will do nothing on X11. `hotkey status` reports which mechanism is live
-(`data.session`, `data.mechanisms`, `data.gnome_binding`), and `hotkey uninstall`
-removes both.
+(`data.session`, `data.mechanisms`, and `data.gnome_binding` only when a GNOME keybinding
+exists, which is the X11 case), and `hotkey uninstall` removes both.
 
 On X11 the key is run by `gsd-media-keys` as a command - once per key event,
 auto-repeat included - so `hotkey toggle` ignores a second invocation within 700 ms.
@@ -351,8 +363,10 @@ tail -f ~/.cache/voiceime/engine.log
 | Text is corrupted and windows are short | `chunk_seconds` below 1.5 | `voiceime config set chunk_seconds 3` |
 | Model aborts with `only supports sample_rate=16000` | capture is not producing 16 kHz | `voiceime doctor`; capture is fixed at 16 kHz, so this means the PipeWire source is resampling badly |
 | `models list` shows unrelated files | the models directory is shared | expected; discovery filters to ASR models and reports the count it ignored |
-| Text stays underlined and never commits | the detector has not closed an utterance, so it is still preedit; Escape discards preedit | measure the room and set `silence_rms_threshold` / `endpoint_min_speech_ms` (see [measurements.md](measurements.md#endpointing-in-a-real-room)); `stream --events` shows whether a `segment` event happens |
+| Text stays underlined and never commits | the detector has not closed an utterance, so it is still preedit (text decoded from a pause is dropped now, so what remains is a sentence the detector never closed); Escape discards preedit | measure the room and set `silence_rms_threshold` / `endpoint_min_speech_ms` (see [measurements.md](measurements.md#endpointing-in-a-real-room)); `stream --events` shows whether a `segment` event happens |
 | Dictation produces nothing, and `stream --events` reports `no speech detected` | the threshold is above the speaker's voice | lower `silence_rms_threshold` and retry |
 | Dictation produces nothing, and the session reports `withheld N characters` | the recogniser heard something but the endpointer never called it speech, so committing it would type the recogniser's guess | measure the room; lower `silence_rms_threshold` (a quiet speaker) or `endpoint_min_speech_ms` (short utterances). `N` is the size of what the room measurement got wrong |
 | The service restarts forever with `status=203/EXEC` | the unit's `ExecStart` names a binary that no longer exists (the checkout was moved or renamed) | `voiceime hotkey install` then `voiceime doctor`; see [DEPLOY.md § Recovery](DEPLOY.md#recovery) |
-| `ibus list-engine` lists `voiceime` but dictation does nothing | the running engine process was started from an older binary, or the component file names a path that no longer exists | `ibus engine xkb:us::eng && pkill -f "voiceime ibus-engine" && ibus engine voiceime` |
+| `ibus list-engine` lists `voiceime` but dictation does nothing | the running engine process was started from an older binary, or the component file names a path that no longer exists | `voiceime config apply` (stops the engine by pid and restarts the listener) |
+| `N model file(s) have not been inspected yet` from `models list`, `server install`, `server run` or `server restart` | the cache has no answer for those files: only `models list --refresh` may ask audio.cpp | `voiceime models list --refresh` |
+| `doctor` fails `models` with `have not been inspected yet` | same, and `doctor` reads the cache rather than writing it | `voiceime models list --refresh` |

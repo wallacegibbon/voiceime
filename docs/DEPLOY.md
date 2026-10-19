@@ -208,21 +208,24 @@ Why the roles are split that way:
   microseconds. The price is memory: both entries stay resident (1403 MB at startup,
   1907 MB once both have run).
 
-CPU with the resident repair server:
+CPU with the more accurate repair (Qwen3) read by the resident service:
 
 ```sh
 "$BIN" config set refine_model ~/models/Qwen3-ASR-0.6B-GGUF/qwen3-asr-0.6b-q8_0.gguf
-"$BIN" config set asr_server_url http://127.0.0.1:18080
 ```
 
-voiceime writes the server's config and starts it for the session, so nothing has to
-be run by hand: it is spawned as dictation begins and stopped when the session ends,
-and a server already listening on that address is used and left alone. The session
-log, or `stream --events` (`repair_route`), names the route in use.
+`server install`, below, records that setting, `streaming_model` and `asr_server_url` as it
+finds them, so nothing else has to be pointed at the service by hand.
+
+`models list --refresh` is not optional bookkeeping: it is the only command that identifies a
+checkpoint, and `server install` refuses to serve a model the cache has no answer for - exit
+3, with `voiceime models list --refresh` as the fix it prints. Skipping it cannot leave a
+half-working install; it leaves the command that needs it refusing, with the step named.
 
 **The server is a deployment step of its own**, because dictation cannot work without
-it: there is no process to fall back to. It is installed the same way the shortcut
-listener is, and it loads both models at startup so a session only opens a connection:
+it: there is no process to fall back to, and no on-demand start. It is installed the same
+way the shortcut listener is, and it loads both models at startup so a session only opens a
+connection:
 
 ```sh
 "$BIN" server install            # picks the models, records them, writes the unit, starts it
@@ -515,9 +518,11 @@ block echoed `ok` for each whatever the command returned, so it could not fail.
 on the first activation, so it reads `1` on a fresh machine until you tap the key
 once (`ibus engine voiceime` does it too). Once dictation has been activated, `0`
 there is the end-to-end proof that the engine, capture and the recogniser all came
-up. `doctor`'s `asr_server` line is part of `doctor=0`: it fails only when the route
-is configured and cannot work, which is the one failure dictation itself hides -
-repairs keep running as a process per utterance, so nothing looks broken. The one thing no command can assert is a human seeing text appear in a focused
+up. `doctor`'s `asr_server` line is part of `doctor=0`: it fails when no server is configured
+or nothing answers at the address, and there is no per-utterance fallback for that to hide
+behind - a missing service is a dictation that refuses to start. `doctor` also carries the
+model check, so a file nobody has run `models list --refresh` for is reported there with
+that command as its fix. The one thing no command can assert is a human seeing text appear in a focused
 window; if that is the goal, dictate one sentence into a text editor and watch for
 it.
 
@@ -576,15 +581,18 @@ is *active* and what was asked for, but not what the daemon actually holds; whet
 the compositor grabs the key is a property of the session and is settled by
 pressing it.
 
-To restart just the two processes instead of the daemon - which is what `doctor`
-offers as the fix when the stale-process *warning* is what you noticed:
+To restart the engine and the listener without touching the daemon - which is what
+`doctor` offers as the fix when the stale-process *warning* is what you noticed:
 
 ```sh
-ibus engine xkb:us::eng
-pkill -f "voiceime ibus-engine"
-systemctl --user restart voiceime-hotkey
+"$BIN" config apply                        # engine by pid, then the listener
 ibus engine voiceime                       # only if it was dictating
 ```
+
+`config apply` sends SIGTERM and waits for the engine to commit the sentence in progress
+(D25), then restarts the listener; the engine comes back on the next activation. It replaced
+`pkill -f "voiceime ibus-engine"` here, which matches any process whose command line merely
+mentions that string - a shell running a command that contains it, for one (D31).
 
 ---
 
@@ -630,8 +638,7 @@ A running engine keeps running the binary it was started from, so a rebuild does
 not take effect until it is restarted. `voiceime doctor` reports it as a `warn` on
 `engine_process` and `hotkey_process` ("still running the previous build"). The
 procedure is [Updating an installed copy](#updating-an-installed-copy); the short
-version is `ibus engine xkb:us::eng && pkill -f "voiceime ibus-engine" &&
-systemctl --user restart voiceime-hotkey && ibus engine voiceime`.
+version is `voiceime config apply`, then `ibus engine voiceime` if it was dictating.
 
 ### The key is swallowed but nothing happens
 

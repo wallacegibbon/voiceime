@@ -142,7 +142,16 @@ func (o Options) Run(ctx context.Context) (Result, error) {
 	// A route that has to load its own model starts doing so in the background, and
 	// it is the first sentence that waits for it - so the ~330ms the streaming load
 	// used to hold it back is time the user spends waiting after they stop talking.
-	pipeline.startRepairWorker(ctx, o)
+	//
+	// Decoding deliberately outlives the session's context. Stopping dictation is
+	// itself an endpoint: the utterance in progress is flushed and queued for repair
+	// *after* ctx is cancelled, and a decode that inherits the cancellation never
+	// leaves the process - measured on the hotkey-release path: 0 repair requests for
+	// the sentence that was just spoken, so the unrepaired draft was delivered. What
+	// bounds the wait instead is repairDrainBudget, and the transcriber's own timeout.
+	decodeCtx, stopDecoding := context.WithCancel(context.WithoutCancel(ctx))
+	defer stopDecoding()
+	pipeline.startRepairWorker(decodeCtx, o)
 
 	engine, err := asr.OpenStream(ctx, asr.StreamConfig{
 		BaseURL:  o.ServerURL,
@@ -150,8 +159,7 @@ func (o Options) Run(ctx context.Context) (Result, error) {
 		Language: cfg.Language,
 	})
 	if err != nil {
-		pipeline.closeRepairs()
-		pipeline.waitForRepairs()
+		report(notify.Error, pipeline.finishRepairs(repairDrainBudget))
 		return Result{}, err
 	}
 	defer engine.Close()
@@ -196,6 +204,11 @@ func (o Options) Run(ctx context.Context) (Result, error) {
 	}()
 
 	if err := capture.Start(); err != nil {
+		// The worker goroutines are already running, and this process is long
+		// lived: a failed activation (a busy device) must not leave a queue and two
+		// goroutines behind per attempt - measured at two goroutines per failure
+		// before this cleanup existed.
+		report(notify.Error, pipeline.finishRepairs(repairDrainBudget))
 		return Result{}, err
 	}
 	defer capture.Stop()
@@ -246,9 +259,11 @@ func (o Options) Run(ctx context.Context) (Result, error) {
 	}
 
 	// Every in-flight repair must land before the final commit, or text would be
-	// delivered twice and out of order.
-	pipeline.closeRepairs()
-	pipeline.waitForRepairs()
+	// delivered twice and out of order. The wait is bounded: the decodes no longer
+	// inherit this session's cancellation (see startRepairWorker's caller), so a
+	// wedged server would otherwise hold up the stop for as long as its repair
+	// timeout.
+	report(notify.Error, pipeline.finishRepairs(repairDrainBudget))
 
 	if notify.Skipped != nil && capture.Err() != nil {
 		notify.Skipped(capture.Err().Error())
@@ -327,6 +342,9 @@ type session struct {
 	repairQueue   chan repairJob
 	repairResults chan repairResult
 	repairDone    sync.WaitGroup
+	// repairClose makes closing the queue idempotent: the normal shutdown path and
+	// an early return both end the session, and closing twice would panic.
+	repairClose sync.Once
 
 	// buffer is the recent audio an offline decode re-reads.
 	buffer *audio.RollingBuffer
@@ -359,6 +377,8 @@ func (s *session) startRepairWorker(ctx context.Context, options Options) {
 	if !options.Config.RefineOnSegmentEnd {
 		return
 	}
+	// ctx is the decoding context, not the session's: it outlives a stop so that the
+	// utterance the stop itself closed is still decoded offline (see the caller).
 	// One route, not two. The server is a service on the machine, so there is nothing
 	// to bring up and nothing to fall back to: if it is not running the session never
 	// starts (the streaming side fails first, with a message naming the unit), and if
@@ -420,11 +440,39 @@ func (s *session) startRepairWorker(ctx context.Context, options Options) {
 
 func (s *session) closeRepairs() {
 	if s.repairQueue != nil {
-		close(s.repairQueue)
+		s.repairClose.Do(func() { close(s.repairQueue) })
 	}
 }
 
-func (s *session) waitForRepairs() { s.repairDone.Wait() }
+// repairDrainBudget is how long a stop waits for the decodes already queued.
+//
+// It exists because a repair no longer inherits the session's cancellation: without a
+// bound, a stop would last as long as the transcriber's own timeout (30s by default)
+// on a server that stopped answering - and the engine's Disable is a D-Bus call that
+// ibus-daemon is waiting on. Measured repairs run 0.5-0.8s, so this is an order of
+// magnitude of headroom.
+const repairDrainBudget = 5 * time.Second
+
+// finishRepairs ends the queue and waits for the decodes already in it, giving up
+// after budget. The error, when there is one, is what the user is owed: it says a
+// sentence was delivered from the draft because the decode did not land in time.
+func (s *session) finishRepairs(budget time.Duration) error {
+	s.closeRepairs()
+	if s.repairQueue == nil {
+		return nil
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.repairDone.Wait()
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-time.After(budget):
+		return fmt.Errorf("gave up waiting for the last repair after %v: its sentence was committed from the draft", budget)
+	}
+}
 
 // onSegmentEnd closes an utterance: queue its offline decode, or commit straight
 // away when repair is off.

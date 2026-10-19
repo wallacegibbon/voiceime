@@ -2,10 +2,12 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -141,20 +143,36 @@ func TestSessionReleasesTextWhenRepairFails(t *testing.T) {
 	}
 }
 
-// A session that is cancelled must still finish cleanly and deliver what it had.
+// A cancelled session must finish cleanly - and the sentence the cancellation itself
+// closed must still be decoded offline.
+//
+// Cancelling is how dictation ends: the hotkey switches the engine off, Disable
+// cancels the session, and the cancellation flushes the utterance in progress and
+// queues it for repair *after* the context is already cancelled. The decode used to
+// inherit that cancellation, so it never left the process: measured on this test, zero
+// repair requests and the window-boundary-damaged draft delivered as if it were final.
+// The earlier version of this test used a 1.5s timeout on a 1.3s clip, so it never
+// cancelled anything and could not see the bug.
 func TestSessionStopsCleanlyWhenCancelled(t *testing.T) {
 	server := newFakeASRServer(t)
+	server.repairText = "释放后的句子。"
 	options, sink := sessionOptions(t, server, true)
-	// Long enough for the utterance to be recognised, short enough to land in the
-	// middle of the trailing silence.
-	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	// After the speech ends (0.8s) and before the 800ms hangover would close the
+	// utterance on its own, so the boundary comes from the cancellation.
+	ctx, cancel := context.WithTimeout(context.Background(), 900*time.Millisecond)
 	defer cancel()
 
 	if _, err := options.Run(ctx); err != nil && ctx.Err() == nil {
 		t.Fatalf("session failed: %v", err)
 	}
 	if len(sink.commits()) == 0 {
-		t.Errorf("a cancelled session delivered nothing: %v", sink.events)
+		t.Fatalf("a cancelled session delivered nothing: %v", sink.events)
+	}
+	if got := server.repairCount(); got == 0 {
+		t.Error("no repair was requested: the utterance the stop closed was delivered as the draft")
+	}
+	if got := strings.Join(sink.commits(), ""); !strings.Contains(got, "释放后的句子") {
+		t.Errorf("committed %q, want the text the offline decode produced", got)
 	}
 }
 
@@ -400,5 +418,59 @@ func TestSessionWithoutAServerFailsWithAReason(t *testing.T) {
 		t.Fatal("a session with no server ran anyway")
 	} else if !strings.Contains(err.Error(), "server") {
 		t.Errorf("error %q does not say what is missing", err)
+	}
+}
+
+// failingCapture is a source that cannot be opened: a busy device, or a sound server
+// this process may not reach.
+type failingCapture struct{}
+
+func (failingCapture) Start() error               { return errors.New("capture device unavailable") }
+func (failingCapture) Chunks() <-chan audio.Chunk { return nil }
+func (failingCapture) Stop()                      {}
+func (failingCapture) Err() error                 { return nil }
+
+// A failed activation must not leave the repair workers behind.
+//
+// The workers start before the capture source is opened, so a device that will not
+// open used to leak a queue and two goroutines per activation - in a process that lives
+// as long as the login session. Measured before the cleanup: 100 goroutines after 50
+// failed activations.
+func TestFailedActivationLeavesNoRepairWorkers(t *testing.T) {
+	server := newFakeASRServer(t)
+	options, _ := sessionOptions(t, server, true)
+	options.NewCapture = func() (audio.Capture, error) { return failingCapture{}, nil }
+
+	// One run first, so the baseline includes whatever the harness itself keeps.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if _, err := options.Run(ctx); err == nil {
+		t.Fatal("a session whose capture could not start reported success")
+	}
+	cancel()
+	baseline := runtime.NumGoroutine()
+	if got := runtime.NumGoroutine(); got > baseline {
+		t.Fatalf("baseline = %d goroutines, want %d", got, baseline)
+	}
+
+	for i := 0; i < 20; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if _, err := options.Run(ctx); err == nil {
+			t.Fatal("a session whose capture could not start reported success")
+		}
+		cancel()
+	}
+
+	// Shutdown is asynchronous by design (the workers close their own channels), so
+	// the count is allowed to settle rather than read once.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		time.Sleep(20 * time.Millisecond)
+		if got := runtime.NumGoroutine(); got <= baseline {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("goroutines = %d after 20 failed activations, want at most the baseline %d: the repair workers outlived the session",
+				runtime.NumGoroutine(), baseline)
+		}
 	}
 }

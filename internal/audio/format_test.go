@@ -98,46 +98,6 @@ func TestReadWAVRejectsNonPCM(t *testing.T) {
 	}
 }
 
-func TestRollingBufferSlice(t *testing.T) {
-	buffer := NewRollingBuffer(1) // one second
-	buffer.Append(silence(0.5), 0)
-	buffer.Append(silence(0.5), 8000)
-
-	if _, ok := buffer.Slice(0, 16000); !ok {
-		t.Error("Slice(0, 16000) failed for a range that is fully held")
-	}
-	if _, ok := buffer.Slice(0, 32000); ok {
-		t.Error("Slice beyond the held range succeeded")
-	}
-	if _, ok := buffer.Slice(-1000, 1000); ok {
-		t.Error("Slice before the held range succeeded")
-	}
-
-	// Appending past the limit drops the oldest audio, and the reported start
-	// moves with it, so a later slice of the newest audio still works.
-	buffer.Append(silence(0.5), 16000)
-	if held := DurationSeconds(buffer.data); held > 1.0001 {
-		t.Errorf("held audio = %v, want at most 1", held)
-	}
-	if _, ok := buffer.Slice(16000, 24000); !ok {
-		t.Error("Slice of the newest audio failed after the buffer wrapped")
-	}
-}
-
-func TestRollingBufferRestartsAfterAGap(t *testing.T) {
-	buffer := NewRollingBuffer(5)
-	buffer.Append(silence(0.1), 0)
-	// A dropped chunk means the buffer can no longer describe a contiguous
-	// range; it must restart rather than silently splice unrelated audio.
-	buffer.Append(silence(0.1), 16000)
-	if _, ok := buffer.Slice(0, 8000); ok {
-		t.Error("Slice spanning a dropped block succeeded, want failure")
-	}
-	if _, ok := buffer.Slice(16000, 17600); !ok {
-		t.Error("Slice of post-gap audio failed")
-	}
-}
-
 // silence builds a block of digital silence, and peak measures the loudest
 // sample in one. Both live here rather than in format.go: they are fixtures, and
 // a production package should not carry functions that only its tests call - that

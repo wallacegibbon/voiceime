@@ -3,6 +3,7 @@ package daemon
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wallacegibbon/voiceime/internal/asr"
 	"github.com/wallacegibbon/voiceime/internal/audio"
@@ -306,5 +307,46 @@ func TestSegmentEndStillSkipsASpanThatFellOutOfTheBuffer(t *testing.T) {
 	}
 	if got := sink.commits(); len(got) != 1 {
 		t.Fatalf("commits = %v, want the stream text: the repair cannot run", got)
+	}
+}
+
+// The wait for in-flight repairs is bounded.
+//
+// A repair no longer inherits the session's cancellation - that is what lets the
+// utterance a stop closes still be decoded - so without a budget the wait would last
+// as long as the transcriber's own timeout (30s by default). The engine's Disable is a
+// D-Bus call ibus-daemon is waiting on, so an unbounded wait there is a hung input
+// method, not a slow one.
+func TestFinishRepairsGivesUpAfterItsBudget(t *testing.T) {
+	sink := &recordingSink{}
+	session := newTestSession(sink)
+	session.repairQueue = make(chan repairJob, 1)
+	session.repairDone.Add(1)
+
+	release := make(chan struct{})
+	go func() {
+		defer session.repairDone.Done()
+		<-release // a decode that does not answer
+	}()
+	defer close(release)
+	session.repairQueue <- repairJob{}
+
+	started := time.Now()
+	err := session.finishRepairs(50 * time.Millisecond)
+	elapsed := time.Since(started)
+
+	if err == nil {
+		t.Fatal("finishRepairs reported success with a decode still running")
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("finishRepairs waited %v for a 50ms budget", elapsed)
+	}
+	if !strings.Contains(err.Error(), "draft") {
+		t.Errorf("error %q does not say the sentence was delivered from the draft", err)
+	}
+	// Closing twice must not panic: the normal shutdown path and an early return can
+	// both end a session.
+	if err := session.finishRepairs(50 * time.Millisecond); err == nil {
+		t.Error("a second call reported success while the decode was still running")
 	}
 }

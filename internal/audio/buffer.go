@@ -1,5 +1,7 @@
 package audio
 
+import "slices"
+
 // RollingBuffer keeps the most recent audio of a bounded length so the repair
 // pass can re-read a finished segment.
 //
@@ -35,13 +37,27 @@ func (b *RollingBuffer) Append(data []byte, startSample int64) {
 	if b.limitBytes > 0 && len(b.data) > b.limitBytes {
 		drop := len(b.data) - b.limitBytes
 		drop -= drop % BytesPerSample
-		b.data = append([]byte(nil), b.data[drop:]...)
+		// Shift in place rather than reallocating: the buffer is a fixed-size
+		// window that is full for the whole of a long session, so a fresh
+		// allocation per block would copy the entire window 50 times a second and
+		// hand the garbage collector a megabyte each time (measured: 2 MiB
+		// allocated per 20ms block before this change, none after).
+		b.data = b.data[:copy(b.data, b.data[drop:])]
 		b.startSample += int64(drop / BytesPerSample)
 	}
 }
 
-// Slice returns the audio covering [startSample, endSample). ok is false when the
-// range is not fully held, which happens after a long session or a dropped block.
+// Slice returns a copy of the audio covering [startSample, endSample). ok is false
+// when the range is not fully held, which happens after a long session or a dropped
+// block.
+//
+// The copy is not defensive style, it is what makes the value safe to hand to a
+// background worker. The buffer keeps being refilled by the capture loop while a
+// repair decodes what it was given, and the gap path rewrites the array from offset
+// zero - measured: after a dropped block, every byte of a previously returned range
+// had been replaced, so a queued repair would have decoded the next block (or
+// whatever the room happened to contain) and had its text committed as the corrected
+// sentence. One copy per utterance is nothing; a wrong sentence is not.
 func (b *RollingBuffer) Slice(startSample, endSample int64) ([]byte, bool) {
 	if endSample <= startSample {
 		return nil, false
@@ -52,7 +68,7 @@ func (b *RollingBuffer) Slice(startSample, endSample int64) ([]byte, bool) {
 	}
 	from := int(startSample-b.startSample) * BytesPerSample
 	to := int(endSample-b.startSample) * BytesPerSample
-	return b.data[from:to], true
+	return slices.Clone(b.data[from:to]), true
 }
 
 // SliceClamped returns the audio covering [startSample, endSample) clipped to what
@@ -63,6 +79,8 @@ func (b *RollingBuffer) Slice(startSample, endSample int64) ([]byte, bool) {
 // that stops while the user is still speaking has no trailing silence to read, so
 // the widening has nothing to widen into. Clipping there recovers the utterance
 // itself, and the caller decides whether the clipped range is still worth decoding.
+//
+// Like Slice, the bytes returned are a copy.
 func (b *RollingBuffer) SliceClamped(startSample, endSample int64) ([]byte, int64, int64, bool) {
 	heldEnd := b.startSample + int64(SampleCount(b.data))
 	if startSample < b.startSample {
@@ -76,5 +94,5 @@ func (b *RollingBuffer) SliceClamped(startSample, endSample int64) ([]byte, int6
 	}
 	from := int(startSample-b.startSample) * BytesPerSample
 	to := int(endSample-b.startSample) * BytesPerSample
-	return b.data[from:to], startSample, endSample, true
+	return slices.Clone(b.data[from:to]), startSample, endSample, true
 }

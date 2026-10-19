@@ -872,3 +872,57 @@ generic message and logging the server's reason only - the CLI's failure is read
 person and by an agent, and both need the cause in the message. Falling back to the
 `done` event's text when the stream fails - no `done` event is sent in that case, which
 is the point.
+
+## D25 — The decode outlives the session; audio handed to it is a copy.
+
+**Decision.** A repair decodes on a context derived from the session's with
+`context.WithoutCancel`, and the wait for queued repairs is bounded by
+`repairDrainBudget` (5s). `RollingBuffer.Slice` returns a copy. Both are two-line
+changes and both exist because the alternative produced wrong text silently.
+
+**Why the context.** Stopping dictation is itself an endpoint: `Flush` closes the
+utterance in progress and queues it for repair *after* `Run`'s context is cancelled,
+which is exactly when a hotkey release, an engine switch or Ctrl-C happens. A decode
+that inherited the cancellation therefore never left the process - measured on the
+release path, zero repair requests for the sentence just spoken, so `Place` never ran
+and the worker committed the streaming draft. Every session ended on the path D20
+exists to prevent, and nothing said so: text appeared, it was simply the damaged
+version. `TestSessionStopsCleanlyWhenCancelled` had a 1.5s timeout on a 1.3s clip, so
+it never cancelled and could not see it.
+
+**Why the bound.** The decode no longer ends when the session does, so something else
+has to. The transcriber's own timeout is `asr_server_timeout_ms` (30s), and the
+engine's `Disable` is a D-Bus call ibus-daemon is waiting on; a stop must not last
+that long on a server that stopped answering. Repairs measure 0.5-0.8s, so 5s is an
+order of magnitude of headroom, and a stop that gives up says so - the sentence was
+delivered from the draft - instead of looking like a clean end.
+
+**Why the copy.** `Slice` used to return a view of the buffer the capture loop keeps
+filling. When a block is dropped the gap path restarts at offset zero of the same
+array, so every byte of audio already handed to a queued repair was replaced -
+measured, 32000 of 32000 bytes - and the next block was decoded and committed as the
+corrected sentence. The failure needs a drop, so it is a loaded machine's failure, and
+it is silent: the log line says audio was dropped, not that the repair read the wrong
+audio. One copy per utterance is nothing. `Append` stopped reallocating when the window
+is full in the same change (2 MiB per 20ms block, measured, now none), because a
+copy-on-slice design that also copies the whole window 50 times a second would be a
+strange trade.
+
+**Consequence.** A session that ends early - stream open failure, capture start
+failure, stop - now goes through one `finishRepairs`, so a failed activation no longer
+leaves the two repair workers running (measured: 45 goroutines after 20 failed
+activations, against a baseline of 5). A decode that overruns the budget is cancelled
+by the deferred `stopDecoding`, so the process does not accumulate in-flight work
+across activations.
+
+**Rejected.** Inheriting the session context and treating a cancelled decode as a
+failure - that is the bug, not the design. An unbounded wait - it moves the failure to
+the input method, where a hung `Disable` is worse than a sentence delivered from the
+draft. Returning the slice without a copy and documenting the aliasing - the repair
+worker is asynchronous, the buffer is refilled by another goroutine, and a comment is
+not a lifetime. A condition variable or pool for the audio buffers - a copy is 64 KiB
+once per utterance.
+
+Pinned by `TestSessionStopsCleanlyWhenCancelled`, `TestFinishRepairsGivesUpAfterItsBudget`,
+`TestFailedActivationLeavesNoRepairWorkers`, `TestSliceDoesNotAliasTheLiveBuffer` and
+`TestRollingBufferAppendIsAllocationFreeWhenFull`.

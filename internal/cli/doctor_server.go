@@ -83,7 +83,7 @@ func asrServerCheck(cfg *config.Config, scanned []models.Model, unitInstalled bo
 	//
 	// The ids are constants now (server install writes them), so the only way they can
 	// be wrong is a service built by another version; the listing is what says so.
-	streamEntry, repairEntry := serverStreamModelID(), serverModelID()
+	streamEntry, repairEntry := server.DefaultStreamID, server.DefaultID
 	entries, err := server.Entries(ctx, raw)
 	if err != nil {
 		return Check{ID: "asr_server", Status: "fail", Detail: err.Error(), Fix: "voiceime server install"}

@@ -227,17 +227,11 @@ func decodeCharacterReference(value string) string {
 // path goes away - the engine keeps running from the deleted binary, so
 // activation appears to work until the process is finally restarted.
 func ComponentExec(path string) (string, error) {
-	raw, err := os.ReadFile(path)
+	component, err := ReadComponent(path)
 	if err != nil {
 		return "", err
 	}
-	var parsed struct {
-		Exec string `xml:"exec"`
-	}
-	if err := xml.Unmarshal(raw, &parsed); err != nil {
-		return "", fmt.Errorf("parse %s: %w", path, err)
-	}
-	fields := strings.Fields(parsed.Exec)
+	fields := strings.Fields(component.Exec)
 	if len(fields) == 0 {
 		return "", fmt.Errorf("%s: <exec> is empty", path)
 	}

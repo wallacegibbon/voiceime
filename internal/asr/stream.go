@@ -365,7 +365,6 @@ func (s *Stream) readEvents() {
 		case "transcript.text.done":
 			s.resultMu.Lock()
 			s.result.Text = event.Text
-			s.result.TotalTime = time.Since(s.started)
 			if len(event.Timing) > 0 {
 				s.result.Metrics["timing"] = string(event.Timing)
 			}

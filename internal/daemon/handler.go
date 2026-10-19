@@ -61,11 +61,6 @@ func (s *switchableSink) Preedit(text string, cursor int, visible bool) error {
 // input methods is the hotkey.
 type EngineHandler struct {
 	Config *config.Config
-	// ServerURL, StreamModel and RepairModel name the resident server and the two
-	// entries a session uses.
-	ServerURL   string
-	StreamModel string
-	RepairModel string
 	// Transcriber overrides the offline decode the repair pass runs, for tests.
 	Transcriber asr.Transcriber
 	Log         func(format string, args ...any)
@@ -129,9 +124,6 @@ func (h *EngineHandler) Enable(control ibus.Control) {
 
 	options := Options{
 		Config:           h.Config,
-		ServerURL:        h.ServerURL,
-		StreamModel:      h.StreamModel,
-		RepairModel:      h.RepairModel,
 		Transcriber:      h.Transcriber,
 		Sink:             h.sink,
 		MinRepairSeconds: h.MinRepairSeconds,

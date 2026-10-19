@@ -61,11 +61,8 @@ func sessionOptionsForWAV(t *testing.T, server *fakeASRServer, refine bool, wav 
 
 	sink := &recordingSink{}
 	return Options{
-		Config:      cfg,
-		ServerURL:   server.url,
-		StreamModel: "stream",
-		RepairModel: "refine",
-		Sink:        sink,
+		Config: cfg,
+		Sink:   sink,
 		NewCapture: func() (audio.Capture, error) {
 			// Real time, deliberately: the fake server emits partials as audio
 			// arrives, and the interesting interleavings (a partial arriving before
@@ -417,10 +414,8 @@ func TestSessionWithoutAServerFailsWithAReason(t *testing.T) {
 	cfg := config.Default()
 	cfg.ASRServerURL = ""
 	options := Options{
-		Config:      cfg,
-		StreamModel: "stream",
-		RepairModel: "refine",
-		Sink:        &recordingSink{},
+		Config: cfg,
+		Sink:   &recordingSink{},
 		NewCapture: func() (audio.Capture, error) {
 			return audio.NewFileReplay(speechWAV(t), true)
 		},

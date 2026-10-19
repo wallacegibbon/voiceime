@@ -464,8 +464,8 @@ func runServerStatus(ctx *Context) error {
 		"unit":         serverUnitPath(),
 		"config":       serverConfigFile(),
 		"url":          cfg.ASRServerURL,
-		"stream_entry": serverStreamModelID(),
-		"repair_entry": serverModelID(),
+		"stream_entry": server.DefaultStreamID,
+		"repair_entry": server.DefaultID,
 		"unit_active":  false,
 		"listening":    false,
 	}

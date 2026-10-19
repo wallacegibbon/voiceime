@@ -17,6 +17,7 @@ import (
 	"github.com/wallacegibbon/voiceime/internal/asr"
 	"github.com/wallacegibbon/voiceime/internal/audio"
 	"github.com/wallacegibbon/voiceime/internal/config"
+	"github.com/wallacegibbon/voiceime/internal/server"
 )
 
 // Sink is where text goes. It is deliberately the same shape as ibus.Control, so
@@ -48,19 +49,11 @@ type Observer struct {
 
 // Options describes one dictation session.
 type Options struct {
-	Config *config.Config
-	// ServerURL is the resident server that serves both roles. There is no process
-	// to start: the service holds the models, so a session is a connection.
-	ServerURL string
-	// StreamModel is the id of the server entry configured for live partials.
-	StreamModel string
-	// RepairModel is the id of the entry the offline decode uses. It must not be
-	// StreamModel's id: the server holds a model for the whole length of a request,
-	// so a repair sent to the id a live session owns waits for that session to end
-	// (measured: 10.9s behind a 12s dictation).
-	RepairModel string
-	Sink        Sink
-	Observer    Observer
+	// Config supplies the server address and everything the session reads per run. There
+	// is no process to start: the service holds the models, so a session is a connection.
+	Config   *config.Config
+	Sink     Sink
+	Observer Observer
 	// NewCapture opens the audio source. A factory rather than an instance
 	// because a session consumes its source: a file replay is exhausted after one
 	// run, and a microphone should be reopened per activation rather than shared
@@ -155,8 +148,8 @@ func (o Options) Run(ctx context.Context) (Result, error) {
 	pipeline.startRepairWorker(decodeCtx, o)
 
 	engine, err := asr.OpenStream(ctx, asr.StreamConfig{
-		BaseURL:  o.ServerURL,
-		Model:    o.StreamModel,
+		BaseURL:  cfg.ASRServerURL,
+		Model:    server.DefaultStreamID,
 		Language: cfg.Language,
 	})
 	if err != nil {
@@ -354,9 +347,8 @@ type session struct {
 	// provisional text would deliver the recogniser's hallucination.
 	segments atomic.Int64
 
-	repairQueue   chan repairJob
-	repairResults chan repairResult
-	repairDone    sync.WaitGroup
+	repairQueue chan repairJob
+	repairDone  sync.WaitGroup
 	// repairClose makes closing the queue idempotent: the normal shutdown path and
 	// an early return both end the session, and closing twice would panic.
 	repairClose sync.Once
@@ -391,13 +383,6 @@ type repairJob struct {
 	endSample   int64
 }
 
-type repairResult struct {
-	job  repairJob
-	text string
-	took time.Duration
-	err  error
-}
-
 func (s *session) startRepairWorker(ctx context.Context, options Options) {
 	if !options.Config.RefineOnSegmentEnd {
 		return
@@ -412,52 +397,43 @@ func (s *session) startRepairWorker(ctx context.Context, options Options) {
 	transcriber := options.Transcriber
 	if transcriber == nil {
 		transcriber = asr.ServerTranscriber{
-			BaseURL:  options.ServerURL,
-			Model:    options.RepairModel,
+			BaseURL:  options.Config.ASRServerURL,
+			Model:    server.DefaultID,
 			Language: options.Config.Language,
 			Timeout:  time.Duration(options.Config.ASRServerTimeoutMS) * time.Millisecond,
 		}
 	}
 
-	// One worker, buffered: repairs run off the audio path but stay ordered, so
-	// the transcript cannot be reassembled out of order.
+	// One worker, buffered: repairs run off the audio path but stay ordered, so the
+	// transcript cannot be reassembled out of order. It decodes and publishes in the same
+	// goroutine - publishing is a few sink calls, and a second goroutine to overlap them
+	// with the next decode bought nothing while the decodes are what take the time.
 	s.repairQueue = make(chan repairJob, 8)
-	s.repairResults = make(chan repairResult, 8)
 	s.repairDone.Add(1)
 	go func() {
 		defer s.repairDone.Done()
-		// The worker owns closing the results channel, so a consumer's range ends
-		// when the last repair has been published rather than when the queue empties.
-		defer close(s.repairResults)
 		for job := range s.repairQueue {
 			started := time.Now()
 			text, err := transcriber.Transcribe(ctx, job.pcm)
-			s.repairResults <- repairResult{job: job, text: text, took: time.Since(started), err: err}
-		}
-	}()
-	s.repairDone.Add(1)
-	go func() {
-		defer s.repairDone.Done()
-		for result := range s.repairResults {
-			if result.err != nil {
+			took := time.Since(started)
+			if err != nil {
 				if s.notify.Error != nil {
-					s.notify.Error(result.err)
+					s.notify.Error(err)
 				}
-				// A failed repair must still release the utterance, or the text
-				// would sit in provisional limbo forever.
+				// A failed repair must still release the utterance, or the text would sit
+				// in provisional limbo forever.
 				s.commitProvisional()
 				continue
 			}
-			s.transcript.Place(result.job.startSample, result.job.endSample, result.text)
+			s.transcript.Place(job.startSample, job.endSample, text)
 			if s.notify.Repair != nil {
-				s.notify.Repair(result.text, result.took,
-					float64(result.job.endSample-result.job.startSample)/audio.SampleRate)
+				s.notify.Repair(text, took, float64(job.endSample-job.startSample)/audio.SampleRate)
 			}
 			if err := s.publishPreedit(); err != nil && s.notify.Error != nil {
 				s.notify.Error(err)
 			}
-			// The repair is what makes the text worth committing: delivering
-			// before it lands would deliver the window-boundary damage.
+			// The repair is what makes the text worth committing: delivering before it
+			// lands would deliver the window-boundary damage.
 			s.commitProvisional()
 		}
 	}()

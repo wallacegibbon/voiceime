@@ -15,6 +15,7 @@ import (
 	"github.com/wallacegibbon/voiceime/internal/audio"
 	"github.com/wallacegibbon/voiceime/internal/config"
 	"github.com/wallacegibbon/voiceime/internal/daemon"
+	"github.com/wallacegibbon/voiceime/internal/server"
 )
 
 // cmdStream is the observable end of the pipeline: it captures audio, streams it
@@ -139,7 +140,7 @@ func runStream(ctx *Context, options streamOptions) error {
 		return PreconditionError("voiceime server install",
 			"nothing is configured to decode audio: run `voiceime server install`")
 	}
-	streamModel := serverStreamModelID()
+	streamModel := server.DefaultStreamID
 
 	// A per-run copy of the config: --refine is a per-invocation knob, and mutating the
 	// loaded config would leak it into anything else that reads it. The window length is
@@ -172,15 +173,12 @@ func runStream(ctx *Context, options streamOptions) error {
 	}
 
 	started := time.Now()
-	repairModel := serverModelID()
+	repairModel := server.DefaultID
 	out.write("repair_route", map[string]any{"detail": serverDescription(&cfg)})
 	session := daemon.Options{
-		Config:      &cfg,
-		ServerURL:   cfg.ASRServerURL,
-		StreamModel: streamModel,
-		RepairModel: repairModel,
-		NewCapture:  newCapture,
-		Sink:        streamSink{emitter: out},
+		Config:     &cfg,
+		NewCapture: newCapture,
+		Sink:       streamSink{emitter: out},
 		Observer: daemon.Observer{
 			Ready: func(load time.Duration) {
 				out.write("ready", map[string]any{

@@ -42,11 +42,10 @@ type Event struct {
 
 // Result is what a finished session produced.
 type Result struct {
-	Text      string            `json:"text"`
-	Metrics   map[string]string `json:"metrics,omitempty"`
-	LoadTime  time.Duration     `json:"-"`
-	TotalTime time.Duration     `json:"-"`
-	AudioFed  time.Duration     `json:"-"`
+	Text     string            `json:"text"`
+	Metrics  map[string]string `json:"metrics,omitempty"`
+	LoadTime time.Duration     `json:"-"`
+	AudioFed time.Duration     `json:"-"`
 	// ProcessErr is what ended the session badly, if anything did: the server
 	// answered with an error event, or the connection ended without the
 	// terminating chunk. Close returns the same value, so a caller that checks

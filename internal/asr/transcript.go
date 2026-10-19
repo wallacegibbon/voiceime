@@ -10,11 +10,6 @@ type Chunk struct {
 	Text        string `json:"text"`
 	StartSample int64  `json:"start_sample"`
 	EndSample   int64  `json:"end_sample"`
-	// Source is "stream" for a window partial and "repair" for text produced by
-	// re-transcribing a finished segment offline. Keeping it visible is what
-	// makes the two-layer design debuggable: a bad transcript can be attributed
-	// to the layer that produced it.
-	Source string `json:"source"`
 }
 
 // Transcript is the two-layer text model: committed text that has been delivered
@@ -67,7 +62,6 @@ func (t *Transcript) AppendStream(text string, startSample, endSample int64) boo
 		Text:        text,
 		StartSample: startSample,
 		EndSample:   endSample,
-		Source:      "stream",
 	})
 	return true
 }
@@ -91,7 +85,6 @@ func (t *Transcript) SetSnapshot(text string, startSample, endSample int64) {
 		Text:        text,
 		StartSample: startSample,
 		EndSample:   endSample,
-		Source:      "stream",
 	})
 }
 
@@ -139,7 +132,6 @@ func (t *Transcript) Place(startSample, endSample int64, text string) {
 			Text:        text,
 			StartSample: startSample,
 			EndSample:   endSample,
-			Source:      "repair",
 		})
 		placed = true
 	}

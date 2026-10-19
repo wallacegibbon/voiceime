@@ -309,12 +309,10 @@ func installHotkeyService(ctx *Context, spec string) error {
 	// unit is installed either way - it is inert on X11 and keeps working if the
 	// session ever moves to Wayland.
 	session := sessionType()
-	mechanisms := []string{"ibus-global-shortcut"}
 	var keybinding any
 	var warning string
 	switch session {
 	case "x11":
-		mechanisms = append(mechanisms, "gnome-keybinding")
 		keybinding = installGnomeKeybinding(ctx, hotkeySpec(ctx, spec), binary)
 	case "wayland":
 		// Converge rather than only add: a machine that once ran X11 may still
@@ -336,7 +334,7 @@ func installHotkeyService(ctx *Context, spec string) error {
 		"applied":       applied,
 		"keys":          hotkeySpec(ctx, spec),
 		"session":       session,
-		"mechanisms":    mechanisms,
+		"mechanisms":    mechanismsFor(session, keybinding != nil),
 		"gnome_binding": keybinding,
 	}
 	if warning != "" {
@@ -385,6 +383,20 @@ func sessionType() string {
 		return "x11"
 	}
 	return declared
+}
+
+// mechanismsFor names the ways this session can receive the shortcut.
+//
+// One function because install and status must not disagree about what the machine will
+// actually do: the IBus registration is always stored, but on X11 nothing grabs it - the
+// GnOME keybinding is the one that fires - and on Wayland a leftover keybinding would fight
+// the IBus shortcut for the same key.
+func mechanismsFor(session string, gnomeBinding bool) []string {
+	mechanisms := []string{"ibus-global-shortcut"}
+	if session == "x11" || gnomeBinding {
+		mechanisms = append(mechanisms, "gnome-keybinding")
+	}
+	return mechanisms
 }
 
 // installGnomeKeybinding adds the X11-only trigger and returns what happened, so
@@ -632,16 +644,16 @@ func hotkeyStatus(ctx *Context, spec string) error {
 	// one that works.
 	session := sessionType()
 	state["session"] = session
-	mechanisms := []string{"ibus-global-shortcut"}
+	bindingRegistered := false
 	if registered, binding, command, err := gnome.Status(gnome.KeybindingPath); err == nil && registered {
-		mechanisms = append(mechanisms, "gnome-keybinding")
+		bindingRegistered = true
 		state["gnome_binding"] = map[string]any{
 			"path":    gnome.KeybindingPath,
 			"binding": binding,
 			"command": command,
 		}
 	}
-	state["mechanisms"] = mechanisms
+	state["mechanisms"] = mechanismsFor(session, bindingRegistered)
 
 	ctx.Print("shortcut: %s (keyval=%d modifiers=%d)", spec, key.Keyval, key.State)
 	ctx.Print("engine while dictating: %s", ctx.Config.IBusEngineName)

@@ -45,8 +45,9 @@ func TestPlaceReplacesOverlappingChunks(t *testing.T) {
 	if got := transcript.ProvisionalText(); got != "欢迎大家来体验达摩院推出的语音识别模型。" {
 		t.Errorf("ProvisionalText() = %q", got)
 	}
-	if chunks := chunksForTest(transcript); len(chunks) != 1 || chunks[0].Source != "repair" {
-		t.Errorf("chunks = %+v, want a single repair chunk", chunks)
+	if chunks := chunksForTest(transcript); len(chunks) != 1 ||
+		chunks[0].Text != "欢迎大家来体验达摩院推出的语音识别模型。" {
+		t.Errorf("chunks = %+v, want a single chunk holding the offline decode", chunks)
 	}
 }
 
@@ -142,7 +143,7 @@ func TestEmptyDecodeKeepsStreamText(t *testing.T) {
 	if got := transcript.Text(); got != "real" {
 		t.Errorf("Text() = %q, want the stream text kept when a repair returns nothing", got)
 	}
-	if chunks := chunksForTest(transcript); len(chunks) != 1 || chunks[0].Source != "stream" {
+	if chunks := chunksForTest(transcript); len(chunks) != 1 || chunks[0].Text != "real" {
 		t.Errorf("chunks = %+v, want the stream chunk untouched", chunks)
 	}
 }
@@ -176,7 +177,7 @@ func TestPlaceInsertsADecodeThatReplacesNothing(t *testing.T) {
 		t.Fatalf("Text() = %q, want the inserted decode", got)
 	}
 	chunks := chunksForTest(transcript)
-	if len(chunks) != 1 || chunks[0].Text != "短句。" || chunks[0].Source != "repair" {
+	if len(chunks) != 1 || chunks[0].Text != "短句。" {
 		t.Fatalf("chunks = %+v, want one inserted decode chunk", chunks)
 	}
 
@@ -255,7 +256,7 @@ func TestPlaceKeepsOrderWhenNewerTextExists(t *testing.T) {
 	if len(chunks) != 2 {
 		t.Fatalf("chunks = %+v, want two chunks", chunks)
 	}
-	if chunks[0].Source != "repair" || chunks[0].Text != "corrected older" {
+	if chunks[0].Text != "corrected older" {
 		t.Errorf("first chunk = %+v, want the repair result", chunks[0])
 	}
 	if chunks[1].Text != "newer partial" {

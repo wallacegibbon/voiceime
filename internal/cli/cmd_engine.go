@@ -356,11 +356,8 @@ func newPipelineHandler(runCtx context.Context, ctx *Context, logf func(string, 
 			"dictation needs the repair server: nothing is configured to decode audio")
 	}
 	handler := &daemon.EngineHandler{
-		Config:      ctx.Config,
-		ServerURL:   serverURL,
-		StreamModel: serverStreamModelID(),
-		RepairModel: serverModelID(),
-		Log:         logf,
+		Config: ctx.Config,
+		Log:    logf,
 	}
 	logf("%s", serverDescription(ctx.Config))
 	if audioFile != "" {

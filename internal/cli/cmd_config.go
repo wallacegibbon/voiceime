@@ -82,111 +82,124 @@ func describeModel(scanned []models.Model, path string) string {
 	return filepath.Base(found.Path) + " (" + found.Family + ")"
 }
 
-// applyConfig makes the running installation match the file, and reports what actually
-// happened rather than what was attempted: the service and the listener are restarted,
-// the installed IBus component is rewritten when the settings it owns have changed, and
-// the engine is dropped so the next activation runs the new binary.
-func applyConfig(ctx *Context) error {
-	result := map[string]any{}
-	systemctl, _ := exec.LookPath("systemctl")
+// applyReport is what `config apply` did, one line per thing that reads the configuration.
+//
+// A struct rather than a map: every step fills one field, the JSON keeps the same keys, and
+// nothing has to assert the type of a value it just put in.
+type applyReport struct {
+	Service   string   `json:"service"`
+	Served    []string `json:"served,omitempty"`
+	Listener  string   `json:"listener"`
+	Component string   `json:"component"`
+	Engine    string   `json:"engine"`
+}
 
-	// Refuse an unusable file before touching any of the three processes. This is
-	// the failure that used to be reported as success: a setting naming a model
-	// that is not there is valid TOML and passes every syntactic check, so it only
-	// showed up as a crash-looping service while `config apply` printed
-	// "service: restarted" and exited 0.
+// applyConfig makes the running installation match the file, and reports what actually
+// happened rather than what was attempted: the service and the listener are restarted, the
+// installed IBus component is rewritten when the settings it owns have changed, and the
+// engine is dropped so the next activation runs the new binary.
+func applyConfig(ctx *Context) error {
+	// Refuse an unusable file before touching any of the processes. This is the failure that
+	// used to be reported as success: a setting naming a model that is not there is valid
+	// TOML and passes every syntactic check, so it only showed up as a crash-looping service
+	// while `config apply` printed "service: restarted" and exited 0.
 	if issues := config.Errors(ctx.Config.Validate()); len(issues) > 0 {
 		issue := issues[0]
 		return PreconditionError(issue.Fix, "cannot apply the configuration: %s: %s", issue.Key, issue.Message)
 	}
 
-	// 1. The service: it renders the server config from this file at its own start, so a
-	// model change lands here and nowhere else.
-	if systemctl != "" && fileExists(serverUnitPath()) {
-		// Decide what the service is supposed to serve *before* restarting it, so a
-		// configuration that cannot be served is refused instead of applied and then
-		// left unverified.
-		scanned, scanErr := models.Cached(ctx.Config)
-		if scanErr != nil {
-			return FailureError("cannot tell what the service would serve: %v", scanErr)
-		}
-		local, port := false, 0
-		if strings.TrimSpace(ctx.Config.ASRServerURL) != "" {
-			host, parsedPort, parseErr := server.ParseURL(ctx.Config.ASRServerURL)
-			if parseErr != nil {
-				return FailureError("%v", parseErr)
-			}
-			local, port = server.IsLocalHost(host), parsedPort
-		}
-		spec, specErr := buildServerSpec(ctx.Config, scanned, port, "", "")
-		if specErr != nil {
-			return PreconditionError("voiceime models list --refresh", "cannot serve what the configuration names: %v", specErr)
-		}
-		if err := runCommand("systemctl --user restart " + serverUnitName); err != nil {
-			return FailureError("restart %s: %v", serverUnitName, err)
-		}
-		if local {
-			probeCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-			err := waitForEntries(probeCtx, ctx.Config.ASRServerURL, spec)
-			cancel()
-			if err != nil {
-				return FailureError("the service restarted but is not serving the configured models: %v", err)
-			}
-			result["served"] = []string{filepath.Base(spec.StreamModel), filepath.Base(spec.RepairModel)}
-		}
-		result["service"] = "restarted"
-	} else {
-		result["service"] = "not installed"
+	var report applyReport
+	var err error
+	if report.Service, report.Served, err = applyService(ctx); err != nil {
+		return err
 	}
-
-	// 2. The listener: the shortcut itself is read once, when it starts.
-	if systemctl != "" && fileExists(servicePath()) {
-		if err := runCommand("systemctl --user restart voiceime-hotkey"); err == nil {
-			result["listener"] = "restarted"
-		} else {
-			result["listener"] = "restart failed"
-		}
-	} else {
-		result["listener"] = "not installed"
-	}
-
-	// 3. The component: the engine name an input method is selected by lives in the XML
-	// IBus reads, so `ibus_engine_name` and `language` are applied here or nowhere. It is
-	// rewritten only when something differs - applying it means restarting IBus.
-	component, err := applyComponent(ctx.Config)
-	if err != nil {
+	report.Listener = applyListener(ctx)
+	if report.Component, err = applyComponent(ctx.Config); err != nil {
 		return FailureError("%v", err)
 	}
-	result["component"] = component
+	report.Engine = dropEngines()
 
-	// 4. The engine: it is spawned by ibus-daemon and stays, holding the configuration it
-	// started with. Ending it is enough - IBus starts a fresh one on the next activation.
-	//
-	// By pid, never by a pkill pattern: `pkill -f "voiceime ibus-engine"` matches any
-	// process whose command line merely mentions that string - a shell running a command
-	// that contains it, an editor with the docs open - and measured here, it killed the
-	// shell that ran this command twice. SIGTERM first, because the engine's shutdown
-	// path commits the sentence in progress (D25).
+	if !ctx.JSON {
+		ctx.Print("service:  %v", report.Service)
+		if len(report.Served) > 0 {
+			ctx.Print("serving:  %s", strings.Join(report.Served, " and "))
+		}
+		ctx.Print("listener: %v", report.Listener)
+		ctx.Print("component: %v", report.Component)
+		ctx.Print("engine:   %v", report.Engine)
+	}
+	return ctx.Emit("config apply", report)
+}
+
+// applyService restarts the recognition service, and waits until it serves what the
+// configuration now names.
+//
+// It builds the spec it expects *before* restarting: a configuration that cannot be served
+// is refused instead of applied and then left unverified.
+func applyService(ctx *Context) (status string, served []string, err error) {
+	if _, lookupErr := exec.LookPath("systemctl"); lookupErr != nil || !fileExists(serverUnitPath()) {
+		return "not installed", nil, nil
+	}
+	scanned, scanErr := models.Cached(ctx.Config)
+	if scanErr != nil {
+		return "", nil, FailureError("cannot tell what the service would serve: %v", scanErr)
+	}
+	local, port := false, 0
+	if strings.TrimSpace(ctx.Config.ASRServerURL) != "" {
+		host, parsedPort, parseErr := server.ParseURL(ctx.Config.ASRServerURL)
+		if parseErr != nil {
+			return "", nil, FailureError("%v", parseErr)
+		}
+		local, port = server.IsLocalHost(host), parsedPort
+	}
+	spec, specErr := buildServerSpec(ctx.Config, scanned, port, "", "")
+	if specErr != nil {
+		return "", nil, PreconditionError("voiceime models list --refresh",
+			"cannot serve what the configuration names: %v", specErr)
+	}
+	if restartErr := runCommand("systemctl --user restart " + serverUnitName); restartErr != nil {
+		return "", nil, FailureError("restart %s: %v", serverUnitName, restartErr)
+	}
+	if local {
+		probeCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		waitErr := waitForEntries(probeCtx, ctx.Config.ASRServerURL, spec)
+		cancel()
+		if waitErr != nil {
+			return "", nil, FailureError("the service restarted but is not serving the configured models: %v", waitErr)
+		}
+		served = []string{filepath.Base(spec.StreamModel), filepath.Base(spec.RepairModel)}
+	}
+	return "restarted", served, nil
+}
+
+// applyListener restarts the shortcut listener, which reads the key once at its start.
+func applyListener(ctx *Context) string {
+	if _, err := exec.LookPath("systemctl"); err != nil || !fileExists(servicePath()) {
+		return "not installed"
+	}
+	if err := runCommand("systemctl --user restart voiceime-hotkey"); err != nil {
+		return "restart failed"
+	}
+	return "restarted"
+}
+
+// dropEngines names what happened to the engine processes, for the report.
+//
+// By pid, never by a pkill pattern: `pkill -f "voiceime ibus-engine"` matches any process
+// whose command line merely mentions that string - a shell running a command that contains
+// it, an editor with the docs open - and measured here, it killed the shell that ran this
+// command twice. SIGTERM first, because the engine's shutdown path commits the sentence in
+// progress (D25).
+func dropEngines() string {
 	stopped, forced := stopEngines()
 	switch {
 	case stopped == 0:
-		result["engine"] = "was not running"
+		return "was not running"
 	case forced:
-		result["engine"] = fmt.Sprintf("%d dropped (one had to be killed); they restart on the next activation", stopped)
+		return fmt.Sprintf("%d dropped (one had to be killed); they restart on the next activation", stopped)
 	default:
-		result["engine"] = fmt.Sprintf("%d dropped; they restart on the next activation", stopped)
+		return fmt.Sprintf("%d dropped; they restart on the next activation", stopped)
 	}
-
-	if !ctx.JSON {
-		ctx.Print("service:  %v", result["service"])
-		if served, ok := result["served"].([]string); ok {
-			ctx.Print("serving:  %s", strings.Join(served, " and "))
-		}
-		ctx.Print("listener: %v", result["listener"])
-		ctx.Print("component: %v", result["component"])
-		ctx.Print("engine:   %v", result["engine"])
-	}
-	return ctx.Emit("config apply", result)
 }
 
 // withConfiguredEngine returns the installed component with the fields the configuration

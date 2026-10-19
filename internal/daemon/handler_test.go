@@ -49,12 +49,9 @@ func newTestEngineHandler(t *testing.T, server *fakeASRServer) *EngineHandler {
 	cfg.ASRServerURL = server.url
 	cfg.RefineOnSegmentEnd = true
 	return &EngineHandler{
-		Config:      cfg,
-		ServerURL:   server.url,
-		StreamModel: "stream",
-		RepairModel: "refine",
-		AudioFile:   speechWAV(t),
-		Log:         func(string, ...any) {},
+		Config:    cfg,
+		AudioFile: speechWAV(t),
+		Log:       func(string, ...any) {},
 	}
 }
 

@@ -926,3 +926,63 @@ once per utterance.
 Pinned by `TestSessionStopsCleanlyWhenCancelled`, `TestFinishRepairsGivesUpAfterItsBudget`,
 `TestFailedActivationLeavesNoRepairWorkers`, `TestSliceDoesNotAliasTheLiveBuffer` and
 `TestRollingBufferAppendIsAllocationFreeWhenFull`.
+
+## D26 — A written value is not a setting in force, and a write is atomic.
+
+**Decision.** `config set` writes the value, then fails (`exit 3`) if the file it wrote is
+unusable. It names `voiceime config apply` as the next step for *every* key. Every installed
+systemd unit names the configuration file it was installed for, and the shortcut unit names
+a key only when the caller asked for one. Files a command owns are replaced atomically, with
+a generated temporary name.
+
+**Why the exit code.** `config set threads 0` wrote the file, printed a finding to stderr
+and exited 0. The human path was fine; the machine path was not, and this program's whole
+surface is built for the machine path - `doctor` names a fix, an agent runs it and asks
+again, and an exit code of 0 means "done". The value is still written, because staging a
+setting before the thing it names exists is how a deployment is scripted (`refine_model`
+before the download finishes, `asr_server_url` before the service is running); refusing to
+write would have replaced one broken workflow with another. What changed is that the
+failure is now visible where callers look, with the fix attached.
+
+**Why every key names the same command.** The alternative was a list of "settings the
+service reads at startup" beside `Config`, and it had gone stale in the way a second schema
+always does: it named `session_options` and two `asr_server_*` keys that no longer existed,
+and called `language` a service setting when it is sent per request - while `hotkey`,
+`endpoint_silence_ms` and everything else the engine reads were reported as needing
+nothing. Each resident process reads the configuration at its own start, so the honest
+answer is the same for every key, and a uniform answer is one an agent can act on without
+branching. `request_options` is settable as `key=value` for the same reason: it was the one
+setting `config set` refused, which meant the one setting an agent had to write TOML by
+hand for.
+
+**Why the units name the file, and the key only on request.** A unit has no working
+directory, so `server install --config <file>` used to install a service that served the
+*default* file - the settings were written, the service read others. And the shortcut unit
+baked the configured key into `ExecStart=… hotkey run --keys <F9>`; `hotkey run` prefers an
+explicit `--keys` over the file, so `config set hotkey` followed by `config apply` (whose
+documented job is "make the running system match the file") restarted the listener straight
+back onto the old key. Named only when the caller passed `--keys`, the configuration decides.
+
+**Why atomic writes.** The temporary name was `path + ".tmp"`, shared by every writer. Two
+concurrent `config set` runs - two agents, or a `doctor` beside a `config set` - failed with
+`rename … .tmp: no such file or directory` in 18 of 40 paired runs, because the first rename
+removed the file the second was about to rename. `config.WriteFile` now creates a unique
+temporary file in the same directory, syncs it, and renames it into place, so a reader sees
+one whole version and no writer can break another. The model index uses it too, and its
+mutex is documented for what it is: in-process serialisation. Across processes the last
+writer wins, and the loser's entry is inspected again - which is the correct failure for a
+cache, and is not what the comment used to claim.
+
+**Rejected.** Refusing to write a value that fails validation - it breaks staging, which is
+already the documented workflow. Keeping the per-key apply list and correcting it - a list
+that has to be kept in step with what three processes read has already failed once.
+`flock` around the model index - it buys a cache entry, at the price of a lock whose
+failure mode (a stale lock file after a crash) is worse than a re-inspection. Deriving the
+unit's `--keys` from the configuration at `config apply` time - re-rendering a unit to
+apply a setting is a second code path that can disagree with the file, which is the shape
+D22 removed for the server config.
+
+Pinned by `TestConfigSetFailsWhenTheValueBreaksTheConfig`,
+`TestConfigSetNamesHowToApplyEverySetting`, `TestSetRequestOptionsAsKeyValue`,
+`TestSaveIsSafeForConcurrentWriters`, `TestHotkeyUnitLetsTheConfigurationOwnTheKey` and
+`TestServerUnitRunsVoiceimeWithSubcommand`.

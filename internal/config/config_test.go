@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -214,5 +215,114 @@ func TestValidateAcceptsAnExistingModelPath(t *testing.T) {
 	cfg.RefineModel = existing
 	if issues := Errors(cfg.Validate()); len(issues) != 0 {
 		t.Fatalf("existing model paths were rejected: %+v", issues)
+	}
+}
+
+// Writing the configuration must survive concurrent writers.
+//
+// The commands that write it can run at the same time - two agents, or a doctor beside
+// a `config set` - and the temporary file used to be `path + ".tmp"`, a name every
+// writer shared. Measured: 18 of 40 paired `config set` runs failed with "rename ...
+// .tmp: no such file or directory", because the first rename removed the file the
+// second was about to rename.
+func TestSaveIsSafeForConcurrentWriters(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	const writers = 8
+
+	var wait sync.WaitGroup
+	failures := make(chan error, writers)
+	for index := 0; index < writers; index++ {
+		wait.Add(1)
+		go func(threads int) {
+			defer wait.Done()
+			cfg := Default()
+			cfg.Threads = threads
+			if err := Save(cfg, path); err != nil {
+				failures <- err
+			}
+		}(index + 1)
+	}
+	wait.Wait()
+	close(failures)
+	for err := range failures {
+		t.Errorf("concurrent Save: %v", err)
+	}
+
+	// Whatever the interleaving, the file is one whole document: one of the writers
+	// won, and nothing left a half-written file behind.
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load after concurrent writes: %v", err)
+	}
+	if loaded.Threads < 1 || loaded.Threads > writers {
+		t.Errorf("threads = %d after concurrent writes, want one of the values written", loaded.Threads)
+	}
+	// And no temporary files are left in the directory.
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), ".tmp-") {
+			t.Errorf("left %s behind", entry.Name())
+		}
+	}
+}
+
+// request_options is the one map setting, and `config set` is the only way an agent has
+// to write it: the command exists so that nothing has to generate TOML by hand. It
+// answered "cannot be set from the command line (map)" while its own description
+// promised `key=value`.
+func TestSetRequestOptionsAsKeyValue(t *testing.T) {
+	cfg := Default()
+
+	if err := cfg.Set("request_options", "audio_chunk_mode=none"); err != nil {
+		t.Fatalf("Set(request_options, key=value): %v", err)
+	}
+	if got := cfg.RequestOptions["audio_chunk_mode"]; got != "none" {
+		t.Fatalf("request_options[audio_chunk_mode] = %q, want none", got)
+	}
+
+	// Overwriting keeps one entry, not two.
+	if err := cfg.Set("request_options", "audio_chunk_mode=fixed"); err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.RequestOptions) != 1 || cfg.RequestOptions["audio_chunk_mode"] != "fixed" {
+		t.Fatalf("request_options = %v, want the single overwritten entry", cfg.RequestOptions)
+	}
+
+	// An empty value removes the key: without that, a value set once could never be
+	// taken out again by the command-line surface.
+	if err := cfg.Set("request_options", "audio_chunk_mode="); err != nil {
+		t.Fatalf("Set with an empty value: %v", err)
+	}
+	if _, found := cfg.RequestOptions["audio_chunk_mode"]; found {
+		t.Errorf("request_options = %v, want the key removed", cfg.RequestOptions)
+	}
+
+	// A malformed value is a usage error that says what the form is.
+	if err := cfg.Set("request_options", "no-equals-sign"); err == nil {
+		t.Error("Set accepted a value that is not key=value")
+	} else if !strings.Contains(err.Error(), "key=value") {
+		t.Errorf("error %q does not say what the form is", err)
+	}
+	if err := cfg.Set("request_options", "=value"); err == nil {
+		t.Error("Set accepted an empty key")
+	}
+
+	// The round trip through the file keeps it, because it reaches the server config.
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := cfg.Set("request_options", "audio_chunk_mode=none"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(cfg, path); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded.RequestOptions["audio_chunk_mode"]; got != "none" {
+		t.Errorf("after a save and load: request_options = %v", loaded.RequestOptions)
 	}
 }

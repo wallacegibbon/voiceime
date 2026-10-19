@@ -108,7 +108,7 @@ type Config struct {
 	// Escape hatch passed straight into the generated server config, so a new
 	// audio.cpp request option is usable without a voiceime release. One map, not two:
 	// session options have no reader now that voiceime is not a CLI caller.
-	RequestOptions map[string]string `toml:"request_options" desc:"Extra request options for the server's repair entry, as key=value."`
+	RequestOptions map[string]string `toml:"request_options" desc:"Extra request options for the server's repair entry, set as key=value; an empty value removes one."`
 }
 
 // Default returns the settings tuned for a stock GNOME/Wayland machine with
@@ -276,9 +276,6 @@ func Load(path string) (*Config, error) {
 
 // Save writes the config so that a later Load returns an identical value.
 func Save(cfg *Config, path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
 	var builder strings.Builder
 	builder.WriteString("# voiceime configuration.\n")
 	builder.WriteString("# Managed by `voiceime config set`; hand-editing is fine and supported.\n")
@@ -286,13 +283,54 @@ func Save(cfg *Config, path string) error {
 	if err := toml.NewEncoder(&builder).Encode(cfg); err != nil {
 		return err
 	}
-	// Write through a temporary file: an interrupted write would otherwise leave
-	// a half-parsed config behind and the daemon would refuse to start.
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(builder.String()), 0o644); err != nil {
+	return WriteFile(path, []byte(builder.String()), 0o644)
+}
+
+// WriteFile replaces path with data atomically, creating its directory.
+//
+// Two things make this worth a shared function rather than os.WriteFile. A half-written
+// file is unreadable to every later command - a truncated config.toml stops the
+// program, a truncated model index silently forces a re-inspection - so the write goes
+// to a temporary file in the same directory and is renamed into place. And the
+// temporary name is generated, not derived: commands that write these files can run at
+// the same time (two agents, or a doctor beside a config set), and a fixed name made
+// every concurrent pair fail - measured, 18 of 40 paired `config set` runs died on
+// "rename ... .tmp: no such file or directory", because one writer's rename removed the
+// file the other was about to rename. The last writer still wins; losing a write is the
+// caller's problem to sequence, losing the file is not.
+func WriteFile(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	// A no-op once the rename has succeeded; otherwise it is the cleanup of a failed
+	// write, which must not leave temporary files in the user's config directory.
+	defer os.Remove(name)
+
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	// Sync before the rename: the point of the temporary file is that path either
+	// names the old contents or the new ones, including across a power cut.
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	// CreateTemp makes the file 0600; the configuration and the index are readable
+	// by anyone who can run the binary, which is what the previous os.WriteFile gave.
+	if err := os.Chmod(name, perm); err != nil {
+		return err
+	}
+	return os.Rename(name, path)
 }
 
 // Issue is one validation finding. Fix is a shell command that resolves it,
@@ -466,6 +504,29 @@ func (c *Config) Set(key, raw string) error {
 				return fmt.Errorf("%s must be true or false: %w", key, err)
 			}
 			target.SetBool(boolean)
+		case reflect.Map:
+			// The one map setting (request_options) is a key=value table, and an
+			// agent has no other way to set it: `config set` exists so that nothing
+			// has to generate TOML by hand. An empty value removes the key, because
+			// otherwise a value set once could never be taken out again.
+			if target.Type().Key().Kind() != reflect.String || target.Type().Elem().Kind() != reflect.String {
+				return fmt.Errorf("%s cannot be set from the command line (%s)", key, target.Type())
+			}
+			entry, value, found := strings.Cut(raw, "=")
+			entry = strings.TrimSpace(entry)
+			if !found || entry == "" {
+				return fmt.Errorf("%s needs key=value, e.g. %s audio_chunk_mode=none (an empty value removes a key)", key, key)
+			}
+			if target.IsNil() {
+				target.Set(reflect.MakeMap(target.Type()))
+			}
+			if value == "" {
+				target.SetMapIndex(reflect.ValueOf(entry).Convert(target.Type().Key()), reflect.Value{})
+				return nil
+			}
+			target.SetMapIndex(
+				reflect.ValueOf(entry).Convert(target.Type().Key()),
+				reflect.ValueOf(value).Convert(target.Type().Elem()))
 		default:
 			return fmt.Errorf("%s cannot be set from the command line (%s)", key, target.Kind())
 		}

@@ -115,7 +115,7 @@ func runServerInstall(ctx *Context, port int, streamFlag, repairFlag string) err
 	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
 		return FailureError("%v", err)
 	}
-	if err := os.WriteFile(unitPath, []byte(serverUnit(ctx, binary, configPath)), 0o644); err != nil {
+	if err := os.WriteFile(unitPath, []byte(serverUnit(binary, absoluteConfigPath(ctx))), 0o644); err != nil {
 		return FailureError("%v", err)
 	}
 
@@ -290,24 +290,28 @@ func buildServerSpec(cfg *config.Config, scanned []models.Model, port int, strea
 // one source of truth for which models are served, so `systemctl --user restart` picks
 // up a changed setting and a stale config is impossible - the alternative was a second
 // file that had to be rewritten by hand (by `server install`) and could silently disagree.
-func serverUnit(ctx *Context, serverBinary, configPath string) string {
+func serverUnit(serverBinary, configPath string) string {
 	self, err := os.Executable()
 	if err != nil {
 		self = "voiceime"
 	}
+	// The unit names the configuration file it was installed for. Without it the
+	// service reads the default path, so `server install --config <path>` (or any
+	// caller with its own file) would install a service that ignores the settings it
+	// was just told to serve.
 	return fmt.Sprintf(`[Unit]
 Description=voiceime recognition server (audio.cpp ASR, models resident)
 Documentation=file://%s
 
 [Service]
 Type=simple
-ExecStart=%s server run
+ExecStart=%s server run --config %s
 Restart=on-failure
 RestartSec=2
 
 [Install]
 WantedBy=default.target
-`, filepath.Join(filepath.Dir(serverBinary), "..", "docs", "AGENT.md"), self)
+`, filepath.Join(filepath.Dir(serverBinary), "..", "docs", "AGENT.md"), self, shellQuote(configPath))
 }
 
 // runServerForeground is what the unit's ExecStart runs: write the config that matches

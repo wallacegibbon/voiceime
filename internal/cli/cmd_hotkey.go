@@ -223,6 +223,35 @@ func runHotkey(ctx *Context, spec string, quiet, logEvents bool) error {
 	return listenErr
 }
 
+// hotkeyUnit is the systemd user unit that keeps the listener alive across logins.
+//
+// It names the configuration file - a unit has no working directory of its own, so a
+// relative --config would be resolved somewhere else - and it names the key only when
+// the caller asked for one. Baking the *configured* key in here made `config set
+// hotkey` followed by `config apply` a no-op: apply restarts the unit, the unit passes
+// the key it was installed with, and `hotkey run` prefers an explicit --keys over the
+// file. Without the flag the listener reads the configuration, which is what the one
+// command that applies a changed setting promises.
+func hotkeyUnit(binary, configPath, keys string) string {
+	execStart := shellQuote(binary) + " hotkey run --config " + shellQuote(configPath)
+	if keys != "" {
+		execStart += " --keys " + shellQuote(keys)
+	}
+	return fmt.Sprintf(`[Unit]
+Description=voiceime dictation shortcut listener
+Documentation=file://%s
+
+[Service]
+Type=simple
+ExecStart=%s
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+`, filepath.Join(filepath.Dir(binary), "..", "docs", "AGENT.md"), execStart)
+}
+
 // servicePath is the systemd --user unit that keeps the listener alive across
 // logins, so a user does not have to start it by hand after every boot.
 func servicePath() string {
@@ -253,19 +282,7 @@ func installHotkeyService(ctx *Context, spec string) error {
 	// Documentation= names the agent guide beside the binary: `make install` puts
 	// the docs at <prefix>/docs/, and a checkout run finds <repo>/docs/. A path
 	// with nothing behind it is a dead link systemd cannot report.
-	unit := fmt.Sprintf(`[Unit]
-Description=voiceime dictation shortcut listener
-Documentation=file://%s
-
-[Service]
-Type=simple
-ExecStart=%s hotkey run --keys %s
-Restart=on-failure
-RestartSec=2
-
-[Install]
-WantedBy=default.target
-`, filepath.Join(filepath.Dir(binary), "..", "docs", "AGENT.md"), binary, shellQuote(hotkeySpec(ctx, spec)))
+	unit := hotkeyUnit(binary, absoluteConfigPath(ctx), spec)
 	if err := os.WriteFile(path, []byte(unit), 0o644); err != nil {
 		return FailureError("%v", err)
 	}

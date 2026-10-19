@@ -273,8 +273,10 @@ that cannot work - a `refine_model` path that does not exist is a `stat`, not a 
 start, so the answer arrives before the running install is disturbed instead of as a
 crash-looping unit that looks like a setting with no effect.
 
-`config set` prints `voiceime config apply` as the next step, for every setting: an edit
-that looks like it did nothing is the failure this project keeps running into.
+`config set` prints `voiceime config apply` as the next step, for every setting - and exits
+non-zero (`3`) when the value it wrote leaves the file unusable, while still writing it, so
+staging a model path before the download finishes stays possible. An edit that looks like
+it did nothing is the failure this project keeps running into.
 
 The unit runs `voiceime server run` rather than audio.cpp directly: that subcommand
 renders `~/.config/voiceime/asr-server.json` from the settings and then runs the server.

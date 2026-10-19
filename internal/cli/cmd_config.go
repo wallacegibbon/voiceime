@@ -158,18 +158,6 @@ func applyConfig(ctx *Context) error {
 	return ctx.Emit("config apply", result)
 }
 
-// serviceSetting reports whether a setting is one the recognition service reads when it
-// starts, rather than one the session reads per request.
-func serviceSetting(key string) bool {
-	switch key {
-	case "streaming_model", "refine_model", "chunk_seconds", "threads", "backend",
-		"language", "session_options", "request_options",
-		"asr_server_stream_model", "asr_server_model":
-		return true
-	}
-	return false
-}
-
 func runConfig(ctx *Context, args []string, force bool) error {
 	if len(args) == 0 {
 		return UsageError("config needs an action: path, show, init, get, set, apply or validate")
@@ -287,25 +275,42 @@ func runConfig(ctx *Context, args []string, force bool) error {
 		}
 		issues := ctx.Config.Validate()
 		if blocking := config.Errors(issues); len(blocking) > 0 {
-			// The value is written, but the config is now unusable. Saying so
-			// loudly here is better than letting the daemon fail later.
-			for _, issue := range blocking {
-				fmt.Fprintf(ctx.Stderr, "voiceime: %s %s: %s\n", issue.Severity, issue.Key, issue.Message)
+			// The value is written - staging a setting before the thing it names
+			// exists (a model path, a server that is not running yet) is how a
+			// deployment is scripted - but the file is now unusable, and saying so
+			// only on stderr was not enough: an agent that branches on exit codes saw
+			// success, and the next command failed somewhere else. The report is
+			// emitted first so a JSON caller still gets `written: true`, and then the
+			// command fails with the fix for the value that broke the file.
+			//
+			// In JSON mode the findings travel in that object, so nothing else is
+			// written to stderr: a caller parses it as one document.
+			if !ctx.JSON {
+				for _, issue := range blocking {
+					ctx.Print("%-7s %-22s %s", issue.Severity, issue.Key, issue.Message)
+				}
 			}
-			return ctx.Emit("config set", map[string]any{
+			if err := ctx.Emit("config set", map[string]any{
 				"key": key, "previous": previous, "value": value,
 				"written": true, "valid": false, "issues": blocking,
-			})
+			}); err != nil {
+				return err
+			}
+			issue := blocking[0]
+			return PreconditionError(issue.Fix, "%s = %v is written, but the configuration is unusable: %s",
+				key, value, issue.Message)
 		}
+		// A setting that is written is not yet a setting that is in force: every
+		// resident process (the recognition service, the engine, the shortcut
+		// listener) reads the configuration when it starts. Naming the one command
+		// that restarts them is what turns "applied" into something an agent can
+		// verify, and answering it the same way for every key is what keeps this from
+		// becoming a second schema: the previous list of "settings the service reads"
+		// had already gone stale, naming two settings that no longer existed and
+		// calling `language` a service setting when it is sent per request.
+		applies := "voiceime config apply"
 		ctx.Print("%s = %v", key, value)
-		// A few settings are compiled into the recognition service when it starts rather
-		// than read per request. Saying which, and what applies them, is the difference
-		// between a setting that works and one that looks like it did nothing.
-		applies := ""
-		if serviceSetting(key) {
-			applies = "voiceime config apply"
-			ctx.Print("this reaches the recognition service at startup: run `%s`", applies)
-		}
+		ctx.Print("this takes effect when the processes that read it restart: run `%s`", applies)
 		return ctx.Emit("config set", map[string]any{
 			"key": key, "previous": previous, "value": value, "written": true, "valid": true,
 			"apply_with": applies,

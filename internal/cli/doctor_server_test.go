@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -169,7 +170,7 @@ func deadURL(t *testing.T) string {
 // config from the settings, so a changed model needs only a restart and a stale config
 // is impossible.
 func TestServerUnitRunsVoiceimeWithSubcommand(t *testing.T) {
-	unit := serverUnit(nil, "/opt/audio.cpp/build/linux-cpu-release/bin/audiocpp_server", "/home/u/.config/voiceime/asr-server.json")
+	unit := serverUnit("/opt/audio.cpp/build/linux-cpu-release/bin/audiocpp_server", "/home/u/.config/voiceime/config.toml")
 	if !strings.Contains(unit, " server run") {
 		t.Errorf("unit does not run the server subcommand:\n%s", unit)
 	}
@@ -185,19 +186,36 @@ func TestServerUnitRunsVoiceimeWithSubcommand(t *testing.T) {
 	if !strings.Contains(unit, "Documentation=file:///opt/audio.cpp/build/linux-cpu-release/docs/AGENT.md") {
 		t.Errorf("unit does not document itself beside the binary:\n%s", unit)
 	}
+	// The settings file has to be named. Without it the service reads the default path,
+	// so a `server install --config <file>` would install a service that serves
+	// something other than the file it was given.
+	if !strings.Contains(unit, "--config /home/u/.config/voiceime/config.toml") {
+		t.Errorf("unit does not name the configuration file:\n%s", unit)
+	}
 }
 
-// Settings that only reach the service at startup say so, because a `config set` that
-// looks like it did nothing is the failure this project keeps running into.
-func TestServiceSettingsAreNamed(t *testing.T) {
-	for _, key := range []string{"refine_model", "streaming_model", "chunk_seconds", "threads", "backend"} {
-		if !serviceSetting(key) {
-			t.Errorf("%s is compiled into the service but is not reported as such", key)
+// Every setting is applied by one command, and `config set` says so - for every key.
+//
+// The previous version kept a list of "settings the service reads at startup" beside
+// Config, and it had already gone stale: it named two settings that no longer existed
+// and called `language` a service setting when it is sent per request. Each of the three
+// resident processes reads the configuration when it starts, so the honest and stable
+// answer for every key is the same command - and `config set` reporting nothing for
+// nine of ten settings is how "applied" came to mean "maybe".
+func TestConfigSetNamesHowToApplyEverySetting(t *testing.T) {
+	configPath, _ := freshConfig(t)
+	for _, field := range config.Default().Fields() {
+		value := fmt.Sprint(field.Value)
+		if field.Type == "map[string]string" {
+			value = "audio_chunk_mode=none"
 		}
-	}
-	for _, key := range []string{"endpoint_silence_ms", "hotkey", "silence_rms_threshold"} {
-		if serviceSetting(key) {
-			t.Errorf("%s is read per session but is reported as a service setting", key)
+		code, stdout, stderr := runForTest(t, "config", "set", field.Key, value, "--json", "--config", configPath)
+		if code != ExitOK {
+			t.Fatalf("config set %s %q: exit %d, stderr %s", field.Key, value, code, stderr)
+		}
+		payload := decodeOne(t, stdout)["data"].(map[string]any)
+		if payload["apply_with"] != "voiceime config apply" {
+			t.Errorf("%s: apply_with = %v, want the one command that applies a setting", field.Key, payload["apply_with"])
 		}
 	}
 }

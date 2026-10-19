@@ -100,10 +100,13 @@ type index struct {
 
 const indexVersion = 1
 
-// indexMu serialises read-modify-write of the inspection cache. Two commands can
-// run at once (a doctor and a models list, or two agents), and both would
-// otherwise load the index, modify their own copy and save, losing the other's
-// work - which shows up later as models being re-inspected for no reason.
+// indexMu serialises the read-modify-write of the inspection cache inside this
+// process, so two goroutines cannot each load the index, modify their own copy and
+// save, losing the other's work. It does not reach across processes - two commands
+// running at once are separate processes, and a mutex cannot help them. What keeps
+// those from corrupting the file is config.WriteFile's atomic replace; the cost is
+// that the last writer wins and the loser's entry is inspected again on the next scan,
+// which is why the cache is a cache.
 var indexMu sync.Mutex
 
 func loadIndex(path string) index {
@@ -119,14 +122,11 @@ func loadIndex(path string) index {
 }
 
 func saveIndex(path string, loaded index) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
 	raw, err := json.MarshalIndent(loaded, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, raw, 0o644)
+	return config.WriteFile(path, raw, 0o644)
 }
 
 // candidate is something in the models directory worth asking about.

@@ -118,15 +118,19 @@ Settings that matter, and the reasoning a caller needs to pick values:
 | `silence_rms_threshold` | `600` | **Floor**, not a fixed threshold: the detector adapts up to twice the noise floor it measures in the stream, and never below this value. 600 clears the reference room's idle noise (20ms p90 = 436 RMS) and stays under normal speech; too high a value makes quiet speech silently ignored, so measure before raising it - see [measurements.md](measurements.md#endpointing-in-a-real-room). |
 | `endpoint_min_speech_ms` | `300` | Speech shorter than this is not an utterance. Raise it in a room with impulsive noise (keystrokes, chair). A phrase shorter than it is treated as noise and is **not committed at all** when dictation stops — if it is the only thing in the session, nothing is delivered and the session reports how much it withheld. Lower it only if you dictate short words, and expect more noise to be taken for speech. |
 | `download_mirror` | `https://hf-mirror.com` | Endpoint downloads go through, written to `HF_ENDPOINT`. Any Hugging Face protocol host works: `https://huggingface.co`, a company cache, a LAN address. |
-| `request_options` | `{}` | Extra audio.cpp request options for the repair entry, written into the server config. |
+| `request_options` | `{}` | Extra audio.cpp request options for the repair entry, written into the server config. Set one with `voiceime config set request_options audio_chunk_mode=none`; an empty value removes it. |
 
-Some settings are read by the recognition service at startup rather than per request:
-the model paths, `chunk_seconds`, `threads`, `backend`, `language`, and the option maps.
-`voiceime config set` names the command that applies them - `voiceime config apply` - which
-restarts the service (re-rendering its config and waiting until it serves the new models),
-restarts the shortcut listener, and drops the IBus engine so it respawns with the new
-configuration. Editing the file by hand is equally supported, and needs the same command.
-The unit runs `voiceime server run`, so the settings remain the only source of truth.
+Every setting is read by some resident process when it starts - the model paths,
+`chunk_seconds`, `threads`, `backend` and the option maps by the recognition service;
+`language` and the endpoint settings by the engine; `hotkey` by the shortcut listener - so
+writing one is not the same as it being in force. `voiceime config set` therefore names the
+one command that applies it, `voiceime config apply`, for every key: it restarts the
+service (re-rendering its config and waiting until it serves the new models), restarts the
+shortcut listener, and drops the IBus engine so it respawns with the new configuration.
+Editing the file by hand is equally supported, and needs the same command. The unit runs
+`voiceime server run`, so the settings remain the only source of truth, and both units name
+the configuration file they were installed for, so `--config` is honoured by the service
+and the listener too.
 
 Validate after changing anything:
 

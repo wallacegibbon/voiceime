@@ -151,3 +151,52 @@ func TestUnknownCommandIsAUsageError(t *testing.T) {
 		t.Errorf("stderr = %q, want it to name the problem", stderr)
 	}
 }
+
+// `config set` writes the value and then fails if the file it wrote cannot be used.
+//
+// Writing first is deliberate: staging a model path before the download finishes is how
+// a deployment is scripted, and `config apply` is where an unusable file is refused. What
+// must not happen is exit 0 - the report on stderr was invisible to a caller that
+// branches on exit codes, so "validate after changing anything" could not be automated.
+func TestConfigSetFailsWhenTheValueBreaksTheConfig(t *testing.T) {
+	configPath, _ := freshConfig(t)
+
+	code, stdout, stderr := runForTest(t, "config", "set", "threads", "0", "--json", "--config", configPath)
+	if code != ExitPrecondition {
+		t.Fatalf("exit %d, want %d (precondition) for a value that makes the config unusable", code, ExitPrecondition)
+	}
+
+	// The report is still one object on stdout, saying the value was written.
+	payload := decodeOne(t, stdout)["data"].(map[string]any)
+	if payload["written"] != true {
+		t.Errorf("written = %v, want true: the value is staged on purpose", payload["written"])
+	}
+	if payload["valid"] != false {
+		t.Errorf("valid = %v, want false", payload["valid"])
+	}
+
+	// And the failure carries the fix, like every other precondition failure.
+	failure := decodeOne(t, stderr)["error"].(map[string]any)
+	fix, _ := failure["fix"].(string)
+	if !strings.Contains(fix, "config set threads") {
+		t.Errorf("fix = %q, want the command that repairs the value", fix)
+	}
+
+	// The value really is in the file, so the report and the file agree.
+	loaded, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(loaded), "threads = 0") {
+		t.Error("the value the report says was written is not in the file")
+	}
+
+	// A usable value is a success, with the command that applies it named.
+	code, stdout, stderr = runForTest(t, "config", "set", "threads", "4", "--json", "--config", configPath)
+	if code != ExitOK {
+		t.Fatalf("setting a valid value: exit %d, stderr %s", code, stderr)
+	}
+	if payload := decodeOne(t, stdout)["data"].(map[string]any); payload["valid"] != true {
+		t.Errorf("valid = %v for a value that is fine", payload["valid"])
+	}
+}

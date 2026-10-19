@@ -2,6 +2,7 @@ package cli
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -55,5 +56,40 @@ func TestSessionTypeIgnoresNonDisplaySessionType(t *testing.T) {
 	t.Setenv("XDG_SESSION_TYPE", "wayland")
 	if got := sessionType(); got != "wayland" {
 		t.Fatalf("sessionType() = %q, want wayland", got)
+	}
+}
+
+// The listener's unit must let the configuration own the key.
+//
+// It used to bake the *configured* key into ExecStart, and `hotkey run` prefers an
+// explicit --keys over the file. So `config set hotkey '<F10>'` followed by
+// `config apply` - the documented way to make the running system match the file -
+// restarted the unit straight back onto the old key. Named only when the caller asked
+// for one, the configuration is what decides.
+func TestHotkeyUnitLetsTheConfigurationOwnTheKey(t *testing.T) {
+	unit := hotkeyUnit("/home/u/.local/bin/voiceime", "/home/u/.config/voiceime/config.toml", "")
+	if strings.Contains(unit, "--keys") {
+		t.Errorf("unit pins a key, so a changed `hotkey` setting cannot be applied:\n%s", unit)
+	}
+	if !strings.Contains(unit, "--config /home/u/.config/voiceime/config.toml") {
+		t.Errorf("unit does not name the configuration file:\n%s", unit)
+	}
+	if !strings.Contains(unit, "/home/u/.local/bin/voiceime hotkey run") {
+		t.Errorf("unit does not run the listener:\n%s", unit)
+	}
+
+	// An explicit --keys is still honoured: it is the one-off override.
+	explicit := hotkeyUnit("/home/u/.local/bin/voiceime", "/home/u/.config/voiceime/config.toml", "<F10>")
+	if !strings.Contains(explicit, "--keys <F10>") {
+		t.Errorf("an explicit key was dropped from the unit:\n%s", explicit)
+	}
+}
+
+// A path with a space has to survive the unit's command line, which systemd splits
+// itself.
+func TestHotkeyUnitQuotesAPathWithSpaces(t *testing.T) {
+	unit := hotkeyUnit("/home/u/my apps/voiceime", "/home/u/my apps/config.toml", "")
+	if !strings.Contains(unit, `--config '/home/u/my apps/config.toml'`) {
+		t.Errorf("the configuration path is not quoted:\n%s", unit)
 	}
 }

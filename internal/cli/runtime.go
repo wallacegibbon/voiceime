@@ -3,11 +3,23 @@ package cli
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"time"
 
 	"github.com/wallacegibbon/voiceime/internal/config"
 	"github.com/wallacegibbon/voiceime/internal/models"
 )
+
+// absoluteConfigPath is the configuration file as a systemd unit has to name it.
+//
+// `--config` may be relative, and a unit has no working directory of its own: the
+// service would read a different file from the one the install command was given.
+func absoluteConfigPath(ctx *Context) string {
+	if absolute, err := filepath.Abs(ctx.ConfigPath); err == nil {
+		return absolute
+	}
+	return ctx.ConfigPath
+}
 
 // timeout bounds a subprocess-backed action. Named once so the durations are
 // visible in a single place when tuning for a slow mirror or a large model.

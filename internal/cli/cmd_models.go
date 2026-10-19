@@ -59,7 +59,9 @@ func runModels(ctx *Context, args []string, showAllModels, refreshModels bool) e
 		}
 		sort.Slice(scanned, func(i, j int) bool { return scanned[i].Family < scanned[j].Family })
 
-		streaming := models.PickStreaming(scanned, ctx.Config.Language)
+		// Which checkpoint each role uses: one answer, shared with the server spec and
+		// `config show` (D32).
+		resolved := models.Resolve(scanned, ctx.Config.Language, ctx.Config.StreamingModel, ctx.Config.RefineModel)
 
 		for _, model := range scanned {
 			state := model.Family
@@ -78,11 +80,10 @@ func runModels(ctx *Context, args []string, showAllModels, refreshModels bool) e
 				ignored, ctx.Config.ResolvedModelsDir())
 		}
 
-		refine := resolveModel(ctx, true)
 		payload := map[string]any{
 			"models":        scanned,
-			"streaming":     pathOf(streaming),
-			"refine":        refine,
+			"streaming":     resolved.Stream,
+			"refine":        resolved.Repair,
 			"refine_source": refineSource(ctx),
 		}
 		if err := ctx.Emit("models "+action, payload); err != nil {
@@ -179,11 +180,4 @@ func describeTasks(model models.Model) string {
 		return "-"
 	}
 	return strings.Join(parts, ",")
-}
-
-func pathOf(model *models.Model) string {
-	if model == nil {
-		return ""
-	}
-	return model.Path
 }

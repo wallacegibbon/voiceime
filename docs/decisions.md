@@ -1176,3 +1176,34 @@ Pinned by `TestProcessesRunningIgnoresProcessesThatMerelyMentionThePattern`. The
 are conditions in code paths that need a live IBus daemon and a running server; both were
 verified by hand on this machine (the shell that ran `config apply` survived, and a 1.6s
 replay stopped at 1.0s with `--seconds 1`).
+
+## D32 — Which model each role uses is one answer, in one place.
+
+**Decision.** `models.Resolve` decides both checkpoints: an explicit path wins, an empty
+`streaming_model` picks the best installed streaming model, an empty `refine_model` reuses
+the streaming model. The generated server config, `models list` and `config show` all call
+it.
+
+**Why.** The rule was documented once and implemented three times, and the copies had
+drifted into a defect: the server spec resolved repair on its own with the ranking, so a
+user who chose a streaming model that was not the top-ranked one got a service repairing
+with a *different* checkpoint than the configuration promised - `config show` said "empty
+means reuse the streaming model: chosen.gguf" while the unit served best.gguf for repair.
+Nothing reported it: both models exist, both load, and the symptom is text that differs
+slightly from what a second pass would have produced. That is the exact failure mode
+`config apply`'s readiness check was added for (D22), one layer down.
+
+**Consequence.** `models list`'s `streaming` field now reports the model that will be used
+rather than the auto-pick, which is what its name always claimed. A `--stream-model` or
+`--repair-model` flag is still a one-off override; it is folded into the setting before
+resolution, so the flag beats the setting and nothing else changes.
+
+**Rejected.** Keeping the three implementations and adding a test that they agree - the
+test would have to know all three, and the next setting would be added to two of them
+again. Resolving repair to "streaming, unless empty, in which case rank" - that is the old
+behaviour, and the setting's own description says otherwise.
+
+Pinned by `TestResolveReusesTheConfiguredStreamingModel`,
+`TestResolvePicksOneModelForBothRoles`, `TestResolveHonoursAnExplicitRefineModel`,
+`TestResolveBreaksATieOnLanguage`, `TestResolveWithNothingInstalled`,
+`TestResolveExpandsHome` and the four `TestServerSpec*` tests.

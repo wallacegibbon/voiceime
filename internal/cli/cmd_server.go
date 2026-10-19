@@ -242,18 +242,24 @@ func entriesMatch(ctx context.Context, baseURL string, spec server.Spec) error {
 // buildServerSpec decides which checkpoints the two entries serve. It is shared with
 // doctor so the check can say what *should* be running.
 func buildServerSpec(cfg *config.Config, scanned []models.Model, port int, streamFlag, repairFlag string) (server.Spec, error) {
-	streamPath := modelPath(cfg, scanned, streamFlag, cfg.StreamingModel, false)
-	if streamPath == "" {
-		streamPath = modelPath(cfg, scanned, "", "", true)
+	// A flag overrides the setting it duplicates; the resolution itself is models.Resolve,
+	// so the service serves what `config show` and `models list` report (D32).
+	streamSetting, repairSetting := streamFlag, repairFlag
+	if strings.TrimSpace(streamSetting) == "" {
+		streamSetting = cfg.StreamingModel
 	}
-	repairPath := modelPath(cfg, scanned, repairFlag, cfg.RefineModel, true)
+	if strings.TrimSpace(repairSetting) == "" {
+		repairSetting = cfg.RefineModel
+	}
+	resolved := models.Resolve(scanned, cfg.Language, streamSetting, repairSetting)
+	streamPath, repairPath := resolved.Stream, resolved.Repair
 	switch {
 	case streamPath == "" && repairPath == "":
 		return server.Spec{}, fmt.Errorf("no model to serve: install one first")
 	case streamPath == "":
+		// Nothing that can stream is installed, but a repair checkpoint is named: serve it
+		// for both roles rather than refusing to start.
 		streamPath = repairPath
-	case repairPath == "":
-		repairPath = streamPath
 	}
 	streamFamily, err := modelFamily(scanned, streamPath)
 	if err != nil {
@@ -491,24 +497,6 @@ func runServerStatus(ctx *Context) error {
 		}
 	}
 	return ctx.Emit("server", status)
-}
-
-// modelPath resolves a model argument the way the rest of the CLI does: the flag, then
-// the setting, then (optionally) the model auto-selection would pick.
-func modelPath(cfg *config.Config, scanned []models.Model, flagValue, setting string, pick bool) string {
-	for _, candidate := range []string{flagValue, setting} {
-		if strings.TrimSpace(candidate) != "" {
-			return config.Expand(candidate)
-		}
-	}
-	if !pick {
-		return ""
-	}
-	// "Empty means pick automatically", the same rule the rest of the CLI uses.
-	if picked := models.PickStreaming(scanned, cfg.Language); picked != nil {
-		return picked.Path
-	}
-	return ""
 }
 
 // modelFamily reports a model's audio.cpp family, which the server requires. It comes

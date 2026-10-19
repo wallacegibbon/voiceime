@@ -50,26 +50,36 @@ func resolvedModels(ctx *Context) map[string]string {
 	if err != nil {
 		return resolved
 	}
-	streaming := ""
+	// The same resolution the service is configured from (D32), so "which model is in
+	// use" has one answer rather than one per command.
+	choice := models.Resolve(scanned, ctx.Config.Language, ctx.Config.StreamingModel, ctx.Config.RefineModel)
 	if strings.TrimSpace(ctx.Config.StreamingModel) == "" {
-		if picked := models.PickStreaming(scanned, ctx.Config.Language); picked != nil {
-			streaming = picked.Path
-			resolved["streaming_model"] = "empty means pick one: " + filepath.Base(picked.Path) + " (" + picked.Family + ")"
-		} else {
+		if choice.Stream == "" {
 			resolved["streaming_model"] = "empty means pick one, and no streaming model is installed"
+		} else {
+			resolved["streaming_model"] = "empty means pick one: " + describeModel(scanned, choice.Stream)
 		}
 	}
-	repair := ctx.Config.RefineModel
-	if strings.TrimSpace(repair) == "" {
-		if streaming != "" {
-			resolved["refine_model"] = "empty means reuse the streaming model: " + filepath.Base(streaming)
-		} else {
+	if strings.TrimSpace(ctx.Config.RefineModel) == "" {
+		if choice.Repair == "" {
 			resolved["refine_model"] = "empty means reuse the streaming model, which is not installed"
+		} else {
+			resolved["refine_model"] = "empty means reuse the streaming model: " + describeModel(scanned, choice.Repair)
 		}
-	} else if found := models.Lookup(scanned, repair); found != nil {
-		resolved["refine_model"] = "in use: " + filepath.Base(found.Path) + " (" + found.Family + ")"
+	} else if found := models.Lookup(scanned, ctx.Config.RefineModel); found != nil {
+		resolved["refine_model"] = "in use: " + describeModel(scanned, found.Path)
 	}
 	return resolved
+}
+
+// describeModel names a checkpoint the way a user recognises it: the file, then its
+// family, which is what the ranking is based on.
+func describeModel(scanned []models.Model, path string) string {
+	found := models.Lookup(scanned, path)
+	if found == nil {
+		return filepath.Base(path)
+	}
+	return filepath.Base(found.Path) + " (" + found.Family + ")"
 }
 
 // applyConfig restarts the three processes that load the configuration, so a hand-edited

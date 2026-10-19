@@ -433,7 +433,6 @@ func (e *engineObject) ProcessKeyEvent(keyval, keycode, state uint32) (bool, *db
 func (e *engineObject) FocusIn() *dbus.Error  { return nil }
 func (e *engineObject) FocusOut() *dbus.Error { return nil }
 func (e *engineObject) Reset() *dbus.Error    { return nil }
-func (e *engineObject) Disable_() *dbus.Error { return nil }
 
 func (e *engineObject) FocusInId(objectPath, client string) *dbus.Error           { return nil }
 func (e *engineObject) FocusOutId(objectPath string) *dbus.Error                  { return nil }

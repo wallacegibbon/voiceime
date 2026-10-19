@@ -206,14 +206,9 @@ type microphone struct {
 // server implements most completely, including --device selection by source name.
 func NewMicrophone(cfg *config.Config) (Capture, error) {
 	// The rate is not a setting: audio.cpp's bundled VAD rejects anything but 16 kHz,
-	// so a configurable value could only ever be wrong in one direction.
+	// so a configurable value could only ever be wrong in one direction. It was one
+	// (capture_rate), and the constant is what remained of it.
 	rate := SampleRate
-	if rate == 0 {
-		rate = SampleRate
-	}
-	if rate != SampleRate {
-		return nil, fmt.Errorf("capture_rate must be %d: the models' VAD rejects other rates", SampleRate)
-	}
 
 	if parec := config.FindExecutable("parec"); parec != "" {
 		args := []string{

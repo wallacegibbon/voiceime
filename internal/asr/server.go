@@ -18,13 +18,12 @@ import (
 // Transcriber is the offline decode the repair pass needs: one finished utterance
 // in, its text out.
 //
-// It is an interface because there are two ways to run that decode and the
-// session does not care which it gets. Repairer starts a process per utterance;
-// ServerTranscriber talks to a resident audiocpp_server. The difference is not
-// cosmetic: a process pays the whole model load every time (measured on the
-// reference machine, Qwen3-ASR-0.6B: ~4.4s of setup per invocation, against
-// ~1.0s to load it once on the server), which is what makes a large refine model
-// unusable on the CLI route and affordable on the server route.
+// It is an interface because the session must not care how the decode happens:
+// ServerTranscriber is the only production route (a resident audiocpp_server, whose
+// weights are loaded at its start rather than per utterance - D22), and a test or a
+// caller with a different reader supplies its own. The process-per-utterance route it
+// replaced paid the whole model load every time (measured with Qwen3-ASR-0.6B: ~4.4s of
+// setup per invocation against ~1.0s once), which is what the service exists to remove.
 type Transcriber interface {
 	Transcribe(ctx context.Context, pcm []byte) (string, error)
 }
@@ -71,7 +70,8 @@ func (s ServerTranscriber) Transcribe(ctx context.Context, pcm []byte) (string, 
 		return "", err
 	}
 	if strings.TrimSpace(s.Model) == "" {
-		return "", fmt.Errorf("server repair needs asr_server_model: the id the server config gave the offline model")
+		// The id is a constant the front ends pass in (server.DefaultID); see OpenStream.
+		return "", fmt.Errorf("no repair model id: the repair uses the entry `voiceime server install` writes")
 	}
 
 	var body bytes.Buffer
@@ -173,11 +173,11 @@ func summarise(payload []byte) string {
 // RepairRequestOptions returns the request options the offline repair decode
 // needs, with the caller's overlaid on top.
 //
-// It is exported and shared because the two repair routes have to decode
-// identically or a user comparing them is comparing two things: the CLI route
-// passes these as --request-option flags, and the server route writes them into
-// the model entry's default_request_options, since a multipart transcription
-// upload has no field to carry them per request.
+// There is one place left to put them: a multipart transcription upload has no field
+// that carries per-request options, so they are written into the model entry's
+// default_request_options when the server config is rendered. They stay a function
+// rather than a literal on purpose - the option that makes a repair decode a whole
+// utterance instead of chunking it is a property of the decode, not of the server.
 func RepairRequestOptions(overrides map[string]string) map[string]string {
 	options := map[string]string{"audio_chunk_mode": "none"}
 	for key, value := range overrides {

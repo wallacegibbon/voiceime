@@ -11,6 +11,7 @@
 package models
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -252,7 +253,9 @@ func Scan(cfg *config.Config, force bool, progress func(string)) ([]Model, error
 // report. The command is cheap (a few hundred milliseconds at most) because it
 // reads the checkpoint header rather than the weights.
 func inspect(asrBinary, path string) indexEntry {
-	ctx, cancel := contextWithTimeout(90 * time.Second)
+	// The only bound model discovery puts on a subprocess: --inspect reads a checkpoint
+	// header, and a tool that has not answered in 90s is wedged.
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	output, err := exec.CommandContext(ctx, asrBinary, "--model", path, "--inspect").CombinedOutput()
 	text := string(output)

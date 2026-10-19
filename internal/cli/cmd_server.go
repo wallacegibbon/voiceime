@@ -68,15 +68,11 @@ func cmdServer() *Command {
 }
 
 func serverUnitPath() string {
-	base := os.Getenv("XDG_CONFIG_HOME")
-	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return ""
-		}
-		base = filepath.Join(home, ".config")
+	dir := config.UserUnitDir()
+	if dir == "" {
+		return ""
 	}
-	return filepath.Join(base, "systemd", "user", serverUnitName)
+	return filepath.Join(dir, serverUnitName)
 }
 
 // serverConfigFile is where the generated server config lives. `server install` writes
@@ -387,11 +383,10 @@ func runServerRestart(ctx *Context) error {
 	if err != nil {
 		return FailureError("%v", err)
 	}
-	host, port, err := server.ParseURL(ctx.Config.ASRServerURL)
+	_, port, err := server.ParseURL(ctx.Config.ASRServerURL)
 	if err != nil {
 		return PreconditionError("voiceime server install", "%v", err)
 	}
-	_ = host
 	spec, err := buildServerSpec(ctx.Config, scanned, port, "", "")
 	if err != nil {
 		return PreconditionError("voiceime server install", "%v", err)

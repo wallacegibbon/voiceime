@@ -215,7 +215,15 @@ func (o Options) Run(ctx context.Context) (Result, error) {
 
 	for chunk := range capture.Chunks() {
 		if err := engine.Write(chunk.Data); err != nil {
-			report(notify.Error, err)
+			// A cancelled session closes the socket under the writer - that is how a
+			// Write waiting on a slow server is released (see OpenStream's watcher) - so
+			// this failure is the stop working, not a failure. Reporting it put "write
+			// audio to the streaming server: use of closed network connection" on stderr
+			// for every Ctrl-C and in the engine's trace for every hotkey release, which
+			// is the shape of a bug report for a feature that worked.
+			if ctx.Err() == nil {
+				report(notify.Error, err)
+			}
 			break
 		}
 		// A dropped block is the one way audio the user spoke never reaches the

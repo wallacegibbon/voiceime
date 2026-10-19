@@ -48,8 +48,6 @@ type Spec struct {
 	StreamFamily string
 	RepairModel  string
 	RepairFamily string
-	StreamID     string
-	RepairID     string
 	Host         string
 	Port         int
 	Backend      string

@@ -85,7 +85,6 @@ type Segmenter struct {
 	lastSpeechSample int64
 	silenceSamples   int64
 	speechRun        int64
-	pos              int64
 
 	// noiseFloor tracks the quietest frame seen recently, which is what allows
 	// the threshold to adapt upward in a noisy room. It follows the level down
@@ -102,7 +101,6 @@ type Segmenter struct {
 	// and never commits, and stopping discards it" failure.
 	measured bool
 	pending  []SegmentEvent
-	started  time.Time
 }
 
 // NewSegmenter builds a detector from configuration.
@@ -123,7 +121,7 @@ func NewSegmenter(cfg SegmenterConfig) *Segmenter {
 	// measurement: until a quiet frame arrives, Threshold() reports the configured
 	// value untouched (see measured), so a stream that has not measured anything
 	// yet behaves like the plain threshold detector.
-	return &Segmenter{cfg: cfg, noiseFloor: cfg.Threshold, started: time.Now()}
+	return &Segmenter{cfg: cfg, noiseFloor: cfg.Threshold}
 }
 
 // adaptiveFactor is how far above the measured noise floor speech must be. Two is
@@ -154,7 +152,6 @@ func (s *Segmenter) Threshold() float64 {
 // is the block's position in the stream, so events carry absolute positions
 // whether the audio came from a microphone or a file.
 func (s *Segmenter) Push(data []byte, startSample int64) []SegmentEvent {
-	s.pos = startSample
 	s.pending = s.pending[:0]
 
 	frameBytes := FrameMS * SampleRate / 1000 * BytesPerSample
@@ -176,7 +173,7 @@ func (s *Segmenter) Push(data []byte, startSample int64) []SegmentEvent {
 func (s *Segmenter) Flush() []SegmentEvent {
 	s.pending = s.pending[:0]
 	if s.state == stateSpeaking && s.lastSpeechSample > s.speechStart && s.speechLongEnough() {
-		s.pending = append(s.pending, s.endEvent(s.lastSpeechSample, 0))
+		s.pending = append(s.pending, s.endEvent(s.lastSpeechSample))
 	}
 	return s.pending
 }
@@ -215,8 +212,6 @@ func (s *Segmenter) frame(frame []byte, sample int64) {
 				Kind:        SpeechStart,
 				StartSample: sample,
 				EndSample:   sample + frameSamples,
-				Probability: level,
-				Elapsed:     time.Since(s.started),
 			})
 		}
 	case stateSpeaking:
@@ -238,7 +233,7 @@ func (s *Segmenter) frame(frame []byte, sample int64) {
 		if silentFor >= time.Duration(s.cfg.SilenceMS)*time.Millisecond {
 			// Only report a segment that contained enough speech to be words.
 			if s.speechLongEnough() {
-				s.pending = append(s.pending, s.endEvent(s.lastSpeechSample, level))
+				s.pending = append(s.pending, s.endEvent(s.lastSpeechSample))
 			} else {
 				s.state = stateQuiet
 			}
@@ -246,7 +241,7 @@ func (s *Segmenter) frame(frame []byte, sample int64) {
 		}
 
 		if float64(s.lastSpeechSample-s.speechStart)/SampleRate >= s.cfg.MaxUtteranceSeconds {
-			s.pending = append(s.pending, s.endEvent(s.lastSpeechSample, level))
+			s.pending = append(s.pending, s.endEvent(s.lastSpeechSample))
 		}
 	}
 }
@@ -257,13 +252,11 @@ func (s *Segmenter) speechLongEnough() bool {
 	return spoken >= float64(minutes)
 }
 
-func (s *Segmenter) endEvent(endSample int64, probability float64) SegmentEvent {
+func (s *Segmenter) endEvent(endSample int64) SegmentEvent {
 	event := SegmentEvent{
 		Kind:        SpeechEnd,
 		StartSample: s.speechStart,
 		EndSample:   endSample,
-		Probability: probability,
-		Elapsed:     time.Since(s.started),
 	}
 	s.state = stateQuiet
 	s.silenceSamples = 0

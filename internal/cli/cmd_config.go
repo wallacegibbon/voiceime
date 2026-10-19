@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/wallacegibbon/voiceime/internal/config"
+	"github.com/wallacegibbon/voiceime/internal/ibus"
 	"github.com/wallacegibbon/voiceime/internal/models"
 	"github.com/wallacegibbon/voiceime/internal/server"
 )
@@ -535,19 +536,12 @@ func ibusState(ctx *Context) map[string]any {
 	if current, err := probe("ibus", "engine"); err == nil {
 		state["current_engine"] = firstLine(current)
 	}
-	state["component_path"] = ibusComponentPath()
-	state["component_installed"] = fileExists(ibusComponentPath())
+	state["component_path"] = ibus.ComponentPath()
+	state["component_installed"] = fileExists(ibus.ComponentPath())
 	if listing, err := probe("ibus", "list-engine"); err == nil {
 		state["engine_registered"] = listEngineContains(listing, ctx.Config.IBusEngineName)
 	} else {
 		state["engine_registered"] = false
 	}
 	return state
-}
-
-// ibusComponentPath is where the engine definition is installed. IBus discovers
-// components by scanning this directory, so installing the engine is a file
-// write plus a daemon restart - no build step, no root.
-func ibusComponentPath() string {
-	return filepath.Join(config.DataDir(), "component", "voiceime.xml")
 }

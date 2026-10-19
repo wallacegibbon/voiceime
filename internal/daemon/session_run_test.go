@@ -474,3 +474,51 @@ func TestFailedActivationLeavesNoRepairWorkers(t *testing.T) {
 		}
 	}
 }
+
+// A stop we asked for must not be reported as a write failure.
+//
+// Cancelling closes the streaming socket under the capture loop - it is what releases a
+// Write waiting on a slow server - so the next block fails to write. That is the stop
+// working: it used to reach the observer, which put "write audio to the streaming
+// server: use of closed network connection" in the engine's trace and on
+// `voiceime stream`'s stderr for every Ctrl-C (reproduced against the live server).
+func TestCancelledSessionIsNotReportedAsAWriteFailure(t *testing.T) {
+	server := newFakeASRServer(t)
+	options, sink := sessionOptions(t, server, true)
+
+	var mu sync.Mutex
+	var reported []string
+	partials := 0
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	options.Observer = Observer{
+		// Stop on the second partial: the utterance has been speaking long enough to be
+		// accepted, and audio is still arriving, so the loop has another block to write.
+		Partial: func(string, float64) {
+			mu.Lock()
+			defer mu.Unlock()
+			partials++
+			if partials == 2 {
+				cancel()
+			}
+		},
+		Error: func(err error) {
+			mu.Lock()
+			defer mu.Unlock()
+			reported = append(reported, err.Error())
+		},
+	}
+
+	if _, err := options.Run(ctx); err != nil && ctx.Err() == nil {
+		t.Fatalf("session failed: %v", err)
+	}
+	mu.Lock()
+	messages := strings.Join(reported, " | ")
+	mu.Unlock()
+	if strings.Contains(messages, "write audio") {
+		t.Errorf("a requested stop was reported as a failure: %s", messages)
+	}
+	if len(sink.commits()) == 0 {
+		t.Errorf("a cancelled session delivered nothing: %v", sink.events)
+	}
+}

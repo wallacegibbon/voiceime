@@ -80,15 +80,10 @@ func asrServerCheck(cfg *config.Config, scanned []models.Model, unitInstalled bo
 	// Something answers. The remaining question is whether it serves the entries the
 	// client will ask for - a wrong id otherwise shows up per utterance as a repair
 	// that fell back, or as a stream that never starts.
+	//
+	// The ids are constants now (server install writes them), so the only way they can
+	// be wrong is a service built by another version; the listing is what says so.
 	streamEntry, repairEntry := serverStreamModelID(), serverModelID()
-	if streamEntry == repairEntry {
-		return Check{
-			ID:     "asr_server",
-			Status: "fail",
-			Detail: fmt.Sprintf("asr_server_stream_model and asr_server_model are both %q: a repair would wait for the dictation that holds that entry", streamEntry),
-			Fix:    "voiceime config set asr_server_model refine",
-		}
-	}
 	entries, err := server.Entries(ctx, raw)
 	if err != nil {
 		return Check{ID: "asr_server", Status: "fail", Detail: err.Error(), Fix: "voiceime server install"}

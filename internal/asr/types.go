@@ -14,9 +14,12 @@ import "time"
 // EventKind classifies what the streaming session reported.
 type EventKind string
 
+// The two kinds a live session actually reports. The vocabulary used to carry "ready"
+// and the model's own voice-activity events; nothing produced them (the reader emits
+// deltas, and the snapshot the framework defines), so they were documentation for a
+// message that never arrives - and where an utterance begins and ends is the
+// endpointer's decision (docs/decisions.md, D16), not the model's.
 const (
-	// EventReady means the session is open and audio may be written.
-	EventReady EventKind = "ready"
 	// EventPartial is text decoded since the previous partial. It is provisional: a
 	// window-based streaming model can still change what it heard, and the repair
 	// pass will.
@@ -25,11 +28,6 @@ const (
 	// model emits it, and none voiceime selects does today; the framework defines it,
 	// so the transcript model honours it.
 	EventSnapshot EventKind = "snapshot"
-	// EventSpeechStart / EventSpeechEnd are the model's own VAD, when it has one.
-	// They are forwarded rather than relied upon: voiceime's endpointer is what
-	// decides where an utterance begins and ends.
-	EventSpeechStart EventKind = "speech_start"
-	EventSpeechEnd   EventKind = "speech_end"
 )
 
 // Event is one observation from the running session.
@@ -40,11 +38,6 @@ type Event struct {
 	// real-time feed this is the latency figure that matters: the time from "the
 	// user said it" to "text appeared".
 	FedSeconds float64 `json:"fed_seconds"`
-	// SinceStart is wall time since the session opened.
-	SinceStart time.Duration `json:"-"`
-	// Sample is the model's own position for voice-activity events.
-	Sample      int64   `json:"sample,omitempty"`
-	Probability float64 `json:"probability,omitempty"`
 }
 
 // Result is what a finished session produced.

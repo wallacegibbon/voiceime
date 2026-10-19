@@ -78,7 +78,9 @@ func OpenStream(ctx context.Context, cfg StreamConfig) (*Stream, error) {
 		return nil, fmt.Errorf("no server configured: run `voiceime server install`, or set asr_server_url")
 	}
 	if strings.TrimSpace(cfg.Model) == "" {
-		return nil, fmt.Errorf("no streaming model id configured: set asr_server_stream_model")
+		// The id is a constant the front ends pass in (server.DefaultStreamID), so this
+		// is a caller bug rather than a setting; the install is still the thing to run.
+		return nil, fmt.Errorf("no streaming model id: dictation uses the entry `voiceime server install` writes")
 	}
 	parsed, err := url.Parse(strings.TrimRight(cfg.BaseURL, "/"))
 	if err != nil {
@@ -392,7 +394,6 @@ func (s *Stream) readEvents() {
 }
 
 func (s *Stream) emit(event Event) {
-	event.SinceStart = time.Since(s.started)
 	select {
 	case s.events <- event:
 	default:

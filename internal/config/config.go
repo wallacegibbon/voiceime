@@ -190,6 +190,26 @@ func RuntimeDir() string {
 	return filepath.Join(CacheDir(), "run")
 }
 
+// UserUnitDir is where a systemd user unit is installed. Named here because two
+// commands write units (the shortcut listener and the recognition service) and both
+// resolve the same XDG directory, so a session without XDG_CONFIG_HOME must not be
+// handled two ways.
+//
+// It returns "" when there is no home directory and no XDG override: a unit has to be
+// named by an absolute path, and a caller that cannot write one has to say so instead of
+// installing it relative to whatever the working directory happens to be.
+func UserUnitDir() string {
+	base := os.Getenv("XDG_CONFIG_HOME")
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		base = filepath.Join(home, ".config")
+	}
+	return filepath.Join(base, "systemd", "user")
+}
+
 // DefaultPath is the config file every command reads when --config is absent.
 func DefaultPath() string { return filepath.Join(ConfigDir(), "config.toml") }
 

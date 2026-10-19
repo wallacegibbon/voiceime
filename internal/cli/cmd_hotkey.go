@@ -253,15 +253,11 @@ WantedBy=default.target
 // servicePath is the systemd --user unit that keeps the listener alive across
 // logins, so a user does not have to start it by hand after every boot.
 func servicePath() string {
-	base := os.Getenv("XDG_CONFIG_HOME")
-	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return ""
-		}
-		base = filepath.Join(home, ".config")
+	dir := config.UserUnitDir()
+	if dir == "" {
+		return ""
 	}
-	return filepath.Join(base, "systemd", "user", "voiceime-hotkey.service")
+	return filepath.Join(dir, "voiceime-hotkey.service")
 }
 
 func installHotkeyService(ctx *Context, spec string) error {

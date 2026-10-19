@@ -29,11 +29,9 @@ func cmdStream() *Command {
 		filePath string
 		seconds  float64
 		realtime bool
-		chunk    float64
 		refine   bool
 		events   bool
 		quiet    bool
-		threads  int
 	)
 	flags := func(set *flag.FlagSet) {
 		set.StringVar(&filePath, "file", "", "replay a WAV file instead of the microphone")
@@ -53,27 +51,21 @@ func cmdStream() *Command {
 				filePath: filePath,
 				realtime: realtime,
 				seconds:  seconds,
-				chunk:    chunk,
 				refine:   refine,
 				events:   events,
 				quiet:    quiet,
-				threads:  threads,
 			})
 		},
 	}
 }
 
 type streamOptions struct {
-	filePath    string
-	realtime    bool
-	seconds     float64
-	chunk       float64
-	refine      bool
-	refineModel string
-	events      bool
-	quiet       bool
-	threads     int
-	model       string
+	filePath string
+	realtime bool
+	seconds  float64
+	refine   bool
+	events   bool
+	quiet    bool
 }
 
 // emitter serialises output. It is the single writer, so JSON lines cannot
@@ -149,8 +141,10 @@ func runStream(ctx *Context, options streamOptions) error {
 	}
 	streamModel := serverStreamModelID()
 
-	// A per-run copy of the config: chunk and refine are per-invocation knobs, and
-	// mutating the loaded config would leak them into anything else that reads it.
+	// A per-run copy of the config: --refine is a per-invocation knob, and mutating the
+	// loaded config would leak it into anything else that reads it. The window length is
+	// not one: chunk_seconds is read by the service at its start (D23), so a flag here
+	// could only pretend to change it.
 	cfg := *ctx.Config
 	cfg.RefineOnSegmentEnd = options.refine
 

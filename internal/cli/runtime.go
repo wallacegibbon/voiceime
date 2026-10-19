@@ -31,12 +31,11 @@ func timeout(seconds int) (context.Context, context.CancelFunc) {
 // wins; otherwise discovery picks one, which is what keeps a fresh install
 // working with no setup beyond installing a model package.
 func resolveModel(ctx *Context, repair bool) string {
-	// An empty refine_model means "reuse the streaming model", which is the
-	// default for a measured reason: repairing with the streaming model costs a
-	// fraction of the utterance (0.55s for a 4.2s segment on the reference
-	// machine), while the strongest accurate model installed there costs 5.7s. A
-	// repair that lags behind the speaker is worse than the boundary damage it
-	// removes, so accuracy only wins when the user says so.
+	// An empty refine_model means "reuse the streaming model": one model instead of
+	// two resident ones (D22), and a repair that needs no extra configuration. The
+	// 5.7s that used to justify this default was a process-per-utterance cost that the
+	// resident service removed, so the choice is now memory against accuracy rather
+	// than latency - and the user makes it. See docs/AGENT.md's model table.
 	if repair {
 		if ctx.Config.RefineModel != "" {
 			return config.Expand(ctx.Config.RefineModel)

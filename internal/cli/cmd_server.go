@@ -281,7 +281,6 @@ func buildServerSpec(cfg *config.Config, scanned []models.Model, port int, strea
 		StreamFamily: streamFamily,
 		RepairModel:  repairPath,
 		RepairFamily: repairFamily,
-		Host:         "127.0.0.1",
 		Port:         port,
 		Backend:      cfg.Backend,
 		Threads:      cfg.Threads,

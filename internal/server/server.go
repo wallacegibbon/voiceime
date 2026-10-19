@@ -30,6 +30,9 @@ import (
 )
 
 const (
+	// DefaultHost is where the unit binds. Loopback: the service is for this machine, and a
+	// client reaches it through the same address it writes into asr_server_url.
+	DefaultHost = "127.0.0.1"
 	// DefaultID is the entry the offline repair decode uses.
 	DefaultID = "refine"
 	// DefaultStreamID is the entry that serves live partials.
@@ -48,7 +51,6 @@ type Spec struct {
 	StreamFamily string
 	RepairModel  string
 	RepairFamily string
-	Host         string
 	Port         int
 	Backend      string
 	Threads      int
@@ -62,16 +64,16 @@ type Spec struct {
 }
 
 // BaseURL is where a client reaches a server with this spec.
+//
+// The host is not a setting: the unit serves the machine it runs on, and it is the same
+// constant the generated config binds to (see WriteConfig). It used to be a Spec field that
+// WriteConfig ignored, so the stated address and the served one could have diverged.
 func (s Spec) BaseURL() string {
-	host := s.Host
-	if host == "" {
-		host = "127.0.0.1"
-	}
 	port := s.Port
 	if port == 0 {
 		port = DefaultPort
 	}
-	return fmt.Sprintf("http://%s:%d", host, port)
+	return fmt.Sprintf("http://%s:%d", DefaultHost, port)
 }
 
 // WriteConfig writes the server's config and returns its path.
@@ -104,7 +106,7 @@ func WriteConfig(spec Spec, path string) error {
 		streamOptions["audio_chunk_duration_sec"] = trimFloat(spec.ChunkSeconds)
 	}
 	config := wireConfig{
-		Host:            "127.0.0.1",
+		Host:            DefaultHost,
 		Port:            port,
 		Backend:         backend,
 		Threads:         spec.Threads,

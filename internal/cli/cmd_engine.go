@@ -312,8 +312,13 @@ func runIBusEngine(ctx *Context, options engineRunOptions) error {
 		if logPath != "" {
 			appendLogLine(logPath, "session: "+line)
 		}
-		// Also stderr, which a manual run in a terminal shows and the daemon discards.
-		fmt.Fprintf(ctx.Stderr, "voiceime: %s\n", line)
+		// Stderr is for a human running the engine by hand, and only when it is a
+		// terminal: ibus-daemon hands the engine pipes, and a write to a pipe nobody
+		// drains blocks once it fills - a dictation stopping mid-sentence days into an
+		// installation is not a failure anyone could attribute to a log line.
+		if file, ok := ctx.Stderr.(*os.File); ok && isTerminalFile(file) {
+			fmt.Fprintf(ctx.Stderr, "voiceime: %s\n", line)
+		}
 	}
 
 	var handler ibus.Handler
@@ -380,6 +385,13 @@ func appendLogLine(path, line string) {
 	// the service it talked to, and "session: listening" alone cannot be placed in time.
 	// 0600 because the lines quote what the user said.
 	fmt.Fprintf(file, "%s %s\n", time.Now().Format(time.RFC3339), line)
+}
+
+// isTerminalFile reports whether writes go to a terminal rather than a pipe or a file.
+// A character device is the test: /dev/null is one too, and writing to it is harmless.
+func isTerminalFile(file *os.File) bool {
+	info, err := file.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
 // engineLogPath is where a dictation session writes its account of itself when no

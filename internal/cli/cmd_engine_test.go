@@ -78,3 +78,39 @@ func TestRotateLogOnlyDropsWhatIsTooBig(t *testing.T) {
 	// Missing files are not an error: the first dictation creates the log.
 	rotateLog(filepath.Join(dir, "absent.log"), maxEngineLogBytes)
 }
+
+// Stderr is written only when a human is looking at it.
+//
+// ibus-daemon spawns the engine with its stdout and stderr on pipes (measured), and a
+// write to a pipe whose reader never drains it blocks once the buffer fills - so a
+// long-lived install could freeze a dictation mid-sentence on a log line. A terminal (or
+// /dev/null) is a character device; a pipe and a regular file are not.
+func TestIsTerminalFileDistinguishesPipesAndFiles(t *testing.T) {
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer read.Close()
+	defer write.Close()
+	if isTerminalFile(write) {
+		t.Error("a pipe was taken for a terminal: a session could block on a full pipe")
+	}
+
+	regular, err := os.CreateTemp(t.TempDir(), "log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer regular.Close()
+	if isTerminalFile(regular) {
+		t.Error("a regular file was taken for a terminal")
+	}
+
+	null, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Skipf("no %s on this machine: %v", os.DevNull, err)
+	}
+	defer null.Close()
+	if !isTerminalFile(null) {
+		t.Errorf("%s was not recognised as a character device", os.DevNull)
+	}
+}

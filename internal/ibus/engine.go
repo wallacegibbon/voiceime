@@ -76,7 +76,8 @@ func trace(format string, args ...interface{}) {
 	if path == "" {
 		return
 	}
-	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	// 0600: the session log shares this file, and it quotes what the user dictated.
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return
 	}

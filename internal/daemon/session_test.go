@@ -35,6 +35,18 @@ func (s *recordingSink) commits() []string {
 	return out
 }
 
+// preedits lists the compositions that were shown, so a test can assert that a guess never
+// reached the caret.
+func (s *recordingSink) preedits() []string {
+	var out []string
+	for _, event := range s.events {
+		if text, found := strings.CutPrefix(event, "preedit:"); found && text != "" {
+			out = append(out, text)
+		}
+	}
+	return out
+}
+
 // preeditClears counts how often the composition was cleared, which must happen
 // once per commit and never carry text.
 func (s *recordingSink) preeditClears() int {

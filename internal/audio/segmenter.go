@@ -1,6 +1,9 @@
 package audio
 
-import "time"
+import (
+	"sync/atomic"
+	"time"
+)
 
 // SegmentKind names an endpoint event.
 type SegmentKind string
@@ -101,6 +104,23 @@ type Segmenter struct {
 	// and never commits, and stopping discards it" failure.
 	measured bool
 	pending  []SegmentEvent
+
+	// heardStart and heardEnd publish the most recent utterance's bounds: where the
+	// detector first heard speech, and the last sample it heard it in. The session asks
+	// whether a streaming window covers that, to decide whether decoded text is speech or
+	// the recogniser's answer to silence (see acceptPartial in the daemon). Atomics rather
+	// than the segmenter's own fields because Push runs on the capture goroutine and the
+	// question comes from the recognition goroutine.
+	heardStart atomic.Int64
+	heardEnd   atomic.Int64
+}
+
+// Speech returns the bounds of the most recent utterance the detector has heard: where the
+// speech started and the last sample that was speech. Both are zero before the first one,
+// and they keep their last values after the utterance ends, which is what a window that
+// closes just after the boundary needs.
+func (s *Segmenter) Speech() (start, end int64) {
+	return s.heardStart.Load(), s.heardEnd.Load()
 }
 
 // NewSegmenter builds a detector from configuration.
@@ -206,6 +226,8 @@ func (s *Segmenter) frame(frame []byte, sample int64) {
 			s.state = stateSpeaking
 			s.speechStart = sample
 			s.lastSpeechSample = sample + frameSamples
+			s.heardStart.Store(sample)
+			s.heardEnd.Store(s.lastSpeechSample)
 			s.silenceSamples = 0
 			s.speechRun = frameSamples
 			s.pending = append(s.pending, SegmentEvent{
@@ -222,6 +244,7 @@ func (s *Segmenter) frame(frame []byte, sample int64) {
 			// neither speech nor silence, so the hangover keeps counting.
 			if s.speechRun >= minInterruptSamples() {
 				s.lastSpeechSample = sample + frameSamples
+				s.heardEnd.Store(s.lastSpeechSample)
 				s.silenceSamples = 0
 			}
 		} else {

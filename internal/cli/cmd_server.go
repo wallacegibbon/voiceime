@@ -255,6 +255,13 @@ func buildServerSpec(cfg *config.Config, scanned []models.Model, port int, strea
 	streamPath, repairPath := resolved.Stream, resolved.Repair
 	switch {
 	case streamPath == "" && repairPath == "":
+		// "Install one first" is wrong when the models are there and nobody has looked at
+		// them yet: nothing can be picked because nothing is classified, and the fix is the
+		// refresh, not an install.
+		if pending := models.Uninspected(scanned); len(pending) > 0 {
+			return server.Spec{}, fmt.Errorf("%d model file(s) have not been inspected yet; run `voiceime models list --refresh`",
+				len(pending))
+		}
 		return server.Spec{}, fmt.Errorf("no model to serve: install one first")
 	case streamPath == "":
 		// Nothing that can stream is installed, but a repair checkpoint is named: serve it

@@ -129,6 +129,14 @@ data: [DONE]
   samples fed now)`: an approximation, because the text came from the last
   `chunk_seconds` window but arrived at the current position. `RepairSpan` (pass 2)
   exists to absorb that approximation.
+* A delta whose span contains **no audio the endpointer called speech** is dropped, and
+  said so once per pause (`dropped streaming text for audio the detector never called
+  speech`). A live model decodes every window, including windows of room silence, and
+  answers with something - measured: one `。` per three-second window in a quiet room. Kept
+  as provisional text, that sat under the caret until the next sentence's commit flushed it
+  into the application. The test is unpadded on purpose: the repair pads, because it has to
+  recover a quiet tail, but a streaming window cannot be split at the speech boundary, so
+  padding would admit windows of pure silence.
 * The provisional text is published as **preedit** - underlined, not yet delivered.
 * **done** → recorded as `Result.Text` and reported by `stream --events` as
   `stream_text`. It is **not** used to commit: the offline pass decides what is final,

@@ -23,19 +23,23 @@ import (
 // worker - and the unit tests around the transcript do not exercise that. Run with
 // -race to be worth anything.
 
+// tone is audio loud enough to cross the detector's threshold, at an RMS well above the
+// configured 600.
+func tone(seconds, amplitude float64) []byte {
+	samples := make([]int16, int(seconds*audio.SampleRate))
+	frequency := 2 * math.Pi * 220 / audio.SampleRate
+	for i := range samples {
+		samples[i] = int16(amplitude * math.Sin(frequency*float64(i)))
+	}
+	return audio.SamplesToBytes(samples)
+}
+
 // speechWAV writes silence, then a tone loud enough to be speech, then silence, so the
 // endpoint detector opens and closes one utterance.
 func speechWAV(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	room := silence(0.2)
-	spoken := make([]int16, int(0.6*audio.SampleRate))
-	frequency := 2 * math.Pi * 220 / audio.SampleRate
-	for i := range spoken {
-		spoken[i] = int16(6000 * math.Sin(frequency*float64(i)))
-	}
-	payload := append(append(room, audio.SamplesToBytes(spoken)...), silence(0.5)...)
-	path := filepath.Join(dir, "speech.wav")
+	payload := append(append(silence(0.2), tone(0.6, 6000)...), silence(0.5)...)
+	path := filepath.Join(t.TempDir(), "speech.wav")
 	writeWAV(t, path, payload)
 	return path
 }
@@ -211,15 +215,15 @@ func silence(seconds float64) []byte {
 	return make([]byte, int(seconds*audio.SampleRate)*audio.BytesPerSample)
 }
 
-// A session whose audio is only silence commits nothing, and says how much text it
-// withheld.
+// A session whose audio is only silence commits nothing, and never shows the
+// recogniser's guess at all.
 //
-// Committing anyway is the regression the rule exists to prevent: streaming ASR
-// produces plausible words for almost any input, and twenty seconds of an empty room
-// once committed 被。。。。。。嗯。 into the focused application. Withholding is only
-// acceptable because it is not silent - the text was visible at the user's caret as
-// preedit, so the session reports the size of what it dropped, which is what tells "the
-// detector never heard me" apart from "the session was lost".
+// Streaming ASR produces plausible words for almost any input - twenty seconds of an
+// empty room once committed 被。。。。。。嗯。 into the focused application, and a quiet pause
+// used to leave one "。" per window sitting under the caret until the next sentence's
+// commit flushed it into the document. Text for audio the detector never called speech is
+// dropped when it arrives (see acceptPartial), so the strongest form of the rule is the
+// one asserted here: it never reaches the composition, and nothing is committed.
 func TestSessionWithholdsTextWhenNoSpeechIsDetected(t *testing.T) {
 	server := newFakeASRServer(t)
 	dir := t.TempDir()
@@ -244,14 +248,20 @@ func TestSessionWithholdsTextWhenNoSpeechIsDetected(t *testing.T) {
 	if result.Partials == 0 {
 		t.Fatal("the fake recogniser produced no partials, so this proves nothing")
 	}
+	if result.FinalText != "" {
+		t.Errorf("transcript = %q: the guess reached the composition", result.FinalText)
+	}
+	if got := sink.preedits(); len(got) != 0 {
+		t.Errorf("the composition showed %v: a caret would have displayed the guess", got)
+	}
 	mu.Lock()
 	reasons := strings.Join(skipped, " | ")
 	mu.Unlock()
-	// The number must be the text that was actually dropped, not a placeholder:
-	// nothing was committed, so the transcript is exactly the withheld text.
-	want := fmt.Sprintf("withheld %d characters", len([]rune(result.FinalText)))
-	if !strings.Contains(reasons, want) {
-		t.Fatalf("skipped reasons = %q, want %q", reasons, want)
+	if !strings.Contains(reasons, "never called speech") {
+		t.Fatalf("skipped reasons = %q, want the drop reported", reasons)
+	}
+	if !strings.Contains(reasons, "no speech detected") {
+		t.Fatalf("skipped reasons = %q, want the end-of-session report too", reasons)
 	}
 }
 
@@ -296,8 +306,11 @@ func TestSessionCommitsWhenSpeechStartsImmediately(t *testing.T) {
 func TestSessionReportsAStreamFailureAndWithholdsTheDraft(t *testing.T) {
 	server := newFakeASRServer(t)
 	server.liveFail = "model died: cuda OOM"
-	wav := filepath.Join(t.TempDir(), "silence.wav")
-	writeWAV(t, wav, silence(1.0))
+	// Speech the detector notices - so the streaming text is accepted into the composition
+	// - but shorter than endpoint_min_speech_ms, so no utterance closes and nothing reaches
+	// the offline decode. That is the draft D24 says a failed session must withhold.
+	wav := filepath.Join(t.TempDir(), "short.wav")
+	writeWAV(t, wav, append(tone(0.2, 6000), silence(1.0)...))
 
 	var mu sync.Mutex
 	var skipped []string
@@ -559,5 +572,47 @@ func TestStoppedSessionWithNoSpeechExplainsItself(t *testing.T) {
 	mu.Unlock()
 	if !strings.Contains(reasons, "no speech detected") {
 		t.Errorf("skipped reasons = %q, want the session to say it heard no speech", reasons)
+	}
+}
+
+// Text decoded from a pause never reaches the composition, and never rides into the next
+// sentence's commit.
+//
+// This is the reported "the last sentence will not stop by itself": the endpointer had
+// correctly closed the utterance, but the live model kept answering with one "。" per
+// window of room silence, the session kept it as provisional text, and the composition sat
+// under the caret until the *next* sentence committed it along with itself - measured in
+// the engine log at 01:37: five "。" windows, then a 40-character commit that began with
+// them.
+func TestSessionDropsStreamingTextFromSilenceBetweenSentences(t *testing.T) {
+	server := newFakeASRServer(t)
+	server.repairText = "修复后的句子" // no punctuation: the assertion below looks for "。。"
+	server.silencePartial = "。。"
+
+	payload := append(tone(0.6, 6000), silence(3.0)...)
+	payload = append(payload, tone(0.6, 6000)...)
+	payload = append(payload, silence(0.5)...)
+	wav := filepath.Join(t.TempDir(), "two-sentences.wav")
+	writeWAV(t, wav, payload)
+
+	options, sink := sessionOptionsForWAV(t, server, true, wav)
+	result := runSession(t, options)
+
+	commits := sink.commits()
+	if len(commits) < 2 {
+		t.Fatalf("commits = %v, want one per sentence: the pause swallowed the boundary", commits)
+	}
+	for _, text := range commits {
+		if strings.Contains(text, "。。") {
+			t.Errorf("committed %q: text decoded from the pause reached the application", text)
+		}
+	}
+	for _, text := range sink.preedits() {
+		if strings.Contains(text, "。。") {
+			t.Errorf("the composition showed %q: it would sit under the caret until the next sentence", text)
+		}
+	}
+	if result.FinalText == "" {
+		t.Error("nothing was transcribed at all, so this proves nothing")
 	}
 }

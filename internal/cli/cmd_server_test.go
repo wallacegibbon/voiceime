@@ -2,6 +2,7 @@ package cli
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/wallacegibbon/voiceime/internal/config"
@@ -91,5 +92,34 @@ func TestServerSpecWithoutModels(t *testing.T) {
 		t.Fatal("buildServerSpec succeeded with no models installed")
 	} else if got := err.Error(); got == "" || filepath.Base(got) == "" {
 		t.Errorf("error %q says nothing", got)
+	}
+}
+
+// "No model to serve" must not be said about models nobody has looked at.
+//
+// With an empty cache, nothing can be picked because nothing is classified - and the fix is
+// the refresh. Measured before this test: `server install` on a cold cache said "install one
+// first" while printing `models list --refresh` as the fix, which is two different stories
+// in one message.
+func TestServerSpecSaysWhenModelsAreUninspected(t *testing.T) {
+	cfg := config.Default()
+	unclassified := []models.Model{{
+		Path:      "/models/sense.gguf",
+		Inspected: false,
+	}}
+	_, err := buildServerSpec(cfg, unclassified, 18080, "", "")
+	if err == nil {
+		t.Fatal("buildServerSpec succeeded with nothing classified")
+	}
+	if !strings.Contains(err.Error(), "have not been inspected") {
+		t.Errorf("error %q does not say what is missing", err)
+	}
+	if strings.Contains(err.Error(), "install one first") {
+		t.Errorf("error %q tells the user to install a model that is already there", err)
+	}
+	// With nothing on disk at all, the install advice is the right one.
+	if _, err := buildServerSpec(cfg, nil, 18080, "", ""); err == nil ||
+		!strings.Contains(err.Error(), "install one first") {
+		t.Errorf("error = %v, want the install advice when no file exists", err)
 	}
 }

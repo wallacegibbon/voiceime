@@ -136,6 +136,7 @@ func (o Options) Run(ctx context.Context) (Result, error) {
 		sink:       o.Sink,
 		notify:     notify,
 		buffer:     buffer,
+		segmenter:  segmenter,
 		padSamples: int64(cfg.EndpointSilenceMS) * int64(audio.SampleRate) / 2000,
 	}
 	// The repair route is brought up before the streaming model is loaded, not after.
@@ -181,14 +182,20 @@ func (o Options) Run(ctx context.Context) (Result, error) {
 				if end < previousPartial {
 					end = previousPartial
 				}
-				accepted := pipeline.transcript.AppendStream(event.Text, previousPartial, end)
+				start := previousPartial
 				previousPartial = end
+				if !pipeline.acceptPartial(event.Text, start, end, notify.Skipped) {
+					continue
+				}
+				accepted := pipeline.transcript.AppendStream(event.Text, start, end)
 				if !accepted && notify.Skipped != nil {
 					// The window started inside text that was already delivered.
 					// Saying so is better than looking like a lost partial.
 					notify.Skipped("a window overlapping already-delivered text was dropped")
 				}
 				if notify.Partial != nil {
+					// Only text that reached the transcript: a listener printing every
+					// decode would show the silence hallucination as if it were a draft.
 					notify.Partial(event.Text, event.FedSeconds)
 				}
 				report(notify.Error, pipeline.publishPreedit())
@@ -366,6 +373,16 @@ type session struct {
 	// events, segment boundaries and repair results), and the order of "clear the
 	// composition, then commit" matters to the application receiving it.
 	publishMu sync.Mutex
+
+	// segmenter is the endpointer the capture loop drives. The recognition goroutine asks it
+	// which audio it heard speech in, to decide whether decoded text is speech or the
+	// recogniser's answer to silence (see acceptPartial). Segmenter.Speech is safe to call
+	// from another goroutine.
+	segmenter *audio.Segmenter
+
+	// droppedSilence keeps the "this window was silence" report to once per pause rather
+	// than once per window; it is touched only by the recognition goroutine.
+	droppedSilence bool
 }
 
 type repairJob struct {
@@ -480,6 +497,46 @@ func (s *session) finishRepairs(budget time.Duration) error {
 	case <-time.After(budget):
 		return fmt.Errorf("gave up waiting for the last repair after %v: its sentence was committed from the draft", budget)
 	}
+}
+
+// speechCovered reports whether [start, end) of the audio stream contains speech the
+// detector heard. It is deliberately unpadded.
+//
+// The repair decode pads by half the hangover, because it has to recover a quiet tail that
+// the detector's last loud sample clips. A streaming window cannot do that: its text cannot
+// be split at the speech boundary, so padding the test admits windows whose audio is
+// entirely room - measured on this fixture, a 400ms pad let two windows of pure silence in,
+// and their "。" was committed with the sentence they followed. The draft may miss a quiet
+// tail; the repair is where the tail is read.
+func (s *session) speechCovered(start, end int64) bool {
+	heardFrom, heardTo := s.segmenter.Speech()
+	if heardTo == 0 {
+		// Nothing has been called speech in this session yet.
+		return false
+	}
+	return start < heardTo && end > heardFrom
+}
+
+// acceptPartial decides whether streaming text belongs in the transcript.
+//
+// A live model decodes every window, including windows of silence, and answers with
+// something - measured on the reference machine: one "。" per three-second window in a quiet
+// room. Keeping that as provisional text is what made the composition hang: the endpointer
+// had correctly decided nobody was speaking, so no boundary would ever finalise it, and the
+// user watched "。。。" sit under the caret until the *next* sentence's commit flushed it into
+// their application (01:37 in the engine log). Text for audio the detector never called
+// speech is the recogniser's guess, and the end-of-session rule already says so; this is the
+// same rule applied while the session runs.
+func (s *session) acceptPartial(text string, start, end int64, report func(string)) bool {
+	if !s.speechCovered(start, end) {
+		if report != nil && !s.droppedSilence {
+			s.droppedSilence = true
+			report("dropped streaming text for audio the detector never called speech")
+		}
+		return false
+	}
+	s.droppedSilence = false
+	return true
 }
 
 // onSegmentEnd closes an utterance: queue its offline decode, or commit straight

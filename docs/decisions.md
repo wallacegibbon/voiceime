@@ -1345,3 +1345,49 @@ Pinned by `TestCachedRunsNothingAndWritesNothing`, `TestRefreshInspectsOnceAndRe
 `TestModelsListDoesNotInspectOrWrite`, `TestModelsListRefreshIsTheOnlyWriter`,
 `TestModelsListRejectsForceWithoutRefresh` and
 `TestDoctorReportsUninspectedModelsWithoutTouchingTheCache`.
+
+## D36 — Streaming text is only kept for audio the endpointer called speech.
+
+**Decision.** A delta is admitted to the transcript only if its sample span overlaps the most
+recent utterance the detector heard (`Segmenter.Speech`: the sample speech started at, and the
+last sample it was heard in). The test is unpadded. Deltas dropped this way are reported once
+per pause.
+
+**Why.** The reported symptom was "the last sentence sometimes will not stop by itself; it
+stays in a receiving state, and only saying one more sentence ends it". The endpointer was
+not at fault: the engine log at 01:37 shows it closing each utterance on time. What stayed
+alive was the *composition*: a live model decodes every window regardless of content, and in
+a quiet room it answers `。` for each three-second window. Those deltas became provisional
+chunks, nothing would ever finalise them (the detector had correctly said nobody was
+speaking), and they sat under the caret until the next sentence's `commitProvisional` flushed
+them into the application along with itself - measured, a 40-character commit that began
+`过度复杂的设计。。。。。。`.
+
+**Why unpadded.** The repair decode pads by half the hangover, because the detector's last
+loud sample clips a quiet tail and the pass that *decides* text has to recover it. A streaming
+window cannot be split at the speech boundary, so padding the admission test admits windows
+whose audio is entirely room: measured on the fixture, a 400ms pad let two such windows in and
+their `。` rode into the sentence they followed. The draft may miss a quiet tail; the repair is
+where the tail gets read.
+
+**Why the detector publishes, rather than the session recording events.** The session used to
+keep the accepted spans itself, from `SpeechStart`/`SpeechEnd`. That is a second copy of a
+fact the detector owns, and it is one every window has to update - and it was wrong in the
+way that mattered: while the detector is in its speech state, it is also inside the hangover,
+so "speaking" covered 800ms of room. `Segmenter.Speech()` is two atomics that answer the
+question the session actually has.
+
+**Consequence.** The composition now clears when the sentence is delivered and stays clear
+while the user pauses, which is what "dictation is idle" should look like. `stream --events`
+no longer prints a partial for a window of silence; the drop is logged once instead, so the
+measurement output shows what was transcribed rather than what was decoded.
+
+**Rejected.** Trimming the text to the speech boundary - the text of a window is one string
+and cannot be split at a sample offset. Dropping provisional text at commit time instead of
+at arrival - the user's complaint is what they watch, not what is delivered. A time-based
+expiry ("clear the composition after a second of silence") - it clears real drafts whose
+utterance is still open, and it answers the symptom rather than the rule.
+
+Pinned by `TestSessionDropsStreamingTextFromSilenceBetweenSentences`,
+`TestSessionWithholdsTextWhenNoSpeechIsDetected` and
+`TestSessionReportsAStreamFailureAndWithholdsTheDraft`.

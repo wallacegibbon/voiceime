@@ -104,10 +104,9 @@ const indexVersion = 1
 // indexMu serialises the read-modify-write of the inspection cache inside this
 // process, so two goroutines cannot each load the index, modify their own copy and
 // save, losing the other's work. It does not reach across processes - two commands
-// running at once are separate processes, and a mutex cannot help them. What keeps
-// those from corrupting the file is config.WriteFile's atomic replace; the cost is
-// that the last writer wins and the loser's entry is inspected again on the next scan,
-// which is why the cache is a cache.
+// running at once are separate processes - so the cross-process half is done by the
+// writer: config.WriteFile makes the file appear whole or not at all, and saveIndex
+// merges instead of overwriting (see its comment).
 var indexMu sync.Mutex
 
 func loadIndex(path string) index {
@@ -122,8 +121,33 @@ func loadIndex(path string) index {
 	return loaded
 }
 
-func saveIndex(path string, loaded index) error {
-	raw, err := json.MarshalIndent(loaded, "", "  ")
+// saveIndex writes what this scan learned, taking every entry it did not inspect from
+// whatever is on disk at that moment.
+//
+// Two commands can scan at the same time - a doctor and a models list, or two agents - and
+// they are separate processes, so the mutex above cannot serialise them. Writing this
+// process's whole snapshot over the file lost the other's work entirely: the loser's
+// freshly inspected entries vanished and the next scan paid for them again, which on this
+// machine is about six seconds per model (measured; `audiocpp_cli --inspect` is not the
+// few hundred milliseconds the comment below the inspector assumes). Merging narrows the
+// window from the whole scan to the microseconds between this read and the rename, and
+// every entry this process did not inspect is taken from disk - so the answer that was
+// already there, possibly newer, is kept.
+//
+// inspected is the set of paths this run actually re-inspected; those are the entries that
+// may be newer than the file's, and nothing else is.
+func saveIndex(path string, mine index, inspected map[string]bool) error {
+	if onDisk := loadIndex(path); len(onDisk.Models) > 0 {
+		for key := range mine.Models {
+			if inspected[key] {
+				continue
+			}
+			if kept, found := onDisk.Models[key]; found {
+				mine.Models[key] = kept
+			}
+		}
+	}
+	raw, err := json.MarshalIndent(mine, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -204,12 +228,14 @@ func Scan(cfg *config.Config, force bool, progress func(string)) ([]Model, error
 
 	models := make([]Model, 0, len(found))
 	dirty := false
+	inspected := map[string]bool{}
 	for _, item := range found {
 		entry, ok := cached.Models[item.path]
 		if force || !ok || entry.SizeBytes != item.size || entry.ModifiedUnix != item.modified {
 			if progress != nil {
 				progress(item.path)
 			}
+			inspected[item.path] = true
 			entry = inspect(asrBinary, item.path)
 			entry.SizeBytes = item.size
 			entry.ModifiedUnix = item.modified
@@ -242,7 +268,7 @@ func Scan(cfg *config.Config, force bool, progress func(string)) ([]Model, error
 		}
 	}
 	if dirty {
-		if err := saveIndex(indexPath, cached); err != nil {
+		if err := saveIndex(indexPath, cached, inspected); err != nil {
 			return models, fmt.Errorf("models found but the index could not be cached: %w", err)
 		}
 	}
@@ -250,8 +276,10 @@ func Scan(cfg *config.Config, force bool, progress func(string)) ([]Model, error
 }
 
 // inspect runs `audiocpp_cli --model <path> --inspect` and parses the key=value
-// report. The command is cheap (a few hundred milliseconds at most) because it
-// reads the checkpoint header rather than the weights.
+// report. It is meant to be cheap - it reads the checkpoint header rather than the
+// weights - but on the reference machine it measured 5.95s for one 1 GiB checkpoint, so
+// the cache is worth more than the comment here used to assume, and so is not losing an
+// entry to a concurrent writer (see saveIndex).
 func inspect(asrBinary, path string) indexEntry {
 	// The only bound model discovery puts on a subprocess: --inspect reads a checkpoint
 	// header, and a tool that has not answered in 90s is wedged.

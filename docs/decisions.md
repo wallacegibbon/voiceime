@@ -969,9 +969,17 @@ concurrent `config set` runs - two agents, or a `doctor` beside a `config set` -
 removed the file the second was about to rename. `config.WriteFile` now creates a unique
 temporary file in the same directory, syncs it, and renames it into place, so a reader sees
 one whole version and no writer can break another. The model index uses it too, and its
-mutex is documented for what it is: in-process serialisation. Across processes the last
-writer wins, and the loser's entry is inspected again - which is the correct failure for a
-cache, and is not what the comment used to claim.
+mutex is documented for what it is: in-process serialisation.
+
+An atomic replace is not the whole answer for that index, though: two processes each write
+their own snapshot, so the loser's freshly inspected entries disappeared and the next scan
+paid for them again - which the inspector's comment called "a few hundred milliseconds at
+most" and which measured 5.95s per checkpoint on the reference machine. `saveIndex` now
+reads the file again before writing and keeps every entry it did not inspect itself,
+narrowing the window from the length of a scan to the microseconds between that read and
+the rename. No lock: `flock` would make the second command wait for the first instead of
+merging with it, and it does not exist on one of the four platforms this project builds
+for.
 
 **Rejected.** Refusing to write a value that fails validation - it breaks staging, which is
 already the documented workflow. Keeping the per-key apply list and correcting it - a list

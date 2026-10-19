@@ -7,8 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/wallacegibbon/voiceime/internal/config"
 	"github.com/wallacegibbon/voiceime/internal/daemon"
@@ -171,6 +173,7 @@ func runEngineStatus(ctx *Context) error {
 		"engine_name":         ctx.Config.IBusEngineName,
 		"engine_registered":   registered,
 		"detail":              detail,
+		"log":                 engineLogPath(),
 	}
 	if listing, err := probe("ibus", "list-engine"); err == nil {
 		state["engine_visible"] = listEngineContains(listing, ctx.Config.IBusEngineName)
@@ -180,6 +183,10 @@ func runEngineStatus(ctx *Context) error {
 	}
 	ctx.Print("component: %s (installed: %v)", ibus.ComponentPath(), ibus.Installed())
 	ctx.Print("engine %s registered: %v", ctx.Config.IBusEngineName, registered)
+	// The engine is spawned by ibus-daemon, which discards what it prints. This file is
+	// the only place a session's own account of a dictation survives, so it is named
+	// where a user looks after "I pressed the key and nothing happened".
+	ctx.Print("session log: %s", engineLogPath())
 	if detail != "" {
 		ctx.Print("detail: %s", detail)
 	}
@@ -286,15 +293,26 @@ func runIBusEngine(ctx *Context, options engineRunOptions) error {
 	runCtx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	// Session logs must go somewhere: ibus-daemon spawns this process detached, so
-	// its stdout is discarded. A trace file is where a user can find out why
-	// dictation did nothing.
+	// Session logs must go somewhere: ibus-daemon spawns this process detached with its
+	// stdout and stderr on pipes the daemon discards, so a session's own account of what
+	// it heard and delivered is lost unless it is written down. That is why the default
+	// is a log file rather than stderr - `--trace` still names its own file, which is
+	// also where the incoming D-Bus calls go.
+	logPath := tracePath
+	if logPath == "" {
+		logPath = engineLogPath()
+	}
+	if logPath != "" {
+		// One file per engine lifetime, bounded: a log that grows across months of
+		// dictation is a disk leak with a useful name.
+		rotateLog(logPath, maxEngineLogBytes)
+	}
 	logf := func(format string, args ...any) {
 		line := fmt.Sprintf(format, args...)
-		if tracePath != "" {
-			appendLogLine(tracePath, "session: "+line)
-			return
+		if logPath != "" {
+			appendLogLine(logPath, "session: "+line)
 		}
+		// Also stderr, which a manual run in a terminal shows and the daemon discards.
 		fmt.Fprintf(ctx.Stderr, "voiceime: %s\n", line)
 	}
 
@@ -353,12 +371,36 @@ func newPipelineHandler(runCtx context.Context, ctx *Context, logf func(string, 
 }
 
 func appendLogLine(path, line string) {
-	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return
 	}
 	defer file.Close()
-	fmt.Fprintln(file, line)
+	// Timestamped: the point of this file is to line a dictation up with the journal of
+	// the service it talked to, and "session: listening" alone cannot be placed in time.
+	// 0600 because the lines quote what the user said.
+	fmt.Fprintf(file, "%s %s\n", time.Now().Format(time.RFC3339), line)
+}
+
+// engineLogPath is where a dictation session writes its account of itself when no
+// --trace was given. In the cache directory because it is disposable, and separate from
+// the trace file so that turning tracing on does not move it somewhere else.
+func engineLogPath() string { return filepath.Join(config.CacheDir(), "engine.log") }
+
+// maxEngineLogBytes bounds that file. 1 MiB is thousands of dictations; the cap is there
+// so a long-lived install cannot fill a disk with the record of what it said.
+const maxEngineLogBytes = 1 << 20
+
+// rotateLog drops a log that has outgrown its bound, keeping the most recent behaviour
+// rather than none: the alternative (append forever) is the failure this exists to
+// prevent, and the alternative (delete every session) loses the history that makes the
+// file worth reading.
+func rotateLog(path string, limit int64) {
+	info, err := os.Stat(path)
+	if err != nil || info.Size() <= limit {
+		return
+	}
+	_ = os.Truncate(path, 0)
 }
 
 // diagnosticHandler commits a fixed string when activated, so that the delivery

@@ -1084,3 +1084,51 @@ carries exactly that information, and a second flag would have to be kept in ste
 
 Pinned by `TestCancelIsNotAServerFailure` and
 `TestStoppedSessionWithNoSpeechExplainsItself`.
+
+## D30 — The engine writes down what it did, because nothing else can.
+
+**Decision.** A dictation session appends its own account to
+`~/.cache/voiceime/engine.log` (0600, timestamped, bounded to 1 MiB per engine start),
+and it records the commit - the line that says text left the process. `--trace` still
+sends the same log plus the incoming D-Bus calls to a file of the caller's choosing.
+`voiceime engine status` names the log.
+
+**Why.** The engine is spawned by ibus-daemon with its stdout and stderr on pipes the
+daemon discards: measured, `/proc/<pid>/fd/1` and `/proc/<pid>/2` are pipes, and the
+journal contains no line from the engine. So a dictation left no record of itself. That
+was not theoretical while writing this: a user pressed the hotkey, spoke for twelve
+seconds, activated and deactivated the engine, and there was no way to say whether the
+session had heard anything, repaired anything, delivered anything - the service's log
+showed a streaming window and an offline decode, the listener's log showed the toggle,
+and the half in between, the half that decides what the user sees, was silent. `--trace`
+existed for exactly this and was never enabled by the installed component, because it
+writes D-Bus calls too and nobody wants every keystroke in a file by default.
+
+**Why the commit is the line that matters.** "I pressed the key and nothing appeared"
+has two causes with opposite fixes: nothing was recognised (endpointing, threshold,
+microphone) or the text was delivered and the application did not show it (a delivery
+bug, and not one in this repository - the engine's `CommitText` is the same signal every
+IBus engine emits). Without a commit line the log could not tell them apart, so the one
+piece of evidence that distinguishes the two was the one it did not write.
+
+**What the same investigation established.** The delivery path itself works, end to end,
+and was verified on the wire rather than by assertion: with a focused input context,
+`dbus-monitor` on the IBus bus shows our engine (path
+`/org/freedesktop/IBus/Engine/1`) emitting `UpdatePreeditText` and `CommitText`, and the
+daemon forwarding both to the focused `org.freedesktop.IBus.InputContext` as
+`UpdatePreeditTextWithMode` and `CommitText`. The one hop the README calls unverified -
+text reaching a focused application - is therefore a property of IBus's forwarding, not a
+gap in this code: what was never observed was a *focused window*, not a delivered signal.
+
+**Rejected.** Writing the log to the journal (`systemd-cat`) - it adds a process per
+session and a dependency for something a file does, and the engine has no systemd unit of
+its own to attach to. Logging to stderr only and asking the user to run the engine by
+hand - that is the state being removed: the failure is intermittent and the user is in
+the middle of dictating, not in a terminal. Truncating the log on every session - it
+would erase the record a user was about to read after the second attempt. Recording only
+commit lengths and not the text - the text is what the user compares against what the
+application showed, and the file is 0600 in their own cache directory.
+
+Pinned by `TestEngineLogPathIsInTheCacheDir`, `TestAppendLogLineTimestampsAndRestricts`,
+`TestRotateLogOnlyDropsWhatIsTooBig`, `TestEngineLogsWhatItCommits` and
+`TestFirstRunesShortensWithoutSplittingCharacters`.

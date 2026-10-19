@@ -1,9 +1,12 @@
 package daemon
 
 import (
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/wallacegibbon/voiceime/internal/config"
 )
@@ -148,5 +151,58 @@ func TestSwitchableSinkFollowsItsTarget(t *testing.T) {
 	}
 	if got := second.delivered(); len(got) != 1 || got[0] != "二" {
 		t.Errorf("second context received %v, want only its own text", got)
+	}
+}
+
+// The engine's log has to say that text left it.
+//
+// "I pressed the key and nothing appeared" has two very different causes: the session
+// heard nothing, or the text was delivered and the application did not show it. The log
+// could not tell them apart, because a commit was the one thing it did not record.
+func TestEngineLogsWhatItCommits(t *testing.T) {
+	server := newFakeASRServer(t)
+	server.repairText = "记录下来的句子。"
+	handler := newTestEngineHandler(t, server)
+
+	var mu sync.Mutex
+	var lines []string
+	handler.Log = func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		lines = append(lines, fmt.Sprintf(format, args...))
+	}
+
+	control := &recordingControl{}
+	handler.Enable(control)
+	waitFor(t, "a commit", func() bool { return len(control.delivered()) > 0 })
+	handler.Disable()
+
+	mu.Lock()
+	logged := strings.Join(lines, "\n")
+	mu.Unlock()
+	if !strings.Contains(logged, "committed") {
+		t.Errorf("the log does not record the commit:\n%s", logged)
+	}
+	if !strings.Contains(logged, "记录下来的句子") {
+		t.Errorf("the log does not quote what was committed:\n%s", logged)
+	}
+	for _, want := range []string{"listening", "utterance", "repaired"} {
+		if !strings.Contains(logged, want) {
+			t.Errorf("the log does not record %q:\n%s", want, logged)
+		}
+	}
+}
+
+// A long sentence is shortened in the log, and never split mid-character.
+func TestFirstRunesShortensWithoutSplittingCharacters(t *testing.T) {
+	if got := firstRunes("你好世界", 10); got != "你好世界" {
+		t.Errorf("firstRunes kept %q, want it unchanged", got)
+	}
+	got := firstRunes("一二三四五", 3)
+	if got != "一二三…" {
+		t.Errorf("firstRunes = %q, want 一二三…", got)
+	}
+	if !utf8.ValidString(got) {
+		t.Errorf("%q is not valid UTF-8", got)
 	}
 }

@@ -425,9 +425,10 @@ ibus engine xkb:us::eng                         # switching away stops capture, 
 The service is a user unit, not a child of the engine, so it is running whether or not
 anyone is dictating. That is the point of it: no dictation pays a model load.
 
-The engine's own session log has nowhere to go when the daemon spawns it (its
-stdout is discarded). To see it, run the engine by hand as described in
-`docs/AGENT.md`, or point `--trace <file>` at the manual run.
+The engine's own session log goes to `~/.cache/voiceime/engine.log`, because the
+daemon spawns it with stdout and stderr on pipes it discards. `voiceime engine status`
+names the file; `tail -f` it while dictating to see each utterance, repair and commit.
+For the D-Bus calls as well, run the engine by hand as described in `docs/AGENT.md`.
 
 ## 8. Start the shortcut listener
 

@@ -307,10 +307,23 @@ voiceime ibus-engine --ibus --commit-on-enable "hello from voiceime"
 voiceime ibus-engine --ibus --audio-file speech.wav --trace /tmp/engine.log
 ```
 
-`--trace` writes both the incoming D-Bus calls and the session log to a file,
-which matters because ibus-daemon spawns the engine detached: its stdout is
-discarded, and without the trace a silent failure looks identical to success.
-Run the engine by hand (as above) to see the same log on stderr instead.
+Every dictation session writes its own account - what it heard, what it repaired, and
+what it handed to the application - to `~/.cache/voiceime/engine.log`, appended and
+bounded to 1 MiB per engine start. That file is the answer to "I pressed the key and
+nothing happened": `listening` then `committed N character(s)` means the text left
+voiceime and the application did not show it, while `no speech detected` means the
+detector never heard anything. It exists because ibus-daemon spawns the engine with its
+stdout and stderr on pipes it discards (measured: the fds are pipes and the journal holds
+no line from the engine), so without a file a session leaves no trace at all.
+
+`--trace <file>` sends the same session log plus the incoming D-Bus calls to another
+file, for protocol work. Running the engine by hand (as above) also prints the session
+log on stderr.
+
+```
+voiceime engine status          # names the log path
+tail -f ~/.cache/voiceime/engine.log
+```
 
 ## Troubleshooting table
 

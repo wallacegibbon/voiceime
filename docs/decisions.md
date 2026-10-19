@@ -836,3 +836,39 @@ a model per request; measured 10.9s of waiting otherwise. `asr_server_timeout_ms
 valve. `refine_on_segment_end` and `--refine` - the only switch that trades accuracy for
 speed, and the tests use it to pin both behaviours. `voiceime stream` - the only view into a
 session that does not need IBus, and what `make measure` runs.
+
+## D24 — A failed stream is a failure, not a short transcript.
+
+**Decision.** An SSE `error` event, a stall past the server's idle timeout, and a
+connection that ends without the terminating chunk each fail the session: `Stream.Close`
+returns the error, and the session withholds the draft that no offline decode reached
+instead of committing it.
+
+**Why.** audio.cpp refuses to answer `transcript.text.done` for a body that was not
+terminated properly, precisely so that a truncated transcript cannot be mistaken for the
+speaker stopping (`app/server/README.md`). The client then lost that signal twice: it
+read the error's reason from the top level, while the server nests it under
+`error.message`, and nothing in the program read `Result.ProcessErr` at all - only a test
+did. A session that lost its server therefore ended like any other: `voiceime stream`
+exited 0, and whatever was still provisional was committed as though the user had
+finished the sentence.
+
+**Consequence.** `stream` exits 1 carrying the server's own reason; the engine logs
+`session ended: …` in its trace; withheld text is reported with its size, like the
+no-speech case, so "the model died" and "the room was too quiet" stay distinguishable.
+Utterances that closed before the failure are untouched - their offline decode was
+committed already - so what is withheld is exactly the text the failure stranded. A
+server that reports an error in a shape the client does not recognise now has its payload
+quoted rather than replaced by a sentence that says nothing.
+
+Both halves are pinned against a stand-in that sends the server's real shape:
+`TestStreamCarriesTheServersErrorReason` and
+`TestSessionReportsAStreamFailureAndWithholdsTheDraft`.
+
+**Rejected.** Committing the draft anyway because the user watched it appear - preedit
+visibility is not evidence that the decode is complete, and a truncated tail is the one
+case the protocol explicitly refuses to dress up as a finished transcript. Keeping the
+generic message and logging the server's reason only - the CLI's failure is read by a
+person and by an agent, and both need the cause in the message. Falling back to the
+`done` event's text when the stream fails - no `done` event is sent in that case, which
+is the point.

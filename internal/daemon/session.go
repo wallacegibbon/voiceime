@@ -237,6 +237,13 @@ func (o Options) Run(ctx context.Context) (Result, error) {
 
 	result, engineErr := engine.Close()
 	<-engineDone
+	if engineErr == nil {
+		// Result carries the same failure for a caller that reads what the session
+		// produced rather than the error Close returned. The two must not diverge:
+		// a session that lost its server mid-transcript is a failure, not a short
+		// dictation.
+		engineErr = result.ProcessErr
+	}
 
 	// Every in-flight repair must land before the final commit, or text would be
 	// delivered twice and out of order.
@@ -257,13 +264,26 @@ func (o Options) Run(ctx context.Context) (Result, error) {
 	// threshold sees nothing rather than nonsense; `voiceime doctor` and
 	// `stream --events` show which of the two happened.
 	//
+	// And not at all if the stream failed. A failed session is not an utterance the
+	// user finished: its provisional text is a draft that no offline decode ever
+	// reached, and the audio behind it may be truncated, so committing it would type
+	// words the user has no way to know were guessed. Utterances that did close are
+	// unaffected - each was decoded and committed by the repair worker before this
+	// point - so what is withheld here is exactly the text the failure stranded.
+	//
 	// Discarding is not the same as discarding *silently*, though: that text was
 	// visible at the user's caret as preedit, so how much of it is being dropped is
 	// reported. The count is what lets "the detector never heard me" (this message,
-	// with a number) be told apart from "the session was lost" (no message), and it
+	// with a number) be told apart from "the session was lost" (an error), and it
 	// is the actionable direction - it is the size of what the room measurement was
 	// wrong about.
-	if pipeline.segments.Load() > 0 {
+	if engineErr != nil {
+		if withheld := pipeline.transcript.ProvisionalText(); withheld != "" && notify.Skipped != nil {
+			notify.Skipped(fmt.Sprintf(
+				"streaming session failed; withheld %d characters it never decoded offline (%v)",
+				len([]rune(withheld)), engineErr))
+		}
+	} else if pipeline.segments.Load() > 0 {
 		pipeline.commitProvisional()
 	} else if notify.Skipped != nil {
 		if withheld := pipeline.transcript.ProvisionalText(); withheld != "" {

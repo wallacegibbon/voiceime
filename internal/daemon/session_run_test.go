@@ -267,6 +267,53 @@ func TestSessionCommitsWhenSpeechStartsImmediately(t *testing.T) {
 	}
 }
 
+// A streaming session the server fails is a failure, and the draft it stranded is
+// not delivered as though the user had finished the sentence.
+//
+// Two failures are being pinned at once, and both were invisible before:
+//   - the reason arrived nested under "error", so the parser found no message, and
+//     the session ended as if the speaker had simply stopped;
+//   - Result.ProcessErr had no reader, so even the placeholder never reached a
+//     caller, and `voiceime stream` exited 0 with a truncated transcript.
+func TestSessionReportsAStreamFailureAndWithholdsTheDraft(t *testing.T) {
+	server := newFakeASRServer(t)
+	server.liveFail = "model died: cuda OOM"
+	wav := filepath.Join(t.TempDir(), "silence.wav")
+	writeWAV(t, wav, silence(1.0))
+
+	var mu sync.Mutex
+	var skipped []string
+	options, sink := sessionOptionsForWAV(t, server, true, wav)
+	options.Observer = Observer{Skipped: func(reason string) {
+		mu.Lock()
+		defer mu.Unlock()
+		skipped = append(skipped, reason)
+	}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	result, err := options.Run(ctx)
+	if err == nil {
+		t.Fatal("a session whose stream failed reported success")
+	}
+	if !strings.Contains(err.Error(), "cuda OOM") {
+		t.Errorf("failure %q does not carry the server's reason", err)
+	}
+	if result.Partials == 0 {
+		t.Fatal("the fake produced no partials, so there was no draft to withhold")
+	}
+	if got := sink.commits(); len(got) != 0 {
+		t.Fatalf("a failed session committed the unrepaired draft: %v", got)
+	}
+	mu.Lock()
+	reasons := strings.Join(skipped, " | ")
+	mu.Unlock()
+	want := fmt.Sprintf("withheld %d characters", len([]rune(result.FinalText)))
+	if !strings.Contains(reasons, want) {
+		t.Errorf("skipped reasons = %q, want the size of what was dropped (%q)", reasons, want)
+	}
+}
+
 // fakeTranscriber stands in for an injected decode: it is handed the utterance's PCM
 // and answers with text of the test's choosing.
 type fakeTranscriber struct {

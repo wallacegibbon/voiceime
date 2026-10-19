@@ -10,7 +10,8 @@ derived from the code, so it is the authoritative version if the two disagree.
 Deploying on a new machine end to end — prerequisites, configuration, model,
 engine registration, shortcut listener, and what to assert at each step — is
 [docs/DEPLOY.md](DEPLOY.md). This document is the command reference; that one is
-the procedure.
+the procedure. What the recognition path sends over the socket, and how it fails, is
+[docs/asr.md](asr.md).
 
 The Makefile is the intended interface; every target is non-interactive.
 

@@ -142,6 +142,10 @@ the streaming layer had not reached it yet, which is the normal case for a short
 utterance. That is what corrects words the user has already seen, at a measured 0.5-0.8 s
 per sentence whatever the checkpoint, because the weights are already loaded.
 
+The wire-level version of that picture — the two HTTP requests, what the SSE stream
+carries, which audio a repair re-reads, and what happens when a pass fails —
+is [docs/asr.md](docs/asr.md).
+
 ## Layout
 
 ```
@@ -150,6 +154,7 @@ internal/config     settings, XDG paths, validation, external-program discovery
 internal/audio      PCM helpers, capture, endpointing, rolling buffer
 internal/asr        the streaming adapter, the transcript model, the repair pass
 internal/models     discovery through `--inspect`, the model manager wrapper
+docs/asr.md         how the recognition pipeline works: the two requests, the SSE stream, the failure contract
 docs/AGENT.md       the operational surface, for agents
 docs/DEPLOY.md      deploy on a new machine, step by step, with assertions
 docs/ibus-protocol.md  the IBus engine protocol, established by experiment

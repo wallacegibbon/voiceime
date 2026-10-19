@@ -30,6 +30,9 @@ type fakeLiveServer struct {
 	body   string
 	// closeAfterDeltas drops the connection abruptly, as a dying service would.
 	closeAfterDeltas int
+	// failWith, when set, ends the session with an SSE error event carrying this
+	// message in audio.cpp's shape - nested under "error" - and no done event.
+	failWith string
 
 	mu       sync.Mutex
 	requests []string
@@ -114,6 +117,14 @@ func (f *fakeLiveServer) handle(conn net.Conn) {
 			f.send(conn, fmt.Sprintf("data: {\"type\":\"transcript.text.delta\",\"delta\":%q}\n\n", f.deltas[sent]))
 			sent++
 		}
+	}
+	if f.failWith != "" {
+		// The shape the server actually uses: the reason is nested under "error",
+		// and no done event follows - a truncated transcript must not be
+		// indistinguishable from the speaker stopping.
+		f.send(conn, fmt.Sprintf("data: {\"type\":\"error\",\"error\":{\"message\":%q}}\n\n", f.failWith))
+		io.WriteString(conn, "0\r\n\r\n")
+		return
 	}
 	joined := strings.Join(f.deltas[:sent], "")
 	f.send(conn, fmt.Sprintf("data: {\"type\":\"transcript.text.done\",\"text\":%q}\n\n", joined))
@@ -313,9 +324,59 @@ func TestStreamEndsWhenTheServerDies(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the session did not end when the server went away")
 	}
-	result, _ := stream.Close()
+	result, err := stream.Close()
 	if result.ProcessErr == nil {
 		t.Error("a session that lost its server reported no error")
+	}
+	// The error has to reach the caller too: the daemon decides with it whether the
+	// remaining draft may be committed, and a front end with only a Result field it
+	// never reads reports success for a truncated transcript.
+	if err == nil {
+		t.Fatal("Close returned no error for a session whose server went away")
+	}
+	if !strings.Contains(err.Error(), "streaming server") {
+		t.Errorf("the failure %q does not say where it came from", err)
+	}
+}
+
+// A stream the server ends with an error event must fail the session with the
+// server's own reason.
+//
+// The reason is nested under "error" ({"type":"error","error":{"message":...}}).
+// Reading only the top level produced a failure with no cause, and the sentence a
+// user needs - which model, which resource, which asset - was the part that got
+// dropped.
+func TestStreamCarriesTheServersErrorReason(t *testing.T) {
+	server := newFakeLive(t, "一段")
+	server.failWith = "model died: cuda OOM"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	stream, err := OpenStream(ctx, StreamConfig{BaseURL: server.url, Model: "stream-sense"})
+	if err != nil {
+		t.Fatalf("OpenStream: %v", err)
+	}
+	go func() {
+		for range stream.Events() {
+		}
+	}()
+	if err := stream.Write(silence(1)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	result, closeErr := stream.Close()
+	if closeErr == nil {
+		t.Fatal("a session the server ended with an error event reported success")
+	}
+	if !strings.Contains(closeErr.Error(), "cuda OOM") {
+		t.Errorf("failure %q does not carry the server's reason", closeErr)
+	}
+	if result.ProcessErr == nil {
+		t.Error("Result.ProcessErr is nil for a failed session, so a caller that reads only the result sees success")
+	}
+	// No done event arrived, so there is no final transcript to report. An empty
+	// text is right here; the failure is what the caller acts on.
+	if result.Text != "" {
+		t.Errorf("final text = %q for a session that never finished, want empty", result.Text)
 	}
 }
 

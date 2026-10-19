@@ -110,15 +110,14 @@ func TestWithConfiguredEngineAppliesOnlyWhatTheConfigOwns(t *testing.T) {
 	cfg := config.Default()
 	installed := ibus.DefaultComponent(cfg, "/home/u/.local/bin/voiceime ibus-engine --ibus")
 
-	unchanged, changed := withConfiguredEngine(installed, cfg)
-	if changed {
-		t.Errorf("a matching configuration was reported as a change:\n%s", unchanged.XML())
+	if componentNeedsRewrite([]byte(installed.XML()), withConfiguredEngine(installed, cfg)) {
+		t.Error("a file this version wrote was reported as needing a rewrite")
 	}
 
 	cfg.IBusEngineName = "voiceime-next"
 	cfg.Language = "en"
-	updated, changed := withConfiguredEngine(installed, cfg)
-	if !changed {
+	updated := withConfiguredEngine(installed, cfg)
+	if !componentNeedsRewrite([]byte(installed.XML()), updated) {
 		t.Fatal("a changed engine name was reported as no change")
 	}
 	if updated.EngineName != "voiceime-next" || updated.Language != "en" {
@@ -141,5 +140,25 @@ func TestWithConfiguredEngineAppliesOnlyWhatTheConfigOwns(t *testing.T) {
 	}
 	if read != updated {
 		t.Errorf("round trip changed the component:\n got %+v\nwant %+v", read, updated)
+	}
+}
+
+// An installed file this version would write differently is rewritten once.
+//
+// The escaped symbol is the case that exposed this: the reader decodes the reference, so a
+// settings-only comparison called the file unchanged while it still held
+// <symbol>&amp;#x1F3A4;</symbol> - which IBus draws as that text instead of a microphone.
+func TestComponentNeedsRewriteSeesAnOlderWriter(t *testing.T) {
+	cfg := config.Default()
+	installed := ibus.DefaultComponent(cfg, "/home/u/.local/bin/voiceime ibus-engine --ibus")
+	updated := withConfiguredEngine(installed, cfg)
+
+	escaped := strings.Replace(installed.XML(), "<symbol>🎤</symbol>",
+		"<symbol>&amp;#x1F3A4;</symbol>", 1)
+	if !strings.Contains(escaped, "&amp;#x1F3A4;") {
+		t.Fatal("the fixture did not produce an escaped symbol")
+	}
+	if !componentNeedsRewrite([]byte(escaped), updated) {
+		t.Error("a file with the escaped symbol was reported as unchanged, so apply cannot heal it")
 	}
 }

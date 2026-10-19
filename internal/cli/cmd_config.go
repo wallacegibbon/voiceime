@@ -196,11 +196,22 @@ func applyConfig(ctx *Context) error {
 // from a checkout while the component names an installed binary, and repointing it would
 // replace a working delivery path with a path that disappears when the checkout moves
 // (install_check reports that case as its own finding).
-func withConfiguredEngine(installed ibus.Component, cfg *config.Config) (ibus.Component, bool) {
+func withConfiguredEngine(installed ibus.Component, cfg *config.Config) ibus.Component {
 	updated := installed
 	updated.EngineName = cfg.IBusEngineName
 	updated.Language = cfg.Language
-	return updated, updated.XML() != installed.XML()
+	return updated
+}
+
+// componentNeedsRewrite compares the file on disk with what this version would write.
+//
+// Comparing the parsed component with the updated one is not enough, and that is how the
+// escaped symbol survived a rewrite: the reader decodes the reference, so both sides render
+// the same character and the file - which still holds the escaped text - was reported as
+// unchanged. Comparing bytes also picks up a file written by an older version, which is
+// exactly the upgrade case this has to heal.
+func componentNeedsRewrite(raw []byte, updated ibus.Component) bool {
+	return string(raw) != updated.XML()
 }
 
 // applyComponent rewrites the installed IBus component when the configuration disagrees
@@ -214,12 +225,16 @@ func applyComponent(cfg *config.Config) (string, error) {
 	if !ibus.Installed() {
 		return "not installed", nil
 	}
+	raw, err := os.ReadFile(ibus.ComponentPath())
+	if err != nil {
+		return "", fmt.Errorf("cannot read the installed component: %w", err)
+	}
 	installed, err := ibus.ReadComponent(ibus.ComponentPath())
 	if err != nil {
 		return "", fmt.Errorf("cannot read the installed component: %w", err)
 	}
-	updated, changed := withConfiguredEngine(installed, cfg)
-	if !changed {
+	updated := withConfiguredEngine(installed, cfg)
+	if !componentNeedsRewrite(raw, updated) {
 		return "unchanged", nil
 	}
 	if _, err := ibus.Install(updated); err != nil {

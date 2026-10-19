@@ -429,3 +429,30 @@ func TestOpenStreamRejectsAnAddressItCannotSpeak(t *testing.T) {
 		})
 	}
 }
+
+// A stop we asked for is not a server failure.
+//
+// Cancelling the session closes its own socket - that is how a read or a write waiting
+// on the server is released - so the reader sees an error it caused itself. Recording it
+// as Result.ProcessErr made every requested stop look like a lost session, and since D24
+// that is not cosmetic: the session withholds the draft instead of committing it. It also
+// silenced the "no speech detected" report, because the failure branch was taken first.
+func TestCancelIsNotAServerFailure(t *testing.T) {
+	server := newFakeLive(t, "一段")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stream, err := OpenStream(ctx, StreamConfig{BaseURL: server.url, Model: "stream-sense"})
+	if err != nil {
+		t.Fatalf("OpenStream: %v", err)
+	}
+	// The caller stops. This is what a hotkey release and Ctrl-C do.
+	cancel()
+
+	result, closeErr := stream.Close()
+	if closeErr != nil {
+		t.Fatalf("a requested stop was reported as a failure: %v", closeErr)
+	}
+	if result.ProcessErr != nil {
+		t.Errorf("ProcessErr = %v after a requested stop, want nil", result.ProcessErr)
+	}
+}

@@ -522,3 +522,42 @@ func TestCancelledSessionIsNotReportedAsAWriteFailure(t *testing.T) {
 		t.Errorf("a cancelled session delivered nothing: %v", sink.events)
 	}
 }
+
+// A session stopped on request, which heard nothing, still says so.
+//
+// The stop closes the streaming socket, and the reader's resulting error used to be
+// recorded as a session failure. Since D24 a failed session takes the "withhold the
+// draft" branch - so the end-of-session rule never ran, and `voiceime stream --seconds 3`
+// in a quiet room printed a summary with no line explaining why nothing was committed
+// (measured on the installed build before this test existed).
+func TestStoppedSessionWithNoSpeechExplainsItself(t *testing.T) {
+	server := newFakeASRServer(t)
+	wav := filepath.Join(t.TempDir(), "silence.wav")
+	writeWAV(t, wav, silence(1.2))
+
+	var mu sync.Mutex
+	var skipped []string
+	options, sink := sessionOptionsForWAV(t, server, true, wav)
+	options.Observer = Observer{Skipped: func(reason string) {
+		mu.Lock()
+		defer mu.Unlock()
+		skipped = append(skipped, reason)
+	}}
+
+	// Stop while the stream is still open, which is what a hotkey release does.
+	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	defer cancel()
+	if _, err := options.Run(ctx); err != nil && ctx.Err() == nil {
+		t.Fatalf("session failed: %v", err)
+	}
+
+	if len(sink.commits()) != 0 {
+		t.Fatalf("a silent session committed %v", sink.commits())
+	}
+	mu.Lock()
+	reasons := strings.Join(skipped, " | ")
+	mu.Unlock()
+	if !strings.Contains(reasons, "no speech detected") {
+		t.Errorf("skipped reasons = %q, want the session to say it heard no speech", reasons)
+	}
+}

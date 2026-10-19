@@ -56,7 +56,10 @@ type Stream struct {
 
 	writeMu sync.Mutex
 	closed  bool
-	cancel  context.CancelFunc
+	// ctx is the session's own context, kept so the reader can tell its own shutdown
+	// from a server that failed (see readEvents).
+	ctx    context.Context
+	cancel context.CancelFunc
 
 	fed     atomic.Int64
 	started time.Time
@@ -128,6 +131,7 @@ func OpenStream(ctx context.Context, cfg StreamConfig) (*Stream, error) {
 		result:  Result{Metrics: map[string]string{}},
 	}
 	ctx, cancel := context.WithCancel(ctx)
+	stream.ctx = ctx
 	stream.cancel = cancel
 	// A cancelled session closes the socket, which is what unblocks the reader.
 	go func() {
@@ -385,11 +389,18 @@ func (s *Stream) readEvents() {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		s.resultMu.Lock()
-		if s.result.ProcessErr == nil {
-			s.result.ProcessErr = fmt.Errorf("read from the streaming server: %w", err)
+		// A cancelled session closes its own socket - that is how a read waiting on the
+		// server is released - so this error is the stop working, not the server
+		// failing. Recording it made every requested stop look like a lost session, and
+		// since D24 that is not cosmetic: a failed session withholds the draft instead
+		// of committing it, and reports the failure instead of the end-of-session rule.
+		if s.ctx == nil || s.ctx.Err() == nil {
+			s.resultMu.Lock()
+			if s.result.ProcessErr == nil {
+				s.result.ProcessErr = fmt.Errorf("read from the streaming server: %w", err)
+			}
+			s.resultMu.Unlock()
 		}
-		s.resultMu.Unlock()
 	}
 }
 

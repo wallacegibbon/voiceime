@@ -1058,3 +1058,29 @@ one.
 Pinned by `TestValidateRejectsAServerAddressTheStreamCannotUse`,
 `TestOpenStreamRejectsAnAddressItCannotSpeak` and
 `TestChunkedReaderRejectsATruncatedChunk`.
+
+## D29 — A requested stop is not a session failure, on the read side too.
+
+**Decision.** A read error that happens because the session closed its own socket is not
+recorded as `Result.ProcessErr`. `Stream` keeps its context and consults it in the reader.
+
+**Why.** D25 recorded this rule for writes (a stop closes the socket under the capture
+loop, so the next write fails) and D24 made a failed stream *withhold* the draft instead of
+committing it. The reader was left out: cancelling closes the connections, the reader sees
+`use of closed network connection`, and the session recorded a failure it had caused -
+which then took D24's withholding branch instead of the end-of-session rule. Two user-
+visible symptoms, both found by running the installed build rather than the tests:
+`voiceime stream --seconds 3` in a quiet room printed a summary with no line explaining
+why nothing was committed (the "no speech detected" report was never reached), and every
+hotkey release ended in the log as `streaming session failed; withheld N characters`
+with the cause being our own `Close`. A session that ends because the user stopped is a
+session that ended; a session whose server went away is still a failure, and that one is
+recorded while the context is still live.
+
+**Rejected.** Treating every `ProcessErr` as suspicious when the context is done - a
+server that fails *before* the stop is a real failure and must keep its draft withheld.
+Detecting intent in `Close` (a "stopped" flag set by the caller) - the context already
+carries exactly that information, and a second flag would have to be kept in step with it.
+
+Pinned by `TestCancelIsNotAServerFailure` and
+`TestStoppedSessionWithNoSpeechExplainsItself`.

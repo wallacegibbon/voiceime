@@ -477,16 +477,23 @@ func (e *engineObject) shutdown() {
 	}
 }
 
-// propertiesObject serves the three properties IBus declares on an engine.
-// ContentType is written by the daemon and never read; the two read-only
-// properties report capabilities voiceime does not have, which is correct:
-// answering "no" is better than claiming surrounding-text support and failing.
+// propertiesObject serves the properties IBus declares on an engine.
+//
+// libibus 1.5.29 declares two read-only ones - `HasFocusId` and `ActiveSurroundingText`,
+// both booleans - and this answered `FocusId`, the name an older release used, so the
+// daemon asked a question it got an error for and logged a failure about a capability the
+// engine actually has. Both names are answered now, with the same value: voiceime has a
+// focus id, and it does not have surrounding text, so answering "no" is not a limitation
+// being hidden but the truth. `ContentType` is written by the daemon and never read by this
+// engine; answering its Get keeps a daemon that asks from logging a failure about a
+// property it set itself, but it is not listed in GetAll because the type this engine would
+// claim for it is a guess.
 type propertiesObject struct{ engine *engineObject }
 
 func (p *propertiesObject) Get(iface, name string) (dbus.Variant, *dbus.Error) {
 	trace("Properties.Get(%s.%s)", iface, name)
 	switch name {
-	case "FocusId":
+	case "HasFocusId", "FocusId":
 		return dbus.MakeVariant(true), nil
 	case "ActiveSurroundingText":
 		return dbus.MakeVariant(false), nil
@@ -498,10 +505,12 @@ func (p *propertiesObject) Get(iface, name string) (dbus.Variant, *dbus.Error) {
 
 func (p *propertiesObject) GetAll(iface string) (map[string]dbus.Variant, *dbus.Error) {
 	trace("Properties.GetAll(%s)", iface)
+	// Both spellings, so a daemon of either generation finds what it looks for; a key it
+	// does not ask about costs nothing.
 	return map[string]dbus.Variant{
+		"HasFocusId":            dbus.MakeVariant(true),
 		"FocusId":               dbus.MakeVariant(true),
 		"ActiveSurroundingText": dbus.MakeVariant(false),
-		"ContentType":           dbus.MakeVariant([]uint32{0, 0}),
 	}, nil
 }
 

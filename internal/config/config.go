@@ -243,6 +243,32 @@ func (c *Config) DownloadEndpoint() (string, error) {
 	return strings.TrimRight(raw, "/"), nil
 }
 
+// checkServerURL validates the address of the resident recognition server.
+//
+// It is the syntactic half only - whether anything answers there is `doctor`'s
+// question, so validation stays offline - but the scheme is part of the syntax here:
+// the live streaming endpoint is spoken over a raw socket and cannot do TLS, so an
+// https address is a configuration that half the pipeline can use.
+func checkServerURL(raw string) error {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return fmt.Errorf("is not a valid URL: %v (needs a scheme and a host, e.g. http://127.0.0.1:18080)", err)
+	}
+	switch parsed.Scheme {
+	case "http":
+	case "https":
+		return errors.New("must be http://, not https://: the live stream speaks HTTP over a raw socket and cannot do TLS")
+	case "":
+		return errors.New("needs a scheme and a host, e.g. http://127.0.0.1:18080")
+	default:
+		return fmt.Errorf("must start with http://, not %q", parsed.Scheme)
+	}
+	if parsed.Host == "" {
+		return errors.New("has no host")
+	}
+	return nil
+}
+
 // --------------------------------------------------------------------------- //
 // Load / save / validate
 // --------------------------------------------------------------------------- //
@@ -377,6 +403,18 @@ func (c *Config) Validate() []Issue {
 	if _, err := c.DownloadEndpoint(); err != nil {
 		add("error", "download_mirror", err.Error(),
 			"voiceime config set download_mirror "+DefaultDownloadEndpoint)
+	}
+	// The address dictation decodes through, when it is set. Empty is not an error
+	// here: a fresh machine has no service yet, and `doctor` reports that once, with
+	// `voiceime server install` as the fix. What is checked is the spelling, because
+	// https is a *blocking* mistake rather than a warning - the live stream is spoken
+	// over a raw socket (internal/asr) and cannot do TLS, so the repair path would work
+	// while dictation did not, which is the worst shape a failure can take.
+	if raw := strings.TrimSpace(c.ASRServerURL); raw != "" {
+		if err := checkServerURL(raw); err != nil {
+			add("error", "asr_server_url", err.Error(),
+				"voiceime config set asr_server_url http://127.0.0.1:18080")
+		}
 	}
 	if c.Backend == "" {
 		add("error", "backend", "must name a backend", "voiceime config set backend cpu")

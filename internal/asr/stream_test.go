@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -382,3 +383,49 @@ func TestStreamCarriesTheServersErrorReason(t *testing.T) {
 
 // buffer helper used by the sink test above.
 var _ = binary.LittleEndian
+
+// A connection that ends inside a chunk's payload is a truncated transcript.
+//
+// The reader used to swallow io.EOF at that point and, when no bytes had arrived,
+// return (0, nil) - a Read that reports no progress and no error. bufio.Scanner then
+// retried until it gave up with "too many empty reads", so the failure surfaced as a
+// scanner complaint instead of as the truncation it was.
+func TestChunkedReaderRejectsATruncatedChunk(t *testing.T) {
+	// Claims 16 bytes, delivers 10, then the connection ends.
+	body := "10\r\n0123456789"
+	reader := &chunkedReader{reader: bufio.NewReader(strings.NewReader(body))}
+
+	data, err := io.ReadAll(reader)
+	if err == nil {
+		t.Fatalf("ReadAll returned %q with no error for a truncated chunk", data)
+	}
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Errorf("error = %v, want io.ErrUnexpectedEOF", err)
+	}
+}
+
+// The live client speaks HTTP over a raw socket, so it cannot do TLS. An https address
+// has to say that instead of sending a plaintext request to port 443, which fails as
+// "cannot reach the server" and sends a reader looking at the service.
+func TestOpenStreamRejectsAnAddressItCannotSpeak(t *testing.T) {
+	cases := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{"https", "https://127.0.0.1:18080", "cannot do TLS"},
+		{"no scheme", "127.0.0.1:18080", "scheme and a host"},
+		{"wrong scheme", "ftp://127.0.0.1:18080", "unsupported scheme"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := OpenStream(context.Background(), StreamConfig{BaseURL: tc.url, Model: "stream"})
+			if err == nil {
+				t.Fatalf("OpenStream accepted %q", tc.url)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error %q does not say %q", err, tc.want)
+			}
+		})
+	}
+}

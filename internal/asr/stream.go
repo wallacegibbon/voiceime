@@ -82,7 +82,26 @@ func OpenStream(ctx context.Context, cfg StreamConfig) (*Stream, error) {
 	}
 	parsed, err := url.Parse(strings.TrimRight(cfg.BaseURL, "/"))
 	if err != nil {
-		return nil, fmt.Errorf("asr_server_url %q: %w", cfg.BaseURL, err)
+		// The common typo is a bare host:port, which url.Parse rejects with a message
+		// about path segments. Saying what the value should look like is cheaper than
+		// making a reader translate that.
+		return nil, fmt.Errorf("asr_server_url %q: %v (needs a scheme and a host, e.g. http://127.0.0.1:18080)", cfg.BaseURL, err)
+	}
+	// This client speaks HTTP over a socket by hand (see the Stream comment), so it
+	// cannot do TLS. Saying so is better than sending a plaintext request to port 443,
+	// which fails as "cannot reach the streaming server" and sends a reader looking at
+	// the service instead of the setting.
+	switch parsed.Scheme {
+	case "http":
+	case "https":
+		return nil, fmt.Errorf("asr_server_url %q: the live stream is spoken over a raw socket and cannot do TLS; use http:// for a server on this machine", cfg.BaseURL)
+	case "":
+		return nil, fmt.Errorf("asr_server_url %q: needs a scheme and a host, e.g. http://127.0.0.1:18080", cfg.BaseURL)
+	default:
+		return nil, fmt.Errorf("asr_server_url %q: unsupported scheme %q (use http://)", cfg.BaseURL, parsed.Scheme)
+	}
+	if parsed.Host == "" {
+		return nil, fmt.Errorf("asr_server_url %q: no host", cfg.BaseURL)
 	}
 	host := parsed.Host
 	if parsed.Port() == "" {
@@ -188,6 +207,10 @@ func (s *Stream) handshake(base *url.URL) error {
 
 // Write feeds raw 16 kHz mono PCM. It blocks when the server is behind, which is the
 // back-pressure the capture loop needs.
+//
+// The block is bounded: a server that stops reading would otherwise stall the capture
+// loop for the rest of the session with nothing to report. Ten seconds of a 640-byte
+// write is not back-pressure, it is a wedged service, and failing the session says so.
 func (s *Stream) Write(pcm []byte) error {
 	if len(pcm) == 0 {
 		return nil
@@ -197,6 +220,7 @@ func (s *Stream) Write(pcm []byte) error {
 	if s.closed {
 		return fmt.Errorf("write audio to a closed session")
 	}
+	_ = s.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 	// Chunked framing, written with the payload in one call so the capture loop does
 	// not pay two syscalls per block.
 	buffer := make([]byte, 0, len(pcm)+16)
@@ -221,6 +245,11 @@ func (s *Stream) Events() <-chan Event { return s.events }
 // "ready".
 func (s *Stream) LoadTime() time.Duration { return s.ready }
 
+// writeTimeout bounds one write to the server. It is the difference between
+// back-pressure and a hang: the audio blocks are 20ms of speech, so a write that takes
+// ten seconds is a service that stopped reading.
+const writeTimeout = 10 * time.Second
+
 // Close ends the audio and waits for the server to finish the transcript. Writing the
 // terminating chunk is the end-of-audio signal: the server flushes the model and
 // answers done, which is what makes a push-to-talk stop work without a special
@@ -235,6 +264,10 @@ func (s *Stream) Close() (Result, error) {
 		s.writeMu.Lock()
 		if !s.closed {
 			s.closed = true
+			// The end-of-audio write gets its own deadline: it happens outside the
+			// session's lifetime, and the 30s bound below cannot cover a write that
+			// never returns.
+			_ = s.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 			_, _ = io.WriteString(s.conn, "0\r\n\r\n")
 		}
 		s.writeMu.Unlock()
@@ -404,6 +437,17 @@ func (c *chunkedReader) Read(p []byte) (int, error) {
 	}
 	n, err := c.reader.Read(p)
 	c.left -= n
+	// A connection that ends inside a chunk's payload is a truncated transcript, not
+	// the end of one. Reporting io.EOF here would have said "finished" and, when it
+	// arrived with no bytes read, returned (0, nil) - which a reader is entitled to
+	// treat as progress and retry, so the failure surfaced as a scanner error about
+	// empty reads rather than as the truncation it is.
+	if err == io.EOF {
+		return n, io.ErrUnexpectedEOF
+	}
+	if err != nil {
+		return n, err
+	}
 	if c.left == 0 {
 		// Consume the CRLF that ends the chunk.
 		if _, err := c.nextLine(); err != nil {
@@ -412,9 +456,6 @@ func (c *chunkedReader) Read(p []byte) (int, error) {
 			}
 			return n, err
 		}
-	}
-	if err != nil && err != io.EOF {
-		return n, err
 	}
 	return n, nil
 }

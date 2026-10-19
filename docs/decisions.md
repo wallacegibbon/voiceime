@@ -986,3 +986,75 @@ Pinned by `TestConfigSetFailsWhenTheValueBreaksTheConfig`,
 `TestConfigSetNamesHowToApplyEverySetting`, `TestSetRequestOptionsAsKeyValue`,
 `TestSaveIsSafeForConcurrentWriters`, `TestHotkeyUnitLetsTheConfigurationOwnTheKey` and
 `TestServerUnitRunsVoiceimeWithSubcommand`.
+
+## D27 — One activation is one input context, and the text follows the newest.
+
+**Decision.** The IBus engine counts input contexts: the session starts with the first
+`Enable`, delivers to the most recently enabled one, and stops when the last `Disable`
+arrives. The per-engine object de-duplicates, so the handler sees one `Enable` and one
+`Disable` per context even when the daemon repeats one.
+
+**Why.** The handler had one sink, fixed when the session started, and it returned early
+from every later `Enable` ("already dictating"). Two things followed, and neither reported
+anything: a second window received no text, because delivery still went to the context that
+started dictation, and a single `Disable` stopped the session, so moving between two
+windows ended dictation mid-sentence and committed the fragment. `Enable` is documented in
+this code as arriving per input context, and the daemon creates an engine object per
+context (`docs/ibus-protocol.md`), so counting them is what the protocol already provides -
+the bug was treating a count as a boolean.
+
+**Why the de-duplication is in the engine object.** The handler cannot tell two contexts
+apart: `Disable()` carries no argument, so a set of controls could be added but never
+pruned correctly. The engine object is the only thing that knows which context a call
+belongs to, so it is where "this one is already active" is decided. A repeated `Enable`
+for an active context therefore reaches the handler zero times rather than being ignored
+there, which is what keeps the count balanced - the failure mode of an unbalanced count is
+dictation that never stops, which is worse than one that stops early.
+
+**Rejected.** Stopping on any `Disable` and accepting a lost sentence - it is the user's
+speech, and the commit already happened for what was spoken. Delivering to *every* active
+context - one utterance typed into two windows is not a feature. Changing `ibus.Handler`
+to pass a context identity through `Enable`/`Disable` - the daemon's own object already
+has it, and widening the interface to fix an accounting bug in one implementation of it
+would make every handler carry the distinction.
+
+Pinned by `TestEngineHandlerFollowsTheNewestInputContext` and
+`TestSwitchableSinkFollowsItsTarget`.
+
+## D28 — What the client cannot do is a validation error, not a runtime surprise.
+
+**Decision.** `asr_server_url` must be `http://` and is validated as such. A chunked
+response that ends inside a chunk is `io.ErrUnexpectedEOF`, never `io.EOF`. Writes to the
+streaming server carry a ten-second deadline. `hotkey --engine` is gone.
+
+**Why.** The live stream is spoken over a raw socket, by hand, because `http.Client.Do`
+does not return until the request body is finished (measured; see `internal/asr`). That
+client cannot do TLS, while the repair path uses `net/http` and can - so an `https`
+address used to pass validation, pass `doctor` (whose `/health` probe is `net/http`), and
+then fail every dictation while repairs worked. A configuration where half the pipeline
+functions is the most expensive kind: every check that exists says it is fine. The
+syntactic check is in `config.Validate` next to `download_mirror`, so it stays offline and
+reports the same shape `server.ParseURL` expects.
+
+The reader had a smaller version of the same problem: `io.EOF` inside a chunk was swallowed
+and could return `(0, nil)`, which a reader is entitled to retry, so a truncated transcript
+surfaced as `bufio.Scanner: too many empty reads` - a complaint about the scanner instead
+of about the server. And a write had no deadline, so a server that stopped reading blocked
+the capture loop with nothing to report; ten seconds of a 640-byte write is not
+back-pressure, and failing the session says something a user can act on.
+
+`hotkey --engine` was declared, documented as "engine to switch to while dictating", and
+never read: `ibus_engine_name` is the setting, and `config set` is how it is changed. D23's
+rule applies to flags as much as to commands - a flag that silently does nothing invites a
+measurement of a pipeline nobody runs.
+
+**Rejected.** Implementing TLS in the streaming client - a second transport, a certificate
+policy and a dependency, for a server that runs on this machine and is reached over
+loopback. Accepting `https` in validation and failing at session start - that is the
+behaviour being removed. Dropping the write deadline and relying on the server's idle
+timeout - the client would be the only party that cannot tell a wedged server from a silent
+one.
+
+Pinned by `TestValidateRejectsAServerAddressTheStreamCannotUse`,
+`TestOpenStreamRejectsAnAddressItCannotSpeak` and
+`TestChunkedReaderRejectsATruncatedChunk`.

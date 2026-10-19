@@ -27,7 +27,6 @@ import (
 func cmdHotkey() *Command {
 	var (
 		spec      string
-		keyspec   string
 		quiet     bool
 		install   bool
 		logEvents bool
@@ -38,7 +37,6 @@ func cmdHotkey() *Command {
 		Usage:   "voiceime hotkey <run|toggle|install|uninstall|status> [--keys <combo>]",
 		Flags: func(set *flag.FlagSet) {
 			set.StringVar(&spec, "keys", "", "shortcut to tap, e.g. <Control>apostrophe (default: from config)")
-			set.StringVar(&keyspec, "engine", "", "engine to switch to while dictating (default: from config)")
 			set.BoolVar(&quiet, "quiet", false, "only report state changes")
 			set.BoolVar(&install, "yes", false, "accepted and ignored; keeps scripts uniform")
 			set.BoolVar(&logEvents, "log-events", false, "log every shortcut event the daemon sends, not just the ones acted on")

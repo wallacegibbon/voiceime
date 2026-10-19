@@ -366,20 +366,29 @@ type engineObject struct {
 	path    dbus.ObjectPath
 	name    string
 
-	mu          sync.Mutex
-	active      bool
-	placeholder bool // true when a test handler is standing in for the pipeline
+	mu     sync.Mutex
+	active bool
 }
 
 // Methods the daemon calls. Most are no-ops: voiceime does not compose text from
 // keystrokes, so the interesting ones are Enable and Disable.
 
+// Enable is called once per input context this engine becomes active in.
+//
+// The session behind the handler counts contexts to decide when dictation stops, so it
+// must see exactly one Enable per context: IBus can call this again for a context that
+// is already active (a focus change inside it), and counting that twice would make the
+// matching Disable look like one context too few - dictation that never stops.
 func (e *engineObject) Enable() *dbus.Error {
 	trace("Enable()")
 	e.mu.Lock()
+	repeated := e.active
 	e.active = true
 	handler, testText := e.service.Handler, e.service.EnableText
 	e.mu.Unlock()
+	if repeated {
+		return nil
+	}
 
 	switch {
 	case handler != nil:
@@ -387,9 +396,6 @@ func (e *engineObject) Enable() *dbus.Error {
 	case testText != "":
 		// No pipeline attached: this is a diagnostic run, whose only purpose is to
 		// prove text reaches an application.
-		e.mu.Lock()
-		e.placeholder = true
-		e.mu.Unlock()
 		if err := e.control().Commit(testText); err != nil {
 			return dbus.MakeFailedError(err)
 		}
@@ -400,10 +406,12 @@ func (e *engineObject) Enable() *dbus.Error {
 func (e *engineObject) Disable() *dbus.Error {
 	trace("Disable()")
 	e.mu.Lock()
+	wasActive := e.active
 	e.active = false
 	handler := e.service.Handler
 	e.mu.Unlock()
-	if handler != nil {
+	// Only a context that was enabled is one the handler is counting.
+	if handler != nil && wasActive {
 		handler.Disable()
 	}
 	return nil

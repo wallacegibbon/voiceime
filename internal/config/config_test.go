@@ -326,3 +326,46 @@ func TestSetRequestOptionsAsKeyValue(t *testing.T) {
 		t.Errorf("after a save and load: request_options = %v", loaded.RequestOptions)
 	}
 }
+
+// The streaming client speaks HTTP over a raw socket, so it cannot do TLS.
+//
+// An https address used to pass validation, pass `doctor` (whose /health probe uses
+// net/http, which does TLS) and then fail every dictation - the repair path working and
+// the live pass not, which is the worst shape a failure can take. It is a blocking
+// finding now, and the message says why.
+func TestValidateRejectsAServerAddressTheStreamCannotUse(t *testing.T) {
+	cfg := Default()
+	cfg.ASRServerURL = "https://example.invalid:18080"
+	issues := Errors(cfg.Validate())
+	if len(issues) != 1 || issues[0].Key != "asr_server_url" {
+		t.Fatalf("Validate with an https server = %+v, want one blocking asr_server_url issue", issues)
+	}
+	if !strings.Contains(issues[0].Message, "https") || !strings.Contains(issues[0].Message, "TLS") {
+		t.Errorf("message %q does not explain what is wrong with https", issues[0].Message)
+	}
+	if issues[0].Fix == "" {
+		t.Error("the finding carries no fix")
+	}
+
+	// The typo someone will actually make: a bare host and port.
+	cfg.ASRServerURL = "127.0.0.1:18080"
+	if issues := Errors(cfg.Validate()); len(issues) != 1 ||
+		!strings.Contains(issues[0].Message, "scheme and a host") {
+		t.Errorf("a bare host:port = %+v, want the shape it should have", issues)
+	}
+
+	// A plain local address is fine, with or without a path prefix.
+	for _, address := range []string{"http://127.0.0.1:18080", "http://127.0.0.1:18080/", "http://localhost:18080/api"} {
+		cfg.ASRServerURL = address
+		if issues := Errors(cfg.Validate()); len(issues) != 0 {
+			t.Errorf("%s was rejected: %+v", address, issues)
+		}
+	}
+
+	// An unset address is doctor's finding, not a validation error: a fresh machine has
+	// no service yet, and reporting it twice is how one failure becomes two.
+	cfg.ASRServerURL = ""
+	if issues := Errors(cfg.Validate()); len(issues) != 0 {
+		t.Errorf("an unset server address was rejected: %+v", issues)
+	}
+}

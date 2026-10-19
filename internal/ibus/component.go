@@ -52,7 +52,7 @@ func DefaultComponent(cfg *config.Config, execPath string) Component {
 		Language:    cfg.Language,
 		LongName:    "Voiceime (speech)",
 		EngineDesc:  "Dictate into any application with a local speech recogniser",
-		Symbol:      "&#x1F3A4;", // microphone
+		Symbol:      "🎤",
 		Rank:        1,
 	}
 }
@@ -119,6 +119,72 @@ func ComponentDir() string { return filepath.Join(config.DataDir(), "component")
 
 // ComponentPath is the file `voiceime engine install` writes.
 func ComponentPath() string { return filepath.Join(ComponentDir(), "voiceime.xml") }
+
+// wireComponent is the file as ibus-daemon reads it. It exists so an installed component
+// can be parsed, changed and written back: `config apply` owns the fields the
+// configuration owns (the engine name and its language), and a re-render that lost the
+// exec line would repoint IBus at whatever binary the apply command ran from.
+type wireComponent struct {
+	Name        string `xml:"name"`
+	Description string `xml:"description"`
+	Exec        string `xml:"exec"`
+	Version     string `xml:"version"`
+	Author      string `xml:"author"`
+	License     string `xml:"license"`
+	Homepage    string `xml:"homepage"`
+	TextDomain  string `xml:"textdomain"`
+	Engines     []struct {
+		Name        string `xml:"name"`
+		Language    string `xml:"language"`
+		LongName    string `xml:"longname"`
+		Description string `xml:"description"`
+		Rank        int    `xml:"rank"`
+		Symbol      string `xml:"symbol"`
+		Icon        string `xml:"icon"`
+	} `xml:"engines>engine"`
+}
+
+// ReadComponent parses an installed component file.
+//
+// The textdomain, license and author fields are carried through unchanged: they are not
+// settings, and a round trip that dropped them would rewrite a file voiceime did not
+// install. A file with no engine is an error - ibus-daemon needs one to register
+// anything, so it is broken rather than empty.
+func ReadComponent(path string) (Component, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return Component{}, err
+	}
+	var parsed struct {
+		wireComponent
+		XMLName struct{} `xml:"component"`
+	}
+	if err := xml.Unmarshal(raw, &parsed); err != nil {
+		return Component{}, fmt.Errorf("parse %s: %w", path, err)
+	}
+	if len(parsed.Engines) == 0 {
+		return Component{}, fmt.Errorf("%s: no <engine> element, so IBus would register nothing", path)
+	}
+	engine := parsed.Engines[0]
+	component := Component{
+		Name:        parsed.Name,
+		Description: parsed.Description,
+		Exec:        parsed.Exec,
+		Version:     parsed.Version,
+		Author:      parsed.Author,
+		License:     parsed.License,
+		Homepage:    parsed.Homepage,
+		TextDomain:  parsed.TextDomain,
+		EngineName:  engine.Name,
+		Language:    engine.Language,
+		LongName:    engine.LongName,
+		EngineDesc:  engine.Description,
+		Symbol:      engine.Symbol,
+		Icon:        engine.Icon,
+		Rank:        engine.Rank,
+	}
+	return component, nil
+}
 
 // ComponentExec reads an installed component file and returns the executable its
 // <exec> element names, which is the first field of the command ibus-daemon

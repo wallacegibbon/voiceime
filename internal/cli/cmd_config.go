@@ -82,8 +82,10 @@ func describeModel(scanned []models.Model, path string) string {
 	return filepath.Base(found.Path) + " (" + found.Family + ")"
 }
 
-// applyConfig restarts the three processes that load the configuration, so a hand-edited
-// file takes effect, and reports what actually happened rather than what was attempted.
+// applyConfig makes the running installation match the file, and reports what actually
+// happened rather than what was attempted: the service and the listener are restarted,
+// the installed IBus component is rewritten when the settings it owns have changed, and
+// the engine is dropped so the next activation runs the new binary.
 func applyConfig(ctx *Context) error {
 	result := map[string]any{}
 	systemctl, _ := exec.LookPath("systemctl")
@@ -148,7 +150,16 @@ func applyConfig(ctx *Context) error {
 		result["listener"] = "not installed"
 	}
 
-	// 3. The engine: it is spawned by ibus-daemon and stays, holding the configuration it
+	// 3. The component: the engine name an input method is selected by lives in the XML
+	// IBus reads, so `ibus_engine_name` and `language` are applied here or nowhere. It is
+	// rewritten only when something differs - applying it means restarting IBus.
+	component, err := applyComponent(ctx.Config)
+	if err != nil {
+		return FailureError("%v", err)
+	}
+	result["component"] = component
+
+	// 4. The engine: it is spawned by ibus-daemon and stays, holding the configuration it
 	// started with. Ending it is enough - IBus starts a fresh one on the next activation.
 	//
 	// By pid, never by a pkill pattern: `pkill -f "voiceime ibus-engine"` matches any
@@ -172,9 +183,58 @@ func applyConfig(ctx *Context) error {
 			ctx.Print("serving:  %s", strings.Join(served, " and "))
 		}
 		ctx.Print("listener: %v", result["listener"])
+		ctx.Print("component: %v", result["component"])
 		ctx.Print("engine:   %v", result["engine"])
 	}
 	return ctx.Emit("config apply", result)
+}
+
+// withConfiguredEngine returns the installed component with the fields the configuration
+// owns changed, and whether anything changed at all.
+//
+// Everything else - the exec line above all - is left as it is: `config apply` may be run
+// from a checkout while the component names an installed binary, and repointing it would
+// replace a working delivery path with a path that disappears when the checkout moves
+// (install_check reports that case as its own finding).
+func withConfiguredEngine(installed ibus.Component, cfg *config.Config) (ibus.Component, bool) {
+	updated := installed
+	updated.EngineName = cfg.IBusEngineName
+	updated.Language = cfg.Language
+	return updated, updated.XML() != installed.XML()
+}
+
+// applyComponent rewrites the installed IBus component when the configuration disagrees
+// with it, and restarts IBus so the daemon reads the new file.
+//
+// Before this, `ibus_engine_name` was the one setting `config apply` silently ignored: the
+// engine name is baked into the component at `engine install` time, so changing it made
+// the selector point at an engine IBus had never heard of while every other setting
+// applied - and `doctor` reported it as "not registered" without saying why.
+func applyComponent(cfg *config.Config) (string, error) {
+	if !ibus.Installed() {
+		return "not installed", nil
+	}
+	installed, err := ibus.ReadComponent(ibus.ComponentPath())
+	if err != nil {
+		return "", fmt.Errorf("cannot read the installed component: %w", err)
+	}
+	updated, changed := withConfiguredEngine(installed, cfg)
+	if !changed {
+		return "unchanged", nil
+	}
+	if _, err := ibus.Install(updated); err != nil {
+		return "", fmt.Errorf("rewrite %s: %w", ibus.ComponentPath(), err)
+	}
+	// The daemon caches the component registry beside the directories it watched when the
+	// cache was written, so a changed file needs that cache gone as well as a restart
+	// (measured when the search path changed; see ibus.RegistryCachePath).
+	if cache := ibus.RegistryCachePath(); cache != "" {
+		_ = os.Remove(cache)
+	}
+	if err := runCommand("ibus restart"); err != nil {
+		return "", fmt.Errorf("the component was rewritten but IBus did not restart, so it is still reading the old one: %w", err)
+	}
+	return "rewritten; IBus restarted", nil
 }
 
 // stopEngines asks every running engine process to exit, and reports how many there were

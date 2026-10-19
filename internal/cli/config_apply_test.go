@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/wallacegibbon/voiceime/internal/config"
+	"github.com/wallacegibbon/voiceime/internal/ibus"
 )
 
 // `config apply` used to restart the service and then report success even when the
@@ -95,5 +98,48 @@ func appendToFile(t *testing.T, path, text string) {
 	defer file.Close()
 	if _, err := file.WriteString(text); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// `config apply` owns the engine name and language in the installed component.
+//
+// They are baked into the XML IBus reads, so until apply rewrote it, `ibus_engine_name`
+// was the one setting apply silently ignored: the selector pointed at an engine IBus had
+// never heard of, and `doctor` said "not registered" without a reason.
+func TestWithConfiguredEngineAppliesOnlyWhatTheConfigOwns(t *testing.T) {
+	cfg := config.Default()
+	installed := ibus.DefaultComponent(cfg, "/home/u/.local/bin/voiceime ibus-engine --ibus")
+
+	unchanged, changed := withConfiguredEngine(installed, cfg)
+	if changed {
+		t.Errorf("a matching configuration was reported as a change:\n%s", unchanged.XML())
+	}
+
+	cfg.IBusEngineName = "voiceime-next"
+	cfg.Language = "en"
+	updated, changed := withConfiguredEngine(installed, cfg)
+	if !changed {
+		t.Fatal("a changed engine name was reported as no change")
+	}
+	if updated.EngineName != "voiceime-next" || updated.Language != "en" {
+		t.Errorf("engine = %q, language = %q, want the configured values", updated.EngineName, updated.Language)
+	}
+	// The exec line is not a setting: apply must not repoint IBus at whatever binary it
+	// ran from.
+	if updated.Exec != installed.Exec {
+		t.Errorf("exec = %q, want it left alone (%q)", updated.Exec, installed.Exec)
+	}
+	// And the rewrite has to produce a component that parses back to the same thing, or
+	// the next apply would see a permanent difference.
+	path := filepath.Join(t.TempDir(), "voiceime.xml")
+	if err := os.WriteFile(path, []byte(updated.XML()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	read, err := ibus.ReadComponent(path)
+	if err != nil {
+		t.Fatalf("the rewritten component does not parse: %v", err)
+	}
+	if read != updated {
+		t.Errorf("round trip changed the component:\n got %+v\nwant %+v", read, updated)
 	}
 }

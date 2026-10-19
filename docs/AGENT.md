@@ -126,7 +126,9 @@ Every setting is read by some resident process when it starts - the model paths,
 writing one is not the same as it being in force. `voiceime config set` therefore names the
 one command that applies it, `voiceime config apply`, for every key: it restarts the
 service (re-rendering its config and waiting until it serves the new models), restarts the
-shortcut listener, and drops the IBus engine so it respawns with the new configuration.
+shortcut listener, rewrites the installed IBus component when the engine name or language
+changed (restarting IBus so the daemon reads it), and drops the IBus engine so it respawns
+with the new configuration.
 Editing the file by hand is equally supported, and needs the same command. The unit runs
 `voiceime server run`, so the settings remain the only source of truth, and both units name
 the configuration file they were installed for, so `--config` is honoured by the service

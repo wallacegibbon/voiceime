@@ -1207,3 +1207,44 @@ Pinned by `TestResolveReusesTheConfiguredStreamingModel`,
 `TestResolvePicksOneModelForBothRoles`, `TestResolveHonoursAnExplicitRefineModel`,
 `TestResolveBreaksATieOnLanguage`, `TestResolveWithNothingInstalled`,
 `TestResolveExpandsHome` and the four `TestServerSpec*` tests.
+
+## D33 — The IBus component is one of the things `config apply` applies.
+
+**Decision.** `config apply` reads the installed component, changes the two fields the
+configuration owns - the engine name and its language - and, if anything changed, rewrites
+the file, drops IBus's registry cache and restarts the daemon. Everything else in the file
+is carried through unchanged, the exec line above all.
+
+**Why.** `ibus_engine_name` was the one setting `apply` silently ignored. The name lives in
+the component XML, which `engine install` writes, while the shortcut listener and every
+`ibus engine <name>` call read it from the configuration - so changing it produced exactly
+the failure this command exists to prevent: every other setting applied, the selector
+pointed at an engine IBus had never heard of, and `doctor` reported "not registered" with
+no reason. D26 established that a written value is not a setting in force; this is the last
+place where that was still true.
+
+**Why the exec line is preserved.** `apply` may be run from a checkout while the component
+names an installed binary, which is a normal development sequence here. Re-rendering the
+component from `os.Executable()` would silently repoint IBus at the checkout, where it
+works until the checkout moves - and `install_check` already reports that situation as its
+own finding rather than having it introduced by the command that is supposed to fix things.
+
+**Why only when it changed.** Applying the component means `ibus restart`, which resets the
+selected input method for every application. A command run after every settings change must
+not do that when nothing about the component moved.
+
+**Consequence.** The installed component survives a round trip through the reader; that was
+not free. The `<symbol>` was stored as the XML entity `&#x1F3A4;`, which the parser decodes
+to the character and the writer then escaped again - a rewrite would have replaced the
+microphone with the literal text. It is stored as the character now, and pinned by
+`TestComponentRoundTripsThroughTheInstalledFile`.
+
+**Rejected.** Having `apply` run `voiceime engine install` - it writes the exec line from
+`os.Executable()`, which is the hazard above, and it re-registers a component that was
+already correct. Failing with "run `engine install --apply`" instead of applying - the
+command's whole contract is that the configuration file is the only thing a user has to
+edit, and this is a setting like any other.
+
+Pinned by `TestWithConfiguredEngineAppliesOnlyWhatTheConfigOwns`,
+`TestComponentRoundTripsThroughTheInstalledFile` and
+`TestReadComponentRejectsAFileWithoutAnEngine`.

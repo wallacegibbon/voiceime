@@ -260,7 +260,8 @@ address), and the shortcut listener (the key) - and one command applies it to al
 # either edit the file, or:
 "$BIN" config set refine_model ~/models/Other-GGUF/other.gguf
 
-"$BIN" config apply        # restarts the service, the listener, and drops the engine
+"$BIN" config apply        # restarts the service and listener, rewrites the IBus
+                           # component if the engine name changed, drops the engine
 "$BIN" doctor              # asr_server must be ok
 ```
 

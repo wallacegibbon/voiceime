@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wallacegibbon/voiceime/internal/config"
 )
 
 // The X11 trigger is a GNOME keybinding that runs `hotkey toggle` once per key
@@ -92,4 +94,41 @@ func TestHotkeyUnitQuotesAPathWithSpaces(t *testing.T) {
 	if !strings.Contains(unit, `--config '/home/u/my apps/config.toml'`) {
 		t.Errorf("the configuration path is not quoted:\n%s", unit)
 	}
+}
+
+// The listener and the one-shot toggle share one record of the engine to return to.
+//
+// They used to keep it in different places - memory and a file - so after a reboot the
+// listener knew and the toggle did not, and the toggle's fallback was `xkb:us::eng`: on
+// any machine whose layout is not US English, "stop dictating" silently changed the
+// keyboard. One fact, one place, and the place is a file because a restart of either
+// process must not lose it.
+func TestPreviousEngineIsRecordedOnceForBothPaths(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
+	if got := previousEngine(); got != "" {
+		t.Fatalf("previousEngine() = %q with nothing recorded", got)
+	}
+
+	rememberPreviousEngine("mozc-jp")
+	if got := previousEngine(); got != "mozc-jp" {
+		t.Errorf("previousEngine() = %q, want the engine that was recorded", got)
+	}
+	if got, want := previousEnginePath(), filepath.Join(config.CacheDir(), "hotkey-previous"); got != want {
+		t.Errorf("record at %q, want %q", got, want)
+	}
+
+	// An empty name is not a record: writing one would make the next toggle believe it
+	// knows where to go back to.
+	rememberPreviousEngine("  ")
+	if got := previousEngine(); got != "mozc-jp" {
+		t.Errorf("previousEngine() = %q after an empty record, want the previous one", got)
+	}
+
+	forgetPreviousEngine()
+	if got := previousEngine(); got != "" {
+		t.Errorf("previousEngine() = %q after forgetting", got)
+	}
+	// Forgetting twice, or with nothing there, is not an error.
+	forgetPreviousEngine()
 }

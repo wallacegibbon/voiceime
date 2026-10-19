@@ -1256,3 +1256,31 @@ that text, which escapes back to the same bytes. So `ReadComponent` decodes a nu
 character reference on the way in (`decodeCharacterReference`), which makes the re-render
 differ, which is what lets apply heal an installation that already has the wrong symbol
 instead of reporting it as unchanged.
+
+## D34 — The engine to return to is one record, written where it outlives the process.
+
+**Decision.** Both paths that toggle dictation - the resident listener and the one-shot
+`hotkey toggle` an X11 keybinding runs - read and write the same file,
+`~/.cache/voiceime/hotkey-previous`. Neither guesses a layout when it is missing; both
+refuse with the reason.
+
+**Why.** The listener kept the previous engine in memory and the toggle kept it in a file,
+which are two answers to one question: after a reboot the listener knew nothing while the
+toggle did, and the toggle's fallback was `xkb:us::eng` - so on any machine whose layout is
+not US English, "stop dictating" silently changed the keyboard. Then D31 made both refuse
+instead of guessing, which left the same fact recorded twice for no reason. A file, because
+the fact has to survive the process that recorded it: the listener is restarted by
+`systemctl --user` and by `config apply`, and the toggle is a different process entirely.
+
+**Consequence.** A recorded engine survives the listener restarting mid-dictation, so the
+engine a user comes back to is the one they left - which the in-memory copy could not
+promise. The file is removed on the way back, so a stale name cannot be reused after the
+user changes their input method by hand; the next toggle records whatever is current.
+
+**Rejected.** Asking IBus for the previously selected engine - no such call exists; the one
+that answers "what is selected" returns `voiceime` once dictation started, which is the
+reason the record exists at all. Keeping the in-memory copy as a fast path in front of the
+file - it would be a second answer again, and reading a one-line file is not a cost worth an
+inconsistency.
+
+Pinned by `TestPreviousEngineIsRecordedOnceForBothPaths`.

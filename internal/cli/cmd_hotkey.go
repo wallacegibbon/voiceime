@@ -125,7 +125,6 @@ func runHotkey(ctx *Context, spec string, quiet, logEvents bool) error {
 
 	var (
 		engineMu sync.Mutex
-		previous string
 		held     bool
 	)
 
@@ -136,8 +135,10 @@ func runHotkey(ctx *Context, spec string, quiet, logEvents bool) error {
 			return
 		}
 		if current == target {
+			// The same record the one-shot toggle reads (D34): one fact, one place.
+			previous := previousEngine()
 			if previous == "" {
-				logf("already dictating, but the previous engine is not known; not switching")
+				logf("already dictating, but the engine to return to is not recorded; not switching")
 				return
 			}
 			if err := ibus.SetEngine(address, previous); err != nil {
@@ -145,15 +146,15 @@ func runHotkey(ctx *Context, spec string, quiet, logEvents bool) error {
 				return
 			}
 			emit("dictation_off", map[string]any{"previous": previous})
-			previous = ""
+			forgetPreviousEngine()
 			return
 		}
-		previous = current
+		rememberPreviousEngine(current)
 		if err := ibus.SetEngine(address, target); err != nil {
 			fmt.Fprintf(ctx.Stderr, "voiceime: %v\n", err)
 			return
 		}
-		emit("dictation_on", map[string]any{"previous": previous})
+		emit("dictation_on", map[string]any{"previous": current})
 	}
 
 	runCtx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -418,6 +419,30 @@ func installGnomeKeybinding(ctx *Context, spec, binary string) map[string]any {
 	return info
 }
 
+// previousEnginePath is the one record of "the engine to return to".
+//
+// The listener kept it in memory and the one-shot toggle kept it in a file, so after a
+// reboot one of them knew and the other did not - and the one that did not used to guess
+// `xkb:us::eng`. One fact, one place (D34): the file, which both read and write.
+func previousEnginePath() string { return filepath.Join(config.CacheDir(), "hotkey-previous") }
+
+// rememberPreviousEngine records the engine dictation was started from.
+func rememberPreviousEngine(name string) {
+	if strings.TrimSpace(name) == "" {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(previousEnginePath()), 0o755); err != nil {
+		return
+	}
+	_ = os.WriteFile(previousEnginePath(), []byte(name+"\n"), 0o644)
+}
+
+// previousEngine is the engine to return to, or "" when none is recorded.
+func previousEngine() string { return firstLineOfFile(previousEnginePath()) }
+
+// forgetPreviousEngine clears the record, so the next dictation stores its own start.
+func forgetPreviousEngine() { _ = os.Remove(previousEnginePath()) }
+
 // repeatGuard is how long after a press a second `hotkey toggle` is treated as
 // the key repeating rather than a new press.
 //
@@ -481,10 +506,8 @@ func toggleHotkey(ctx *Context) error {
 			"skipped":   "key repeat",
 		})
 	}
-	statePath := filepath.Join(config.CacheDir(), "hotkey-previous")
-
 	if current == target {
-		previous := firstLineOfFile(statePath)
+		previous := previousEngine()
 		if previous == "" {
 			// Nothing recorded to go back to. Guessing is worse than saying so: the old
 			// fallback was "xkb:us::eng", which moved a user on any other layout to a US
@@ -506,16 +529,14 @@ func toggleHotkey(ctx *Context) error {
 		if err := ibus.SetEngine(address, previous); err != nil {
 			return FailureError("%v", err)
 		}
-		_ = os.Remove(statePath)
+		forgetPreviousEngine()
 		ctx.Print("dictation off; back to %s", previous)
 		return ctx.Emit("hotkey toggle", map[string]any{
 			"dictation": false, "engine": previous, "previous": previous,
 		})
 	}
 
-	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err == nil {
-		_ = os.WriteFile(statePath, []byte(current+"\n"), 0o644)
-	}
+	rememberPreviousEngine(current)
 	if err := ibus.SetEngine(address, target); err != nil {
 		return FailureError("%v", err)
 	}

@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -170,5 +172,77 @@ func TestServerRunSaysToInstallWhenNothingIsThere(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "fix: voiceime models install ") {
 		t.Errorf("the fix does not name a package to install:\n%s", stderr)
+	}
+}
+
+// A failed install leaves no unit behind.
+//
+// `server install` used to write the unit before it saved the settings, so a configuration
+// that cannot be written left a unit that would start a service with no idea which models to
+// serve - at the next boot, long after the command had reported the failure. Measured with
+// `--config /dev/null`: the unit was replaced, the save failed (a temporary file cannot be
+// created in /dev), and the unit stayed.
+func TestServerInstallWritesNoUnitWhenTheSettingsCannotBeSaved(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
+	// A models directory with one file the cache already answers for, and a binary pair the
+	// service lookup can find, so the install gets as far as saving the settings.
+	modelsDir := t.TempDir()
+	modelFile := filepath.Join(modelsDir, "sample.gguf")
+	if err := os.WriteFile(modelFile, []byte("gguf"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(modelFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheDir := filepath.Join(os.Getenv("XDG_CACHE_HOME"), "voiceime")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	index := map[string]any{
+		"version": 1,
+		"models": map[string]any{
+			modelFile: map[string]any{
+				"size_bytes": info.Size(), "modified_unix": info.ModTime().Unix(),
+				"family": "fake_asr", "tasks": []map[string]any{{"name": "asr", "modes": []string{"streaming", "offline"}}},
+				"languages": []string{"zh"},
+			},
+		},
+	}
+	body, _ := json.Marshal(index)
+	if err := os.WriteFile(filepath.Join(cacheDir, "model_index.json"), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	binDir := t.TempDir()
+	cli := filepath.Join(binDir, "audiocpp_cli")
+	for _, name := range []string{cli, filepath.Join(binDir, "audiocpp_server")} {
+		if err := os.WriteFile(name, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cfg := config.Default()
+	cfg.ModelsDir = modelsDir
+	cfg.ASRBin = cli
+	ctx := &Context{
+		Config:     cfg,
+		ConfigPath: os.DevNull, // readable, never writable
+		Stdout:     io.Discard,
+		Stderr:     io.Discard,
+	}
+
+	err = runServerInstall(ctx, 18080, "", "")
+	if err == nil {
+		t.Fatal("installing with an unwritable configuration reported success")
+	}
+	if !strings.Contains(err.Error(), os.DevNull) {
+		t.Errorf("error %q does not name the configuration it could not write", err)
+	}
+	unit := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "systemd", "user", serverUnitName)
+	if _, statErr := os.Stat(unit); !os.IsNotExist(statErr) {
+		t.Errorf("a unit was written at %s even though the install failed", unit)
 	}
 }

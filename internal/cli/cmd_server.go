@@ -99,24 +99,19 @@ func runServerInstall(ctx *Context, port int, streamFlag, repairFlag string) err
 	}
 	streamPath, repairPath := spec.StreamModel, spec.RepairModel
 	streamFamily, repairFamily := spec.StreamFamily, spec.RepairFamily
-	configPath := serverConfigFile()
-	if err := server.WriteConfig(spec, configPath); err != nil {
-		return FailureError("%v", err)
-	}
-
 	unitPath := serverUnitPath()
 	if unitPath == "" {
 		return FailureError("cannot determine where to write the unit file")
 	}
-	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
-		return FailureError("%v", err)
-	}
-	if err := os.WriteFile(unitPath, []byte(serverUnit(binary, absoluteConfigPath(ctx))), 0o644); err != nil {
-		return FailureError("%v", err)
-	}
 
-	// Point voiceime at the service it just installed: a user who runs this wants
-	// dictation to work, and `config set` is the documented way to undo it.
+	// The settings first, then the files that describe them. The opposite order is how a
+	// failed save used to leave a unit pointing at a configuration that never named the
+	// service: measured with an unwritable --config, the unit was written and the command
+	// failed afterwards, so the next boot would have started a service that had no idea
+	// which models to serve.
+	//
+	// Point voiceime at the service it is installing: a user who runs this wants dictation
+	// to work, and `config set` is the documented way to undo it.
 	baseURL := spec.BaseURL()
 	changes := []struct{ key, value string }{
 		{"asr_server_url", baseURL},
@@ -130,6 +125,17 @@ func runServerInstall(ctx *Context, port int, streamFlag, repairFlag string) err
 	}
 	if err := config.Save(cfg, ctx.ConfigPath); err != nil {
 		return FailureError("write %s: %v", ctx.ConfigPath, err)
+	}
+
+	configPath := serverConfigFile()
+	if err := server.WriteConfig(spec, configPath); err != nil {
+		return FailureError("%v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
+		return FailureError("%v", err)
+	}
+	if err := os.WriteFile(unitPath, []byte(serverUnit(binary, absoluteConfigPath(ctx))), 0o644); err != nil {
+		return FailureError("%v", err)
 	}
 
 	if !ctx.JSON {

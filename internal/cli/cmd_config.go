@@ -46,7 +46,7 @@ func cmdConfig() *Command {
 // streaming", a question an empty value cannot answer on its own.
 func resolvedModels(ctx *Context) map[string]string {
 	resolved := map[string]string{}
-	scanned, err := models.Scan(ctx.Config, false, nil)
+	scanned, err := models.Cached(ctx.Config)
 	if err != nil {
 		return resolved
 	}
@@ -106,7 +106,7 @@ func applyConfig(ctx *Context) error {
 		// Decide what the service is supposed to serve *before* restarting it, so a
 		// configuration that cannot be served is refused instead of applied and then
 		// left unverified.
-		scanned, scanErr := models.Scan(ctx.Config, false, nil)
+		scanned, scanErr := models.Cached(ctx.Config)
 		if scanErr != nil {
 			return FailureError("cannot tell what the service would serve: %v", scanErr)
 		}
@@ -120,7 +120,7 @@ func applyConfig(ctx *Context) error {
 		}
 		spec, specErr := buildServerSpec(ctx.Config, scanned, port, "", "")
 		if specErr != nil {
-			return PreconditionError("voiceime models list", "cannot serve what the configuration names: %v", specErr)
+			return PreconditionError("voiceime models list --refresh", "cannot serve what the configuration names: %v", specErr)
 		}
 		if err := runCommand("systemctl --user restart " + serverUnitName); err != nil {
 			return FailureError("restart %s: %v", serverUnitName, err)
@@ -613,7 +613,7 @@ func dirExists(path string) bool {
 }
 
 // countGGUF is a cheap inventory of the models directory. It deliberately does
-// not inspect the files: that is `voiceime models refresh`, which caches.
+// not inspect the files: that is `voiceime models list --refresh`, which records them.
 func countGGUF(dir string) int {
 	matches, err := filepath.Glob(filepath.Join(dir, "*.gguf"))
 	if err != nil {

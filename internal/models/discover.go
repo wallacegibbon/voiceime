@@ -1,13 +1,16 @@
 // Package models discovers the model packages installed on this machine and
 // downloads new ones through audio.cpp's own model manager.
 //
-// Discovery works by asking audio.cpp, never by guessing from file names: the
-// CLI's `--inspect` identifies a model from its contents and prints its family,
-// tasks, modes and languages. That answer is cached against the file's size and
-// mtime, so a rescan costs one stat per file and the "refresh" the user asked
-// for becomes cheap enough to be unnecessary in practice - though
-// `voiceime models refresh` still forces it, because an agent should not have to
-// know that.
+// Discovery works by asking audio.cpp, never by guessing from file names: the CLI's
+// `--inspect` identifies a model from its contents and prints its family, tasks, modes and
+// languages. That answer is cached against the file's size and mtime, so a rescan costs one
+// stat per file.
+//
+// The cache has exactly one writer, `voiceime models list --refresh` (models.Refresh).
+// Every other command reads (models.Cached) and, when the cache has no answer for a file,
+// says so instead of asking: an inspection costs about six seconds per checkpoint, and a
+// command that quietly pays it - or quietly fails because it could not record the answer -
+// is worse than one that tells the user which command to run.
 package models
 
 import (
@@ -34,15 +37,19 @@ type Task struct {
 
 // Model is what audio.cpp reports about one model directory or GGUF file.
 type Model struct {
-	Path               string    `json:"path"`
-	Family             string    `json:"family"`
-	Variant            string    `json:"variant"`
-	Tasks              []Task    `json:"tasks"`
-	Languages          []string  `json:"languages"`
-	SupportsTimestamps bool      `json:"supports_timestamps"`
-	SizeBytes          int64     `json:"size_bytes"`
-	ModifiedUnix       int64     `json:"modified_unix"`
-	InspectedAt        time.Time `json:"inspected_at"`
+	Path string `json:"path"`
+	// Inspected is false when the cache has no answer for this file: Cached reports what
+	// is recorded and never asks, so Family and Tasks are empty for a file nobody has
+	// refreshed yet. Saying so is the difference between "this is not a speech model" and
+	// "this has not been looked at", which are different fixes.
+	Inspected          bool     `json:"inspected"`
+	Family             string   `json:"family"`
+	Variant            string   `json:"variant"`
+	Tasks              []Task   `json:"tasks"`
+	Languages          []string `json:"languages"`
+	SupportsTimestamps bool     `json:"supports_timestamps"`
+	SizeBytes          int64    `json:"size_bytes"`
+	ModifiedUnix       int64    `json:"modified_unix"`
 	// Error records a failed inspection (a file that is not a model, or a model
 	// this build cannot load). Such entries are kept so the UI-less surface can
 	// explain the directory instead of silently ignoring files.
@@ -206,10 +213,33 @@ func candidates(dir string) []candidate {
 	return found
 }
 
-// Scan returns every model under the configured directory, inspecting only what
-// changed. progress, when non-nil, is called with one line per inspection so a
-// long first scan can be narrated.
-func Scan(cfg *config.Config, force bool, progress func(string)) ([]Model, error) {
+// Cached reports every model file under the configured directory, with whatever the
+// inspection cache already knows about it.
+//
+// It runs nothing and writes nothing. That is the whole point of the split: the cache has
+// exactly one writer (Refresh), so a diagnostic can neither change what another command is
+// reading nor fail because a cache file could not be written - which is how `doctor` came
+// to report "models: fail" on a machine where every model was fine, with a fix naming a
+// command that no longer existed.
+//
+// A file whose size or mtime the cache does not match is reported as Inspected=false
+// rather than with its previous answer: a stale family is worse than no family.
+func Cached(cfg *config.Config) ([]Model, error) {
+	dir := cfg.ResolvedModelsDir()
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		return nil, fmt.Errorf("models directory %s does not exist", dir)
+	}
+	indexMu.Lock()
+	defer indexMu.Unlock()
+	return describe(candidates(dir), loadIndex(config.ModelIndexPath())), nil
+}
+
+// Refresh inspects every file the cache cannot answer for, records the answer, and drops
+// records for files that are gone. It is the cache's only writer.
+//
+// force re-inspects files that look unchanged, which is what an audio.cpp upgrade needs:
+// the same checkpoint can report different families and tasks under a different build.
+func Refresh(cfg *config.Config, force bool, progress func(string)) ([]Model, error) {
 	dir := cfg.ResolvedModelsDir()
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 		return nil, fmt.Errorf("models directory %s does not exist", dir)
@@ -226,53 +256,78 @@ func Scan(cfg *config.Config, force bool, progress func(string)) ([]Model, error
 	cached := loadIndex(indexPath)
 	found := candidates(dir)
 
-	models := make([]Model, 0, len(found))
-	dirty := false
 	inspected := map[string]bool{}
+	pruned := prune(found, &cached)
 	for _, item := range found {
-		entry, ok := cached.Models[item.path]
-		if force || !ok || entry.SizeBytes != item.size || entry.ModifiedUnix != item.modified {
-			if progress != nil {
-				progress(item.path)
-			}
-			inspected[item.path] = true
-			entry = inspect(asrBinary, item.path)
-			entry.SizeBytes = item.size
-			entry.ModifiedUnix = item.modified
-			cached.Models[item.path] = entry
-			dirty = true
+		if !force && current(cached, item) {
+			continue
 		}
-		models = append(models, Model{
-			Path:               item.path,
-			Family:             entry.Family,
-			Variant:            entry.Variant,
-			Tasks:              entry.Tasks,
-			Languages:          entry.Languages,
-			SupportsTimestamps: entry.Timestamps,
-			SizeBytes:          item.size,
-			ModifiedUnix:       item.modified,
-			InspectedAt:        time.Now(),
-			Error:              entry.Error,
-		})
+		if progress != nil {
+			progress(item.path)
+		}
+		entry := inspect(asrBinary, item.path)
+		entry.SizeBytes = item.size
+		entry.ModifiedUnix = item.modified
+		cached.Models[item.path] = entry
+		inspected[item.path] = true
 	}
-	// Drop cache records for files that are gone, so a deleted model does not
-	// come back from the index forever.
-	alive := map[string]bool{}
+	if len(inspected) > 0 || pruned {
+		if err := saveIndex(indexPath, cached, inspected); err != nil {
+			return nil, fmt.Errorf("models were inspected but the index could not be written: %w", err)
+		}
+	}
+	return describe(found, cached), nil
+}
+
+// current reports whether the cache already answers for this file.
+func current(cached index, item candidate) bool {
+	entry, found := cached.Models[item.path]
+	if !found {
+		return false
+	}
+	return entry.SizeBytes == item.size && entry.ModifiedUnix == item.modified
+}
+
+// prune drops records for files that are gone, so a deleted model does not come back from
+// the index forever. It reports whether it changed anything.
+func prune(found []candidate, cached *index) bool {
+	alive := make(map[string]bool, len(found))
 	for _, item := range found {
 		alive[item.path] = true
 	}
+	pruned := false
 	for path := range cached.Models {
 		if !alive[path] {
 			delete(cached.Models, path)
-			dirty = true
+			pruned = true
 		}
 	}
-	if dirty {
-		if err := saveIndex(indexPath, cached, inspected); err != nil {
-			return models, fmt.Errorf("models found but the index could not be cached: %w", err)
+	return pruned
+}
+
+// describe joins what is on disk with what the cache knows, marking the files the cache
+// cannot answer for.
+func describe(found []candidate, cached index) []Model {
+	models := make([]Model, 0, len(found))
+	for _, item := range found {
+		model := Model{
+			Path:         item.path,
+			SizeBytes:    item.size,
+			ModifiedUnix: item.modified,
 		}
+		if current(cached, item) {
+			entry := cached.Models[item.path]
+			model.Inspected = true
+			model.Family = entry.Family
+			model.Variant = entry.Variant
+			model.Tasks = entry.Tasks
+			model.Languages = entry.Languages
+			model.SupportsTimestamps = entry.Timestamps
+			model.Error = entry.Error
+		}
+		models = append(models, model)
 	}
-	return models, nil
+	return models
 }
 
 // inspect runs `audiocpp_cli --model <path> --inspect` and parses the key=value
@@ -390,6 +445,19 @@ func PickStreaming(models []Model, language string) *Model {
 		}
 	}
 	return best
+}
+
+// Uninspected returns the files the cache cannot answer for: what `models list --refresh`
+// would inspect. Callers report them, because a file that has not been looked at is a
+// different situation from one that turned out not to be a speech model.
+func Uninspected(scanned []Model) []Model {
+	var pending []Model
+	for _, model := range scanned {
+		if !model.Inspected {
+			pending = append(pending, model)
+		}
+	}
+	return pending
 }
 
 // ASRModels filters a scan down to the models voiceime can actually use, which

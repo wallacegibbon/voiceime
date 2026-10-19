@@ -143,10 +143,20 @@ voiceime config validate --json       # exit 3 when a blocking issue exists
 ## Install a model
 
 ```
-voiceime models list [--all] [--refresh]   # what is present locally; --refresh re-inspects
-voiceime models install <pkg>              # downloads into models_dir
+voiceime models list [--all]               # what is present locally, from the cache
+voiceime models list --refresh             # identify new or changed files and record it
+voiceime models list --refresh --force     # also re-identify files that look unchanged
+voiceime models install <pkg>              # downloads into models_dir, then run --refresh
 voiceime models uninstall <pkg>            # removes one installed package
 ```
+
+Identifying a checkpoint means asking `audiocpp_cli --inspect`, which costs about six
+seconds per file, so the answer is cached against the file's size and mtime. **Only
+`models list --refresh` writes that cache.** Every other command - `doctor`, `config show`,
+`server install`, `server run` - reads it and, when a file has no answer yet, says so and
+names this command rather than spending the six seconds itself. That is why `models install`
+does not register what it downloaded: it tells you to run `models list --refresh`, and
+`server install` refuses to start a service on a model it cannot identify until you do.```
 
 Downloads go through the single endpoint in `download_mirror`, which must be an
 absolute `http(s)` URL; `config validate` rejects anything else, and the value is
@@ -179,8 +189,10 @@ Packages to install, by machine (measured on the reference machine; see
 
 ```
 voiceime doctor --json                # every prerequisite, each with its fix
-voiceime doctor --refresh --json      # re-inspect models instead of using the cache
 ```
+
+`doctor` reads the model cache and never writes it; a model that has not been identified yet
+is a finding with `voiceime models list --refresh` as its fix.
 
 `doctor` covers: the config file, the `audiocpp_cli` and `audiocpp_server` binaries, the
 model manager script, the models directory, model selection for streaming and repair,

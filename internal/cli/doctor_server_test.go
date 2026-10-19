@@ -132,8 +132,8 @@ func TestASRServerCheckCatchesAStaleModel(t *testing.T) {
 	defer stale.Close()
 
 	scanned := []models.Model{
-		{Path: "/models/sense.gguf", Family: "sense_asr", Tasks: []models.Task{{Name: "asr"}}},
-		{Path: "/models/qwen.gguf", Family: "qwen3_asr", Tasks: []models.Task{{Name: "asr"}}},
+		{Path: "/models/sense.gguf", Inspected: true, Family: "sense_asr", Tasks: []models.Task{{Name: "asr"}}},
+		{Path: "/models/qwen.gguf", Inspected: true, Family: "qwen3_asr", Tasks: []models.Task{{Name: "asr"}}},
 	}
 	cfg := config.Default()
 	cfg.ASRServerURL = stale.URL

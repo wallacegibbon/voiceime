@@ -19,21 +19,25 @@ func cmdModels() *Command {
 	// failed with "flag provided but not defined".
 	var all bool
 	var refresh bool
+	var force bool
 	return &Command{
 		Name:    "models",
 		Summary: "List installed models and install or remove packages",
 		Usage:   "voiceime models <list|install|uninstall> [args]",
 		Flags: func(set *flag.FlagSet) {
-			set.BoolVar(&refresh, "refresh", false, "list: re-inspect every model instead of using the cache")
+			set.BoolVar(&refresh, "refresh", false,
+				"list: inspect files the cache cannot answer for, and record the answer (the only command that writes the cache)")
+			set.BoolVar(&force, "force", false,
+				"list: with --refresh, re-inspect files that look unchanged (after upgrading audio.cpp)")
 			set.BoolVar(&all, "all", false, "list: include files that are not speech models")
 		},
 		Run: func(ctx *Context, args []string) error {
-			return runModels(ctx, args, all, refresh)
+			return runModels(ctx, args, all, refresh, force)
 		},
 	}
 }
 
-func runModels(ctx *Context, args []string, showAllModels, refreshModels bool) error {
+func runModels(ctx *Context, args []string, showAllModels, refreshModels, forceModels bool) error {
 	if len(args) == 0 {
 		return UsageError("models needs an action: list, install or uninstall")
 	}
@@ -41,17 +45,30 @@ func runModels(ctx *Context, args []string, showAllModels, refreshModels bool) e
 
 	switch action {
 	case "list":
-		force := refreshModels
+		if forceModels && !refreshModels {
+			return UsageError("--force re-inspects files that look unchanged, so it needs --refresh")
+		}
 		var progress func(string)
-		if force && !ctx.JSON {
+		if refreshModels && !ctx.JSON {
 			progress = func(path string) { ctx.Print("inspecting %s", path) }
 		}
-		everything, err := models.Scan(ctx.Config, force, progress)
+		var everything []models.Model
+		var err error
+		if refreshModels {
+			// The cache's only writer (D35). Everything else reads it.
+			everything, err = models.Refresh(ctx.Config, forceModels, progress)
+		} else {
+			everything, err = models.Cached(ctx.Config)
+		}
 		if err != nil {
+			if !refreshModels {
+				return PreconditionError("voiceime models list --refresh", "%v", err)
+			}
 			return PreconditionError("voiceime config set audio_cpp_dir /path/to/audio.cpp", "%v", err)
 		}
+		pending := models.Uninspected(everything)
 		scanned := models.ASRModels(everything)
-		ignored := len(everything) - len(scanned)
+		ignored := len(everything) - len(scanned) - len(pending)
 		showAll := showAllModels
 		if showAll {
 			scanned = everything
@@ -65,13 +82,22 @@ func runModels(ctx *Context, args []string, showAllModels, refreshModels bool) e
 
 		for _, model := range scanned {
 			state := model.Family
-			if model.Error != "" {
+			switch {
+			case !model.Inspected:
+				state = "not inspected"
+			case model.Error != "":
 				state = "unusable: " + model.Error
 			}
 			ctx.Print("%-15s %-9s %-28s %s", state, models.Sizes(model.SizeBytes),
 				describeTasks(model), model.Path)
 		}
-		if len(scanned) == 0 {
+		if len(pending) > 0 {
+			// Said rather than acted on: inspecting one checkpoint costs about six seconds,
+			// and only `--refresh` is allowed to do it (D35).
+			ctx.Print("%d file(s) have not been inspected yet; run `voiceime models list --refresh` to identify them",
+				len(pending))
+		}
+		if len(scanned) == 0 && len(pending) == 0 {
 			ctx.Print("no speech models found in %s", ctx.Config.ResolvedModelsDir())
 			ctx.Print("install one with: voiceime models install %s", models.RecommendedPackages()[0].ID)
 		}
@@ -85,15 +111,22 @@ func runModels(ctx *Context, args []string, showAllModels, refreshModels bool) e
 			"streaming":     resolved.Stream,
 			"refine":        resolved.Repair,
 			"refine_source": refineSource(ctx),
+			"uninspected":   len(pending),
 		}
 		if err := ctx.Emit("models "+action, payload); err != nil {
 			return err
 		}
-		if len(scanned) == 0 {
+		switch {
+		case len(scanned) > 0:
+			return nil
+		case len(pending) > 0:
+			return PreconditionError("voiceime models list --refresh",
+				"%d model file(s) in %s have not been inspected yet, so none can be classified",
+				len(pending), ctx.Config.ResolvedModelsDir())
+		default:
 			return PreconditionError("voiceime models install "+models.RecommendedPackages()[0].ID,
 				"no speech models are installed in %s", ctx.Config.ResolvedModelsDir())
 		}
-		return nil
 
 	case "install":
 		if len(rest) == 0 {
@@ -129,15 +162,17 @@ func runModels(ctx *Context, args []string, showAllModels, refreshModels bool) e
 		if err != nil {
 			return FailureError("%v", err)
 		}
-		// A freshly installed model must become visible without the user knowing
-		// that the inspection cache exists.
-		if _, err := models.Scan(ctx.Config, false, nil); err != nil {
-			ctx.Print("installed, but the model index could not be refreshed: %v", err)
-		}
+		// The download did not register the model, and install does not write the cache:
+		// `models list --refresh` is its only writer (D35). Naming the command here is what
+		// keeps the required step from being a surprise two commands later, when `doctor`
+		// reports the model as uninspected.
+		next := "voiceime models list --refresh"
+		ctx.Print("downloaded into %s; run `%s` so voiceime can identify it", manager.ModelsDir, next)
 		return ctx.Emit("models install", map[string]any{
 			"package":    packageID,
 			"endpoint":   manager.Endpoint,
 			"models_dir": manager.ModelsDir,
+			"next":       next,
 		})
 
 	case "uninstall":

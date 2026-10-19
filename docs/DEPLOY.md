@@ -175,6 +175,7 @@ CPU only:
 
 ```sh
 "$BIN" models install sensevoice_small_q8
+"$BIN" models list --refresh             # identify what was downloaded (the only writer)
 "$BIN" config set streaming_model ""     # empty: pick the best installed streaming model
 "$BIN" config set refine_model ""        # empty: reuse the streaming model for repair
 ```
@@ -185,6 +186,7 @@ With a GPU:
 "$BIN" config set backend vulkan         # or cuda / hip / metal; your audio.cpp build must have it
 "$BIN" models install sensevoice_small_q8
 "$BIN" models install qwen3_asr_0_6b_q8_0
+"$BIN" models list --refresh             # identify both checkpoints before serving them
 "$BIN" config set refine_model ~/models/Qwen3-ASR-0.6B-GGUF/qwen3-asr-0.6b-q8_0.gguf
 ```
 

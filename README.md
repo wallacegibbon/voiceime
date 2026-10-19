@@ -67,6 +67,7 @@ The stripped binary is 8.3 MB, 3.4 MB compressed, plus the documentation.
 voiceime config init             # write defaults, discover audio.cpp, list what to review
 voiceime doctor                  # check the machine, each finding carries a fix
 voiceime models install sensevoice_small_q8
+voiceime models list --refresh    # identify it (the only command that writes that cache)
 voiceime server install          # pick the models, start the resident service
 voiceime stream --seconds 5      # dictate for five seconds, watch it transcribe
 ```

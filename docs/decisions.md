@@ -213,8 +213,8 @@ candidate and parsing the report. Results are cached in
 wrong the first time someone renames a file, and the answer must include whether a
 model can stream. The cache exists because the original requirement was a
 "refresh button" — the real problem was that scanning is slow, and one stat per
-file makes it fast enough that the button is unnecessary, while
-`voiceime models refresh` still forces a full re-inspection.
+file makes it fast enough that the button is unnecessary. (The command that writes the
+cache is `voiceime models list --refresh`; see D35.)
 
 **Consequence.** The models directory may be shared with unrelated models (it is
 on the reference machine: 13 of 15 GGUFs are text or vision models), so discovery
@@ -1292,3 +1292,56 @@ file - it would be a second answer again, and reading a one-line file is not a c
 inconsistency.
 
 Pinned by `TestPreviousEngineIsRecordedOnceForBothPaths`.
+
+## D35 — One command writes the model cache; everything else reads it or says it cannot.
+
+**Decision.** `voiceime models list --refresh` is the only writer of the inspection cache.
+`models.Cached` (read-only, runs nothing) is what every other command uses; `models.Refresh`
+is what `--refresh` runs. A file the cache cannot answer for is reported as `inspected:
+false`, not with its previous answer and not as "not a speech model". `doctor` reports such
+files as a finding with `--refresh` as its fix, and `server install` / `server run` refuse to
+serve a model they cannot identify, naming the same command. `models install` no longer
+refreshes: it prints the next command instead. `doctor --refresh` is gone.
+
+**Why.** The cache had no owner. `Scan` read the directory, asked audio.cpp, and wrote the
+cache, and every command called it - so `doctor`, a diagnostic, wrote files, and the write
+was the thing that could fail: measured, with a read-only cache directory, `doctor` reported
+`models: fail`, exit 3, on a machine where all fifteen models were fine - and its fix was
+`voiceime models refresh`, a command deleted in D23. Nothing about that was a model problem.
+
+**Why a single writer, not a lock.** With one writer there is nothing to serialise: the
+"two commands scanning at once" race disappears rather than being merged around. It also
+makes the price explicit. Identifying a checkpoint measured 5.95s on this machine, so a
+command that inspects silently is a command that sometimes takes a minute - and a user who
+never asked for that has no way to know why. A command that says "3 files have not been
+inspected; run `models list --refresh`" is slower by one deliberate step and faster every
+other time.
+
+**Why install does not refresh.** It was the obvious exception, and it is the wrong one:
+files arrive by routes voiceime never sees (a hand-copied GGUF, audio.cpp's own model
+manager, a restored backup), so "install refreshes" only covers the case where a user typed
+our command. One rule with no exceptions is what a user can hold in their head: refreshing
+is a command, and every message names it.
+
+**Consequence.** A fresh install is three commands, not two: `models install`, `models list
+--refresh`, then `server install` - and the sequence is enforced rather than assumed, because
+`server install` refuses a model it cannot identify and prints the missing step. `server run`
+never inspects, so a service start cannot hide six seconds of work per unknown file; if a
+model was copied in without a refresh, the service says so and exits rather than serving a
+guess. A stale cache entry (the file was replaced) is treated as no entry at all, because
+reporting the old family would be a lie - the previous version did, which is how a replaced
+checkpoint kept its old capabilities until someone happened to run a full refresh.
+
+**Rejected.** Keeping `doctor --refresh` - two writers again, and a diagnostic that changes
+what the next diagnostic sees. Having readers inspect but not write - every command then pays
+six seconds for the same file forever, which is worse than either alternative. A lock around
+the read-modify-write (D26's merge) - it makes a shared cache safe; it does not make an
+unowned one clear. Refreshing from `server install` - it would cover exactly the files the
+user named, leaving the rest of the directory unclassified, so the next `models list` would
+still be half-unknown.
+
+Pinned by `TestCachedRunsNothingAndWritesNothing`, `TestRefreshInspectsOnceAndRemembers`,
+`TestCachedDoesNotServeAStaleAnswer`, `TestRefreshDropsDeletedModels`,
+`TestModelsListDoesNotInspectOrWrite`, `TestModelsListRefreshIsTheOnlyWriter`,
+`TestModelsListRejectsForceWithoutRefresh` and
+`TestDoctorReportsUninspectedModelsWithoutTouchingTheCache`.

@@ -13,8 +13,8 @@ import (
 func streamingModels() []models.Model {
 	tasks := []models.Task{{Name: "asr", Modes: []string{"offline", "streaming"}}}
 	return []models.Model{
-		{Path: "/models/best.gguf", Family: "sense_asr", Tasks: tasks},
-		{Path: "/models/chosen.gguf", Family: "kroko_asr", Tasks: tasks},
+		{Path: "/models/best.gguf", Inspected: true, Family: "sense_asr", Tasks: tasks},
+		{Path: "/models/chosen.gguf", Inspected: true, Family: "kroko_asr", Tasks: tasks},
 	}
 }
 
@@ -66,9 +66,10 @@ func TestServerSpecPrefersTheFlag(t *testing.T) {
 // refuse to start.
 func TestServerSpecFallsBackToTheRepairModel(t *testing.T) {
 	offlineOnly := []models.Model{{
-		Path:   "/models/chosen.gguf",
-		Family: "qwen3_asr",
-		Tasks:  []models.Task{{Name: "asr", Modes: []string{"offline"}}},
+		Path:      "/models/chosen.gguf",
+		Inspected: true,
+		Family:    "qwen3_asr",
+		Tasks:     []models.Task{{Name: "asr", Modes: []string{"offline"}}},
 	}}
 	cfg := config.Default()
 	cfg.StreamingModel = ""

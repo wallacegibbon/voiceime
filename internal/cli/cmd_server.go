@@ -84,13 +84,13 @@ func serverConfigFile() string {
 
 func runServerInstall(ctx *Context, port int, streamFlag, repairFlag string) error {
 	cfg := ctx.Config
-	scanned, err := models.Scan(cfg, false, nil)
+	scanned, err := models.Cached(cfg)
 	if err != nil {
 		return FailureError("%v", err)
 	}
 	spec, err := buildServerSpec(cfg, scanned, port, streamFlag, repairFlag)
 	if err != nil {
-		return PreconditionError("voiceime models refresh", "%v", err)
+		return PreconditionError("voiceime models list --refresh", "%v", err)
 	}
 	binary, err := cfg.FindServerBinary()
 	if err != nil {
@@ -324,7 +324,7 @@ WantedBy=default.target
 // serve it - there is no generated file that can disagree with the configuration.
 func runServerForeground(ctx *Context, port int, streamFlag, repairFlag string) error {
 	cfg := ctx.Config
-	scanned, err := models.Scan(cfg, false, nil)
+	scanned, err := models.Cached(cfg)
 	if err != nil {
 		return FailureError("%v", err)
 	}
@@ -385,7 +385,7 @@ func runServerRestart(ctx *Context) error {
 	if err := runCommand("systemctl --user restart " + serverUnitName); err != nil {
 		return FailureError("systemctl --user restart %s: %v", serverUnitName, err)
 	}
-	scanned, err := models.Scan(ctx.Config, false, nil)
+	scanned, err := models.Cached(ctx.Config)
 	if err != nil {
 		return FailureError("%v", err)
 	}
@@ -507,6 +507,11 @@ func modelFamily(scanned []models.Model, path string) (string, error) {
 	switch {
 	case found == nil:
 		return "", fmt.Errorf("%s is not a model voiceime can see; check models_dir", path)
+	case !found.Inspected:
+		// The cache has no answer and nothing but `models list --refresh` may ask: this is
+		// a service that will not start, so the message has to carry the one command that
+		// fixes it rather than spending six seconds here and hiding the missing step.
+		return "", fmt.Errorf("%s has not been inspected yet; run `voiceime models list --refresh`", path)
 	case found.Error != "":
 		return "", fmt.Errorf("%s: %s", path, found.Error)
 	case found.Family == "":

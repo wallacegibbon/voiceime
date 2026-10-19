@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"flag"
 	"fmt"
 	"os"
 	"sort"
@@ -24,16 +23,12 @@ type Check struct {
 }
 
 func cmdDoctor() *Command {
-	var refresh bool
 	return &Command{
 		Name:    "doctor",
 		Summary: "Check every prerequisite and report machine-readable findings",
-		Usage:   "voiceime doctor [--refresh]",
-		Flags: func(set *flag.FlagSet) {
-			set.BoolVar(&refresh, "refresh", false, "re-inspect every model instead of using the cache")
-		},
+		Usage:   "voiceime doctor",
 		Run: func(ctx *Context, args []string) error {
-			checks := runDoctor(ctx, refresh)
+			checks := runDoctor(ctx)
 			failures := 0
 			for _, check := range checks {
 				if check.Status == "fail" {
@@ -55,7 +50,7 @@ func cmdDoctor() *Command {
 	}
 }
 
-func runDoctor(ctx *Context, refresh bool) []Check {
+func runDoctor(ctx *Context) []Check {
 	cfg := ctx.Config
 	var checks []Check
 	report := func(check Check) {
@@ -146,7 +141,7 @@ func runDoctor(ctx *Context, refresh bool) []Check {
 	// 5. Model selection. Scanning needs the CLI, so it is skipped rather than
 	// reported as failed when the CLI is absent - one failure, not two.
 	if asrErr == nil {
-		modelChecks(ctx, refresh, report)
+		modelChecks(ctx, report)
 	}
 
 	// 6. Capture.
@@ -222,16 +217,31 @@ func runDoctor(ctx *Context, refresh bool) []Check {
 // modelChecks reports which model will be used and whether the choice exists.
 // Findings are pushed through report so the human and JSON renderings cannot
 // drift apart.
-func modelChecks(ctx *Context, refresh bool, report func(Check)) {
+func modelChecks(ctx *Context, report func(Check)) {
 	cfg := ctx.Config
-	everything, err := models.Scan(cfg, refresh, nil)
-	scanned := models.ASRModels(everything)
+	// A diagnostic reads. `models list --refresh` is the cache's only writer (D35), so
+	// doctor cannot change what it is inspecting and cannot fail because it could not.
+	everything, err := models.Cached(cfg)
 	if err != nil {
 		report(Check{
 			ID:     "models",
 			Status: "fail",
 			Detail: err.Error(),
-			Fix:    "voiceime models refresh",
+			Fix:    "voiceime models list",
+		})
+		return
+	}
+	pending := models.Uninspected(everything)
+	scanned := models.ASRModels(everything)
+	if len(pending) > 0 {
+		// Classifying a model costs about six seconds; the answer belongs to the command
+		// that records it, and the finding names that command.
+		report(Check{
+			ID:     "models",
+			Status: "fail",
+			Detail: fmt.Sprintf("%d of %d file(s) in %s have not been inspected yet, so none can be classified",
+				len(pending), len(everything), cfg.ResolvedModelsDir()),
+			Fix: "voiceime models list --refresh",
 		})
 		return
 	}

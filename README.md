@@ -143,13 +143,12 @@ the streaming layer had not reached it yet, which is the normal case for a short
 utterance. That is what corrects words the user has already seen, at a measured 0.5-0.8 s
 per sentence whatever the checkpoint, because the weights are already loaded.
 
-The two models disagree about text form, so what they produce is normalized before the
+The models also disagree about script, so what they produce is normalized before the
 user sees it: Traditional characters become Simplified (`text_script`, OpenCC's `t2s`
-data embedded in the binary) and Chinese numerals become Arabic digits (`text_numbers`).
-The streaming model has ITN; the repair model does not, and the repair is what gets
-committed — `二零二五年十月二十一号` would otherwise reach the application as written.
-Both conversions apply only when `language` names Chinese, and both can be set to
-`preserve`. See [docs/asr.md](docs/asr.md#text-form-digits-and-script).
+data embedded in the binary), because the repair model is free to answer in Traditional
+and the repair is what gets committed. The conversion applies only when `language`
+names Chinese and can be set to `preserve`. See
+[docs/asr.md](docs/asr.md#text-form-script).
 
 The wire-level version of that picture — the two HTTP requests, what the SSE stream
 carries, which audio a repair re-reads, and what happens when a pass fails —
@@ -162,7 +161,7 @@ cmd/voiceime        the single binary
 internal/config     settings, XDG paths, validation, external-program discovery
 internal/audio      PCM helpers, capture, endpointing, rolling buffer
 internal/asr        the streaming adapter, the transcript model, the repair pass
-internal/textnorm   Chinese text cleanup: Traditional to Simplified, numerals to digits
+internal/textnorm   Chinese text cleanup: Traditional to Simplified
 internal/models     discovery through `--inspect`, the model manager wrapper
 docs/asr.md         how the recognition pipeline works: the two requests, the SSE stream, the failure contract
 docs/AGENT.md       the operational surface, for agents

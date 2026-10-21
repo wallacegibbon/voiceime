@@ -85,6 +85,35 @@ func TestLoadRejectsTypos(t *testing.T) {
 	}
 }
 
+// A setting a previous version wrote is ignored rather than rejected. Load rejects
+// unknown keys before any command runs, so refusing this one would make every
+// command fail on a file voiceime itself wrote - including the `config set` that
+// would rewrite it - and hand-editing would be the only way out. The next write
+// drops it, because Save renders the struct rather than the file it read.
+func TestLoadIgnoresARetiredSetting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := WriteFileForTest(path, "text_numbers = \"arabic\"\nthreads = 6\n"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load refused a file written by an earlier version: %v", err)
+	}
+	if cfg.Threads != 6 {
+		t.Errorf("threads = %d, want the other settings read normally", cfg.Threads)
+	}
+	if err := Save(cfg, path); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "text_numbers") {
+		t.Error("the retired key survived a write, so it would linger forever")
+	}
+}
+
 func TestLoadMissingFileIsNotAnError(t *testing.T) {
 	cfg, err := Load(filepath.Join(t.TempDir(), "absent.toml"))
 	if err != nil {
@@ -370,16 +399,15 @@ func TestValidateRejectsAServerAddressTheStreamCannotUse(t *testing.T) {
 	}
 }
 
-// The text cleanup settings are user preferences, but an unknown value is a
+// The text cleanup setting is a user preference, but an unknown value is a
 // typo, not a preference: `traditional` reads like a real choice and would
 // otherwise silently do nothing.
 func TestValidateRejectsUnknownTextCleanupValues(t *testing.T) {
 	cfg := Default()
 	cfg.TextScript = "traditional"
-	cfg.TextNumbers = "chinese"
 	issues := Errors(cfg.Validate())
-	if len(issues) != 2 {
-		t.Fatalf("Validate = %+v, want two errors", issues)
+	if len(issues) != 1 {
+		t.Fatalf("Validate = %+v, want one error", issues)
 	}
 	keys := map[string]bool{}
 	for _, issue := range issues {
@@ -388,9 +416,7 @@ func TestValidateRejectsUnknownTextCleanupValues(t *testing.T) {
 			t.Errorf("%s has no fix command", issue.Key)
 		}
 	}
-	for _, want := range []string{"text_script", "text_numbers"} {
-		if !keys[want] {
-			t.Errorf("%s was not reported", want)
-		}
+	if !keys["text_script"] {
+		t.Error("text_script was not reported")
 	}
 }

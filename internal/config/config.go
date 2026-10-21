@@ -69,13 +69,11 @@ type Config struct {
 	Language     string  `toml:"language" desc:"Recognition language code, e.g. zh or en."`
 	ChunkSeconds float64 `toml:"chunk_seconds" desc:"Streaming window length. Lower cuts latency, higher improves accuracy."`
 
-	// Text cleanup for Chinese output. The streaming model has inverse text
-	// normalization, but the repair model (Qwen3-ASR) does not: it returns
-	// "二零二五年" for 2025 and may answer in Traditional characters. These two
-	// settings decide what the user sees before text is shown or committed. They
-	// only apply when language names Chinese.
-	TextScript  string `toml:"text_script" desc:"Chinese output script: simplified converts Traditional characters to Simplified; preserve leaves them."`
-	TextNumbers string `toml:"text_numbers" desc:"Chinese numerals: arabic writes numbers as digits (2025, 1234); preserve leaves them as characters."`
+	// Text cleanup for Chinese output. The repair model (Qwen3-ASR) may answer in
+	// Traditional characters, which is not what a Simplified Chinese dictation
+	// target expects; the setting decides what the user sees before text is shown
+	// or committed. It only applies when language names Chinese.
+	TextScript string `toml:"text_script" desc:"Chinese output script: simplified converts Traditional characters to Simplified; preserve leaves them."`
 
 	// Repair policy. The two-layer design is what makes 'correct earlier words'
 	// possible at all: window partials are provisional, and the offline
@@ -132,7 +130,6 @@ func Default() *Config {
 		// SenseVoice's independent-window streaming; see docs/measurements.md.
 		ChunkSeconds:        3.0,
 		TextScript:          "simplified",
-		TextNumbers:         "arabic",
 		RefineOnSegmentEnd:  true,
 		MaxUtteranceSeconds: 60,
 		// 30s is generous for one utterance: the point of a deadline here is to
@@ -306,6 +303,15 @@ func checkServerURL(raw string) error {
 // Load reads the config file. A missing file is not an error: the caller gets
 // the defaults, which is what a doctor or setup command needs on a fresh
 // machine. Unknown keys are rejected so a typo cannot silently do nothing.
+// retiredSettings are keys a previous version wrote that this one no longer has.
+// They are accepted and ignored, for the reason the loop in Load gives: a removed
+// key must not brick a configuration file.
+var retiredSettings = map[string]bool{
+	// The numeral conversion was removed: it changed ordinary words often enough
+	// (分, 升, 一点, 两 after a unit) that the output was worse than the input.
+	"text_numbers": true,
+}
+
 func Load(path string) (*Config, error) {
 	cfg := Default()
 	metadata, err := toml.DecodeFile(path, cfg)
@@ -317,6 +323,14 @@ func Load(path string) (*Config, error) {
 	}
 	var unknown []string
 	for _, key := range metadata.Undecoded() {
+		// A retired setting is ignored rather than rejected. Load rejects unknown
+		// keys before any command runs, so refusing a key this program used to
+		// write would make every command fail on a file it wrote itself - including
+		// the `config set` that would remove it. The next write drops it, because
+		// Save renders the struct.
+		if retiredSettings[key.String()] {
+			continue
+		}
 		unknown = append(unknown, key.String())
 	}
 	if len(unknown) > 0 {
@@ -430,10 +444,6 @@ func (c *Config) Validate() []Issue {
 	if value := strings.TrimSpace(c.TextScript); value != "" && value != "simplified" && value != "preserve" {
 		add("error", "text_script", "must be simplified or preserve",
 			"voiceime config set text_script simplified")
-	}
-	if value := strings.TrimSpace(c.TextNumbers); value != "" && value != "arabic" && value != "preserve" {
-		add("error", "text_numbers", "must be arabic or preserve",
-			"voiceime config set text_numbers arabic")
 	}
 	if c.MaxUtteranceSeconds < c.ChunkSeconds {
 		add("warning", "max_utterance_seconds", "shorter than one streaming window", "")

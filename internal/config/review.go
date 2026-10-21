@@ -79,11 +79,6 @@ func ReviewDefaults(cfg *Config, facts ReviewFacts) []Review {
 			Value: cfg.TextScript,
 			Why:   "the reference user writes Simplified Chinese; set preserve if you want the repair model's Traditional characters kept",
 		},
-		Review{
-			Key:   "text_numbers",
-			Value: cfg.TextNumbers,
-			Why:   "the reference user dictates numbers as digits; set preserve if you want Chinese numerals kept as words",
-		},
 	)
 
 	backend := Review{

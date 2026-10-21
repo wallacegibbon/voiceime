@@ -31,7 +31,7 @@ func TestDictionaryDataIsTheCopiedOpenCCData(t *testing.T) {
 // Phrase precedence is what keeps names and set phrases from being converted
 // character by character. It is the property the embed exists for.
 func TestPhrasePrecedence(t *testing.T) {
-	normalizer := New("zh", Options{Numbers: NumbersPreserve})
+	normalizer := New("zh", Options{})
 	cases := map[string]string{
 		"乾隆皇帝": "乾隆皇帝",
 		"乾坤":   "乾坤",

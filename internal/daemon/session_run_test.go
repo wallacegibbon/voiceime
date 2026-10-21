@@ -641,9 +641,9 @@ func TestSessionDropsStreamingTextFromSilenceBetweenSentences(t *testing.T) {
 	}
 }
 
-// The repair model has no ITN and may answer in Traditional characters. What is
-// delivered has to be the form the user configured, not the model's form: this is
-// the end-to-end version of internal/textnorm's unit tests.
+// The repair model may answer in Traditional characters. What is delivered has
+// to be the script the user configured, not the model's: this is the end-to-end
+// version of internal/textnorm's unit tests.
 func TestSessionNormalizesTheRepairedText(t *testing.T) {
 	server := newFakeASRServer(t)
 	server.repairText = "臺灣，二零二五年十月二十一号，一千二百三十四個蘋果。"
@@ -651,7 +651,7 @@ func TestSessionNormalizesTheRepairedText(t *testing.T) {
 	runSession(t, options)
 
 	last := sink.commits()[len(sink.commits())-1]
-	want := "台湾，2025年10月21号，1234个苹果。"
+	want := "台湾，二零二五年十月二十一号，一千二百三十四个苹果。"
 	if last != want {
 		t.Errorf("committed %q, want %q", last, want)
 	}
@@ -666,11 +666,11 @@ func TestSessionNormalizesStreamingTextWhenRepairIsOff(t *testing.T) {
 	runSession(t, options)
 
 	got := strings.Join(sink.commits(), "")
-	if !strings.Contains(got, "台湾，2025年。") {
+	if !strings.Contains(got, "台湾，二零二五年。") {
 		t.Errorf("committed %q, want the normalized streaming text", got)
 	}
-	if strings.ContainsAny(got, "臺二零") {
-		t.Errorf("committed %q still carries Traditional characters or Chinese numerals", got)
+	if strings.Contains(got, "臺") {
+		t.Errorf("committed %q still carries Traditional characters", got)
 	}
 }
 

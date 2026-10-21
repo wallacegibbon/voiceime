@@ -121,7 +121,6 @@ review audio_cpp_dir          ~/playground/audio.cpp  (the default names the che
 review threads                4  (this machine has 8 physical cores; more threads than cores contend ...)
 review language               zh  (the reference user's language; ...)
 review text_script            simplified  (the reference user writes Simplified Chinese; ...)
-review text_numbers           arabic  (the reference user dictates numbers as digits; ...)
 review backend                cpu  (...)
 review silence_rms_threshold  600  (the reference room's noise level; measure yours - see step 6)
 review download_mirror        https://hf-mirror.com  (...)
@@ -138,7 +137,6 @@ Then set what the list flagged, plus anything you know better than it does:
 ```sh
 "$BIN" config set language zh         # your language; empty asks the model to detect
 "$BIN" config set text_script preserve      # only if you want Traditional Chinese
-"$BIN" config set text_numbers preserve     # only if you want Chinese numerals as words
 "$BIN" config set threads 8           # physical cores; `nproc` counts threads, not cores
 "$BIN" config set audio_cpp_dir ~/src/audio.cpp   # only if discovery did not find it
 "$BIN" config set models_dir ~/models

@@ -124,10 +124,7 @@ func (o Options) Run(ctx context.Context) (Result, error) {
 	// streaming window, since a segment can end a window late.
 	buffer := audio.NewRollingBuffer(cfg.MaxUtteranceSeconds + cfg.ChunkSeconds)
 
-	normalizer := textnorm.New(cfg.Language, textnorm.Options{
-		Script:  cfg.TextScript,
-		Numbers: cfg.TextNumbers,
-	})
+	normalizer := textnorm.New(cfg.Language, textnorm.Options{Script: cfg.TextScript})
 	transcript := asr.NewTranscript()
 	if normalizer != nil {
 		transcript.SetNormalizer(normalizer.Normalize)

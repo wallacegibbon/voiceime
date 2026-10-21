@@ -467,6 +467,20 @@ detector never heard me" from "the session was lost" and sizes what the room
 measurement got wrong. `docs/AGENT.md` had promised the opposite ("a short phrase
 is then committed when dictation stops"); that sentence was wrong and is corrected.
 
+**Refinement (found in the field).** Withholding the text was not the same as
+removing it. The text was shown as preedit, and a session that ends without
+committing sent no clearing preedit either, so the composition stayed at the caret
+with no session left to finish it. Reproduced with the audio shape that produces it:
+a burst shorter than `endpoint_min_speech_ms` opens a speech region (so a window's
+text is accepted and shown) but never earns an utterance, and the session ended
+having sent `preedit:片段 preedit:片段片段` and nothing else. The reference machine's
+own log has five such sessions (`withheld N characters`, one of them 35). Both
+withholding paths - no speech detected, and a failed stream - now clear the
+composition as the session stops. It is the same signal the commit path already
+sends, so the change is a no-op wherever the client or compositor was clearing for
+us, and the only thing that could have finished that text is the session that is
+ending.
+
 ## D17 — A test is not a caller, and installed artifacts are checked.
 
 **Decision.** Three rules, adopted after a session in which four separate bugs —

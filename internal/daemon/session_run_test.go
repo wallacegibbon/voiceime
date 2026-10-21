@@ -342,6 +342,35 @@ func TestSessionReportsAStreamFailureAndWithholdsTheDraft(t *testing.T) {
 	}
 }
 
+// A session that showed a composition and then ends without delivering it must
+// remove it: that session is the only thing that could have finished the text, and
+// a composition left at the caret outlives it.
+//
+// The audio is the shape that produces the case - a burst shorter than
+// endpoint_min_speech_ms, which opens a speech region (so a window's text is
+// accepted and shown as preedit) but never earns an utterance. Five sessions in the
+// reference machine's log ended this way (`no speech detected; withheld N
+// characters`, one of them 35 characters) and each left its text on screen with
+// nothing left to clear it.
+func TestSessionClearsACompositionItDoesNotDeliver(t *testing.T) {
+	server := newFakeASRServer(t)
+	wav := filepath.Join(t.TempDir(), "short.wav")
+	writeWAV(t, wav, append(append(silence(0.2), tone(0.2, 6000)...), silence(4)...))
+
+	options, sink := sessionOptionsForWAV(t, server, false, wav)
+	runSession(t, options)
+
+	if len(sink.preedits()) == 0 {
+		t.Fatal("no composition was shown, so this audio does not exercise the case")
+	}
+	if got := sink.commits(); len(got) != 0 {
+		t.Fatalf("committed %v, want nothing: no utterance was ever accepted", got)
+	}
+	if sink.preeditClears() == 0 {
+		t.Fatalf("the composition was left on screen: %v", sink.events)
+	}
+}
+
 // fakeTranscriber stands in for an injected decode: it is handed the utterance's PCM
 // and answers with text of the test's choosing.
 type fakeTranscriber struct {

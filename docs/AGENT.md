@@ -253,7 +253,9 @@ nothing, because streaming ASR produces plausible words for almost any input and
 typing them into a focused application is worse than typing nothing. It is not a
 silent loss: the text was visible as preedit, so the reason names how much of it
 was withheld (`no speech detected; withheld N characters the recogniser produced
-for audio the detector never called speech`). A `skipped` reason with a count means
+for audio the detector never called speech`) and the composition is cleared as the
+session ends - a session that is stopping is the only thing that could have finished
+that text. A `skipped` reason with a count means
 the detector could not hear the speaker - the fix is the room measurement below. No
 reason at all, with text on screen, means the session ended some other way.
 

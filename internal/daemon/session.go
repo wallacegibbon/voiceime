@@ -311,21 +311,30 @@ func (o Options) Run(ctx context.Context) (Result, error) {
 	// is the actionable direction - it is the size of what the room measurement was
 	// wrong about.
 	if engineErr != nil {
-		if withheld := pipeline.transcript.ProvisionalText(); withheld != "" && notify.Skipped != nil {
-			notify.Skipped(fmt.Sprintf(
-				"streaming session failed; withheld %d characters it never decoded offline (%v)",
-				len([]rune(withheld)), engineErr))
+		if withheld := pipeline.transcript.ProvisionalText(); withheld != "" {
+			// This session is ending, so nothing else will ever finish what it
+			// left at the caret: remove the composition instead of abandoning it.
+			pipeline.clearPreedit()
+			if notify.Skipped != nil {
+				notify.Skipped(fmt.Sprintf(
+					"streaming session failed; withheld %d characters it never decoded offline (%v)",
+					len([]rune(withheld)), engineErr))
+			}
 		}
 	} else if pipeline.segments.Load() > 0 {
 		pipeline.commitProvisional()
-	} else if notify.Skipped != nil {
-		if withheld := pipeline.transcript.ProvisionalText(); withheld != "" {
+	} else if withheld := pipeline.transcript.ProvisionalText(); withheld != "" {
+		// Shown, not delivered, for the same reason: after this point there is no
+		// session left to clear it, and a composition with no session behind it
+		// stays at the caret until something else replaces it.
+		pipeline.clearPreedit()
+		if notify.Skipped != nil {
 			notify.Skipped(fmt.Sprintf(
 				"no speech detected; withheld %d characters the recogniser produced for audio the detector never called speech (check silence_rms_threshold and endpoint_min_speech_ms)",
 				len([]rune(withheld))))
-		} else {
-			notify.Skipped("no speech detected; nothing committed")
 		}
+	} else if notify.Skipped != nil {
+		notify.Skipped("no speech detected; nothing committed")
 	}
 
 	summary := Result{
@@ -639,6 +648,21 @@ func (s *session) publishPreeditLocked() error {
 		return s.sink.Preedit("", 0, false)
 	}
 	return s.sink.Preedit(provisional, len([]rune(provisional)), true)
+}
+
+// clearPreedit removes a composition the session is not going to deliver.
+//
+// Text shown as preedit is the application's business once this session ends:
+// nothing else will ever finish it, and a composition with no session behind it
+// stays at the caret until something replaces it. Measured with the audio shape in
+// TestSessionClearsACompositionItDoesNotDeliver: the text was shown twice and the
+// session ended having sent no clearing preedit at all.
+func (s *session) clearPreedit() {
+	s.publishMu.Lock()
+	defer s.publishMu.Unlock()
+	if err := s.sink.Preedit("", 0, false); err != nil && s.notify.Error != nil {
+		s.notify.Error(err)
+	}
 }
 
 // commitProvisional delivers the text that has become final and clears the

@@ -30,7 +30,7 @@ type ReviewFacts struct {
 // The list exists because every default in Default() is a measurement or a path
 // from the machine voiceime was developed on. Most of them are fine anywhere
 // (capture rate is a hard constraint; the endpoint and window policy is model
-// behaviour), but these six are not, and nothing used to say so - an agent on a
+// behaviour), but these are not, and nothing used to say so - an agent on a
 // new machine had no way to tell "4 threads" apart from "16000 Hz".
 //
 // It is not a validation report: nothing here is an error, and `doctor` is where
@@ -68,6 +68,24 @@ func ReviewDefaults(cfg *Config, facts ReviewFacts) []Review {
 	}
 	reviews = append(reviews, threads)
 
+	reviews = append(reviews,
+		Review{
+			Key:   "language",
+			Value: cfg.Language,
+			Why:   "the reference user's language; empty asks the model to auto-detect, which is usually worse for Chinese and better for everything else",
+		},
+		Review{
+			Key:   "text_script",
+			Value: cfg.TextScript,
+			Why:   "the reference user writes Simplified Chinese; set preserve if you want the repair model's Traditional characters kept",
+		},
+		Review{
+			Key:   "text_numbers",
+			Value: cfg.TextNumbers,
+			Why:   "the reference user dictates numbers as digits; set preserve if you want Chinese numerals kept as words",
+		},
+	)
+
 	backend := Review{
 		Key:   "backend",
 		Value: cfg.Backend,
@@ -79,11 +97,6 @@ func ReviewDefaults(cfg *Config, facts ReviewFacts) []Review {
 	reviews = append(reviews, backend)
 
 	reviews = append(reviews,
-		Review{
-			Key:   "language",
-			Value: cfg.Language,
-			Why:   "the reference user's language; empty asks the model to auto-detect, which is usually worse for Chinese and better for everything else",
-		},
 		Review{
 			Key:   "silence_rms_threshold",
 			Value: cfg.SilenceRMSThreshold,

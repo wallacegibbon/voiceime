@@ -18,6 +18,7 @@ import (
 	"github.com/wallacegibbon/voiceime/internal/audio"
 	"github.com/wallacegibbon/voiceime/internal/config"
 	"github.com/wallacegibbon/voiceime/internal/server"
+	"github.com/wallacegibbon/voiceime/internal/textnorm"
 )
 
 // Sink is where text goes. It is deliberately the same shape as ibus.Control, so
@@ -123,9 +124,18 @@ func (o Options) Run(ctx context.Context) (Result, error) {
 	// streaming window, since a segment can end a window late.
 	buffer := audio.NewRollingBuffer(cfg.MaxUtteranceSeconds + cfg.ChunkSeconds)
 
+	normalizer := textnorm.New(cfg.Language, textnorm.Options{
+		Script:  cfg.TextScript,
+		Numbers: cfg.TextNumbers,
+	})
+	transcript := asr.NewTranscript()
+	if normalizer != nil {
+		transcript.SetNormalizer(normalizer.Normalize)
+	}
 	pipeline := &session{
 		options:    o,
-		transcript: asr.NewTranscript(),
+		transcript: transcript,
+		normalizer: normalizer,
 		sink:       o.Sink,
 		notify:     notify,
 		buffer:     buffer,
@@ -337,6 +347,11 @@ func (o Options) Run(ctx context.Context) (Result, error) {
 type session struct {
 	options    Options
 	transcript *asr.Transcript
+	// normalizer is applied when the transcript is read, and to a repair decode
+	// for the repair event. It is never applied to text before Place: OpenCC's
+	// t2s data is not idempotent, so storing a normalized repair and normalizing
+	// it again on the way out would change it (乾圖 -> 乾图 -> 干图).
+	normalizer *textnorm.Normalizer
 	sink       Sink
 	notify     Observer
 
@@ -425,9 +440,15 @@ func (s *session) startRepairWorker(ctx context.Context, options Options) {
 				s.commitProvisional()
 				continue
 			}
+			// The transcript keeps the decode raw; its getters normalize what
+			// they return, which is what makes a repair normalized exactly once.
+			// Normalizing here as well would apply OpenCC's t2s twice, and that
+			// data is not idempotent: 乾圖 -> 乾图 -> 干图. The event still
+			// reports the normalized decode, because it is the measurement
+			// surface and should show what the reader will produce.
 			s.transcript.Place(job.startSample, job.endSample, text)
 			if s.notify.Repair != nil {
-				s.notify.Repair(text, took, float64(job.endSample-job.startSample)/audio.SampleRate)
+				s.notify.Repair(s.normalizer.Normalize(text), took, float64(job.endSample-job.startSample)/audio.SampleRate)
 			}
 			if err := s.publishPreedit(); err != nil && s.notify.Error != nil {
 				s.notify.Error(err)

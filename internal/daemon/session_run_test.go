@@ -611,3 +611,71 @@ func TestSessionDropsStreamingTextFromSilenceBetweenSentences(t *testing.T) {
 		t.Error("nothing was transcribed at all, so this proves nothing")
 	}
 }
+
+// The repair model has no ITN and may answer in Traditional characters. What is
+// delivered has to be the form the user configured, not the model's form: this is
+// the end-to-end version of internal/textnorm's unit tests.
+func TestSessionNormalizesTheRepairedText(t *testing.T) {
+	server := newFakeASRServer(t)
+	server.repairText = "臺灣，二零二五年十月二十一号，一千二百三十四個蘋果。"
+	options, sink := sessionOptions(t, server, true)
+	runSession(t, options)
+
+	last := sink.commits()[len(sink.commits())-1]
+	want := "台湾，2025年10月21号，1234个苹果。"
+	if last != want {
+		t.Errorf("committed %q, want %q", last, want)
+	}
+}
+
+// With repair off the streaming model's text is committed directly, so the
+// transcript's own normalizer is the only chance to clean it.
+func TestSessionNormalizesStreamingTextWhenRepairIsOff(t *testing.T) {
+	server := newFakeASRServer(t)
+	server.partial = "臺灣，二零二五年。"
+	options, sink := sessionOptions(t, server, false)
+	runSession(t, options)
+
+	got := strings.Join(sink.commits(), "")
+	if !strings.Contains(got, "台湾，2025年。") {
+		t.Errorf("committed %q, want the normalized streaming text", got)
+	}
+	if strings.ContainsAny(got, "臺二零") {
+		t.Errorf("committed %q still carries Traditional characters or Chinese numerals", got)
+	}
+}
+
+// A repair is normalized exactly once. OpenCC's t2s data is not idempotent
+// (乾圖 -> 乾图 -> 干图), so normalizing the decode before Place and again when
+// the transcript is read would deliver a different string than the repair event
+// reported - and a worse one.
+func TestSessionAppliesTheNormalizerOnceToARepair(t *testing.T) {
+	server := newFakeASRServer(t)
+	server.repairText = "乾圖和乾斷。"
+	options, sink := sessionOptions(t, server, true)
+	repaired := make(chan string, 1)
+	options.Observer = Observer{Repair: func(text string, _ time.Duration, _ float64) {
+		select {
+		case repaired <- text:
+		default:
+		}
+	}}
+	runSession(t, options)
+
+	commits := sink.commits()
+	if len(commits) == 0 {
+		t.Fatal("nothing was committed")
+	}
+	committed := commits[len(commits)-1]
+	if want := "乾图和乾断。"; committed != want {
+		t.Errorf("committed %q, want %q (the single pass over the decode)", committed, want)
+	}
+	select {
+	case event := <-repaired:
+		if event != committed {
+			t.Errorf("repair event = %q, committed %q: they must be the same single pass", event, committed)
+		}
+	default:
+		t.Error("the repair event was never reported")
+	}
+}

@@ -87,6 +87,8 @@ review audio_cpp_dir          ~/playground/audio.cpp  (the default names the che
 review threads                4  (this machine has 8 physical cores; ...)
 fix: voiceime config set threads 8
 review language               zh  (the reference user's language; ...)
+review text_script            simplified  (the reference user writes Simplified Chinese; ...)
+review text_numbers           arabic  (the reference user dictates numbers as digits; ...)
 ...
 ```
 
@@ -117,7 +119,9 @@ Settings that matter, and the reasoning a caller needs to pick values:
 | `streaming_model` | `""` | Which checkpoint drafts while the user speaks. Empty means "pick the best installed streaming model", which is what `voiceime server install` does once and then **writes here** - so after deployment this setting names the file that runs. Clear it and re-run install to pick again. |
 | `refine_model` | `""` | Which checkpoint decides the final text. Empty means reuse the streaming model, and install records that too. A machine with one model ends up with both settings naming the same file - two entries, because the server holds a model per request, so two resident copies. |
 | `asr_server_url` | `""` | Where the resident recognition server listens. `voiceime server install` sets it; empty means dictation cannot run, and `doctor` says so. It must be `http://`: the live stream is spoken over a raw socket and cannot do TLS, so `config validate` rejects `https://` rather than letting the repair path work while dictation fails. Both passes go through this one service, which serves two entries - `stream` (partials) and `refine` (repair) - whose ids are fixed by what `server run` writes. |
-| `language` | `zh` | Passed to the model; empty asks it to auto-detect. |
+| `language` | `zh` | Passed to the model; empty asks it to auto-detect. Also gates the two text-cleanup settings below: they do nothing unless this names Chinese. |
+| `text_script` | `simplified` | Chinese output script, `simplified` or `preserve`. The repair model (Qwen3-ASR) has no ITN and sometimes answers in Traditional characters; `simplified` converts them with embedded OpenCC `t2s` data. `preserve` keeps the model's script. |
+| `text_numbers` | `arabic` | Chinese numerals, `arabic` or `preserve`. Qwen3-ASR writes `二零二五年十月二十一号` for `2025年10月21号`; `arabic` converts dates, decimals, percentages, fractions and measured quantities, and leaves idioms (`一起`, `十分`, `千万`) alone. |
 | `chunk_seconds` | `3` | The streaming window: how much audio a draft is decoded from. Below 1.5 measurably corrupts CJK output; validate warns. It does not gate when text is committed - a finished utterance is decoded offline and delivered when it closes - so it can be raised for accuracy without making delivery wait. |
 | `refine_on_segment_end` | `true` | The pass that repairs window-boundary damage. |
 | `capture_source` | `""` | PipeWire source name; empty uses the default input. |

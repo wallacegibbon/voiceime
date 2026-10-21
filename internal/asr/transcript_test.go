@@ -1,6 +1,9 @@
 package asr
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // chunksForTest reads the transcript's chunks directly.
 //
@@ -261,5 +264,32 @@ func TestPlaceKeepsOrderWhenNewerTextExists(t *testing.T) {
 	}
 	if chunks[1].Text != "newer partial" {
 		t.Errorf("second chunk = %+v, want the newer partial after it", chunks[1])
+	}
+}
+
+// The normalizer runs over the assembled text, not per chunk: a number can be
+// split across two streaming windows, and only the joined form is a number.
+func TestTranscriptNormalizesTheAssembledText(t *testing.T) {
+	transcript := NewTranscript()
+	transcript.SetNormalizer(func(text string) string {
+		return strings.NewReplacer("一千", "1", "二百", "2", "臺灣", "台湾").Replace(text)
+	})
+	transcript.AppendStream("臺灣", 0, 16000)
+	transcript.AppendStream("一千", 16000, 32000)
+	transcript.AppendStream("二百", 32000, 48000)
+
+	if got := transcript.ProvisionalText(); got != "台湾12" {
+		t.Errorf("ProvisionalText() = %q, want the normalized joined text", got)
+	}
+	if got := transcript.CommitProvisional(); got != "台湾12" {
+		t.Errorf("CommitProvisional() = %q, want the normalized joined text", got)
+	}
+	if got := transcript.Text(); got != "台湾12" {
+		t.Errorf("Text() = %q, want the normalized committed text", got)
+	}
+	// The chunks stay as the model produced them, which is what logs and
+	// measurement read.
+	if chunks := chunksForTest(transcript); len(chunks) != 3 || chunks[1].Text != "一千" {
+		t.Errorf("chunks = %+v, want the model's raw text kept", chunks)
 	}
 }

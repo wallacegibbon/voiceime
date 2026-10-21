@@ -84,10 +84,12 @@ make install                          # -> ~/.local/bin/voiceime
 export BIN="$HOME/.local/bin/voiceime"
 ```
 
-`make install` also copies `docs/` to `~/.local/docs/`. That is not decoration: the
-systemd unit names the agent guide *relative to the binary*
+`make install` also copies `docs/` to `~/.local/docs/`, and the embedded OpenCC
+`t2s` data's Apache-2.0 licence and notice to `~/.local/licenses/opencc/`. That is
+not decoration: the systemd unit names the agent guide *relative to the binary*
 (`dir(binary)/../docs/AGENT.md`), so the docs are part of the install - without them
-the unit's `Documentation=` is a dead link.
+the unit's `Documentation=` is a dead link. The licence travels with the binary
+because the conversion tables are compiled into it.
 
 Running it straight from the checkout (`"$REPO/bin/voiceime"`) works too, and is
 the normal development loop, but it has two consequences worth knowing: every
@@ -118,19 +120,25 @@ discovered an audio.cpp checkout at /home/u/src/audio.cpp
 review audio_cpp_dir          ~/playground/audio.cpp  (the default names the checkout voiceime was developed in, ...)
 review threads                4  (this machine has 8 physical cores; more threads than cores contend ...)
 review language               zh  (the reference user's language; ...)
+review text_script            simplified  (the reference user writes Simplified Chinese; ...)
+review text_numbers           arabic  (the reference user dictates numbers as digits; ...)
 review backend                cpu  (...)
 review silence_rms_threshold  600  (the reference room's noise level; measure yours - see step 6)
 review download_mirror        https://hf-mirror.com  (...)
 ```
 
-The list is also in `--json` under `data.review`. Only the entries that are
-genuinely machine-specific are on it; everything else in the file is either a hard
-constraint (the 16 kHz capture rate) or policy that is the same everywhere.
+The list is also in `--json` under `data.review`. Only the entries a new machine
+should look at rather than accept are on it - the reference machine's paths and
+resources, and the user preferences that default to the reference user's choices.
+Everything else in the file is either a hard constraint (the 16 kHz capture rate)
+or policy that is the same everywhere.
 
 Then set what the list flagged, plus anything you know better than it does:
 
 ```sh
 "$BIN" config set language zh         # your language; empty asks the model to detect
+"$BIN" config set text_script preserve      # only if you want Traditional Chinese
+"$BIN" config set text_numbers preserve     # only if you want Chinese numerals as words
 "$BIN" config set threads 8           # physical cores; `nproc` counts threads, not cores
 "$BIN" config set audio_cpp_dir ~/src/audio.cpp   # only if discovery did not find it
 "$BIN" config set models_dir ~/models
@@ -536,7 +544,7 @@ running until the process is. Both halves of that are counter-intuitive, so both
 were measured on the reference machine rather than reasoned about.
 
 ```sh
-make build && make install                 # replaces ~/.local/bin/voiceime and ~/.local/docs
+make build && make install                 # replaces ~/.local/bin/voiceime, ~/.local/docs and the OpenCC licence
 "$BIN" server install                      # rewrite the config for any changed settings
 systemctl --user restart voiceime-asr-server   # the service runs the build it started with
 "$BIN" engine install --apply              # component, activation env, ibus restart
@@ -659,7 +667,7 @@ the problem is capture or the model (`voiceime doctor` names the source it would
 ```sh
 "$BIN" hotkey uninstall              # stops the listener and restarts IBus, releasing the key
 "$BIN" engine uninstall              # removes the component file
-make uninstall                       # removes ~/.local/bin/voiceime
+make uninstall                       # removes the binary, docs and OpenCC licence
 "$BIN" models uninstall sensevoice_small_q8
 "$BIN" server uninstall              # stops and removes the service and its config
 ```

@@ -69,6 +69,14 @@ type Config struct {
 	Language     string  `toml:"language" desc:"Recognition language code, e.g. zh or en."`
 	ChunkSeconds float64 `toml:"chunk_seconds" desc:"Streaming window length. Lower cuts latency, higher improves accuracy."`
 
+	// Text cleanup for Chinese output. The streaming model has inverse text
+	// normalization, but the repair model (Qwen3-ASR) does not: it returns
+	// "二零二五年" for 2025 and may answer in Traditional characters. These two
+	// settings decide what the user sees before text is shown or committed. They
+	// only apply when language names Chinese.
+	TextScript  string `toml:"text_script" desc:"Chinese output script: simplified converts Traditional characters to Simplified; preserve leaves them."`
+	TextNumbers string `toml:"text_numbers" desc:"Chinese numerals: arabic writes numbers as digits (2025, 1234); preserve leaves them as characters."`
+
 	// Repair policy. The two-layer design is what makes 'correct earlier words'
 	// possible at all: window partials are provisional, and the offline
 	// re-decode of a finished segment is what actually corrects them.
@@ -123,6 +131,8 @@ func Default() *Config {
 		// 3s is the smallest window measured to keep Chinese output usable with
 		// SenseVoice's independent-window streaming; see docs/measurements.md.
 		ChunkSeconds:        3.0,
+		TextScript:          "simplified",
+		TextNumbers:         "arabic",
 		RefineOnSegmentEnd:  true,
 		MaxUtteranceSeconds: 60,
 		// 30s is generous for one utterance: the point of a deadline here is to
@@ -413,6 +423,17 @@ func (c *Config) Validate() []Issue {
 	if c.Language == "" {
 		add("warning", "language", "empty; the model will be asked to auto-detect",
 			"voiceime config set language zh")
+	}
+	// Two spellings are worth rejecting loudly: "traditional" is a plausible
+	// value that this package does not implement, and a typo here would otherwise
+	// silently keep the model's output as it is.
+	if value := strings.TrimSpace(c.TextScript); value != "" && value != "simplified" && value != "preserve" {
+		add("error", "text_script", "must be simplified or preserve",
+			"voiceime config set text_script simplified")
+	}
+	if value := strings.TrimSpace(c.TextNumbers); value != "" && value != "arabic" && value != "preserve" {
+		add("error", "text_numbers", "must be arabic or preserve",
+			"voiceime config set text_numbers arabic")
 	}
 	if c.MaxUtteranceSeconds < c.ChunkSeconds {
 		add("warning", "max_utterance_seconds", "shorter than one streaming window", "")

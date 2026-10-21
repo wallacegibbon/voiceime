@@ -369,3 +369,28 @@ func TestValidateRejectsAServerAddressTheStreamCannotUse(t *testing.T) {
 		t.Errorf("an unset server address was rejected: %+v", issues)
 	}
 }
+
+// The text cleanup settings are user preferences, but an unknown value is a
+// typo, not a preference: `traditional` reads like a real choice and would
+// otherwise silently do nothing.
+func TestValidateRejectsUnknownTextCleanupValues(t *testing.T) {
+	cfg := Default()
+	cfg.TextScript = "traditional"
+	cfg.TextNumbers = "chinese"
+	issues := Errors(cfg.Validate())
+	if len(issues) != 2 {
+		t.Fatalf("Validate = %+v, want two errors", issues)
+	}
+	keys := map[string]bool{}
+	for _, issue := range issues {
+		keys[issue.Key] = true
+		if issue.Fix == "" {
+			t.Errorf("%s has no fix command", issue.Key)
+		}
+	}
+	for _, want := range []string{"text_script", "text_numbers"} {
+		if !keys[want] {
+			t.Errorf("%s was not reported", want)
+		}
+	}
+}

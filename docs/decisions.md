@@ -553,8 +553,8 @@ at all, and it reports what it found.
 **Consequence.** A machine whose `audio_cpp_dir` is wrong is no longer a dead end:
 the binary and the model manager are also looked for on `PATH` and in conventional
 locations, and `doctor` reports the path it actually used. The review list is
-deliberately short and bounded - six keys, each with a reason - because a list of
-everything is a list nobody reads. Values that need a measurement stay in the
+deliberately short and bounded - a handful of entries, each with a reason - because a
+list of everything is a list nobody reads. Values that need a measurement stay in the
 documented procedure rather than in a default: `silence_rms_threshold` is the
 working example, and `docs/DEPLOY.md` step 6 is the procedure.
 
@@ -1391,3 +1391,83 @@ utterance is still open, and it answers the symptom rather than the rule.
 Pinned by `TestSessionDropsStreamingTextFromSilenceBetweenSentences`,
 `TestSessionWithholdsTextWhenNoSpeechIsDetected` and
 `TestSessionReportsAStreamFailureAndWithholdsTheDraft`.
+
+## D37 — Text form is cleaned after recognition, not asked of the model.
+
+**Decision.** Chinese output is normalized by `internal/textnorm` before it is shown as preedit
+or committed: Traditional characters become Simplified (`text_script=simplified`) and Chinese
+numerals become Arabic digits (`text_numbers=arabic`). The normalizer runs over the assembled
+transcript text in `asr.Transcript`'s getters. The repair worker stores the offline decode
+unchanged and normalizes a copy only for the `repair` event. Both settings have a `preserve`
+value. The whole package is a no-op unless `language` names Chinese.
+
+**Why.** The reported symptoms were exactly the two forms the repair model produces. SenseVoice,
+the streaming model, has inverse text normalization: on a Chinese test sentence it wrote
+`2025年10月21号` and `1234个苹果`. Qwen3-ASR, the repair model whose text is committed,
+has no ITN and wrote `二零二五年十月二十一号` and `一千二百三十四个苹果` for the same audio;
+it is also free to answer in Traditional characters. Asking the model to do better does not work:
+the repair route accepts an OpenAI-style `prompt` field, and a system instruction such as
+"请使用简体中文输出，数字使用阿拉伯数字" left the output byte-for-byte unchanged in three
+trials. The model is not an instruction follower on this surface; it is a transcriber.
+
+**Why the transcript getters, not each delta.** A number is not necessarily inside one
+streaming window: `一千` can end a delta and `二百` begin the next. Normalizing each delta would
+turn that into `1000二百`. The getters see the joined provisional text, so they see the number.
+The repair worker normalizes its decode separately because a repair event is the measurement
+surface, and it should report the digits that will be committed rather than the model's words -
+but it stores the raw decode, because normalizing the stored text as well would apply the
+conversion twice.
+
+**Why once, and not twice.** OpenCC's `t2s` data is not idempotent. It deliberately preserves
+forms that it would convert if they were the input: `乾圖` becomes `乾图` in one pass, and
+converting `乾图` again gives `干图`. Storing a normalized repair and then normalizing the
+transcript on read produced exactly that second pass, so the application received `干图` while
+the repair event reported `乾图`. The transcript therefore stores raw model text and normalizes
+only when text is read. This is a property of the data, not a bug to work around by applying the
+conversion until it stops changing: the first pass is the one that matches `opencc -c t2s`.
+
+**Why the conversion is conservative.** Naive character replacement destroys ordinary words:
+`一起` becomes `1起`, `十分感谢` becomes `10分感谢`, `千万要` becomes `10000000要`, and
+`千方百计` becomes `10000000百计`. A run is therefore converted only when it is a valid
+place-value number, a digit string, or a single digit followed by a high-confidence measure
+word; a lexicon of fixed expressions is skipped first. The same review rejected more false
+positives the first version had: `百分比/百分制/千分尺` (the single `分` is not treated as a
+measure word by itself), `一点` as the adverb "a little" (only `一点钟/一点半/一点整` and
+decimals convert), `一两银子/十两银子` (`两` is also the tael measure), and ordinary idioms
+such as `五花八门`, `三人成虎`, `四分五裂`, `六根清净`, `千篇一律` and `百家争鸣`.
+The cost is that an ambiguous quantity can stay Chinese - a missed conversion is visible and
+harmless, while a wrong conversion changes the sentence.
+
+**Why OpenCC's data is embedded, not a dependency.** The Go OpenCC port embeds every conversion
+(1.4 MB) to use one. The `t2s` conversion needs `TSCharacters.txt` (34 KB) and `TSPhrases.txt`
+(5 KB), and the matcher is a greedy longest-phrase loop; both files are copied verbatim under
+`internal/textnorm/data` with their Apache-2.0 licence and notice. The conversion was verified
+against the `opencc -c t2s` CLI (1.1.7) on all 4,390 dictionary entries when the data was
+copied, and `TestDictionaryDataIsTheCopiedOpenCCData` pins the exact files by checksum so an
+accidental edit fails loudly rather than silently changing recognition. This keeps the
+cross-compiled binary free of cgo and of a runtime dictionary path.
+
+**Consequence.** The delivered text is the configured form, whatever the repair model's habit.
+`stream --events` keeps the model's raw text in `partial` and `stream_text`, and shows the
+normalized form in `preedit`, `repair`, `commit` and `voiceime_text`, so a conversion that looks
+wrong can still be traced to the string that produced it. The transcript's raw chunks are also
+what makes single-pass normalization possible. A user in Taiwan sets `text_script=preserve`;
+someone dictating prose sets `text_numbers=preserve`.
+
+**Rejected.** A post-processing field in the audio.cpp server config - the server's request
+options cannot carry a text transformation, and voiceime would still need the implementation.
+Using the SenseVoice repair model because it has ITN - measured on the same utterances, its text
+was worse (`网络里。点机有问题` against Qwen3's `网络连接有问题`), so it trades the real repair
+for the formatting. Rewriting the model's output with a general LLM - a second model, a second
+failure mode, and a latency budget spent on something a table can do. Converting Japanese kanji
+or Korean hanja - the same characters mean different things there, which is why the package is
+gated on the language.
+
+Pinned by `TestNormalizeChineseNumerals`, `TestNormalizeLeavesWordsAlone`,
+`TestNormalizeTraditionalToSimplified`, `TestNumberNormalizationIsIdempotent`,
+`TestScriptConversionIsSinglePass`, `TestDictionaryDataIsTheCopiedOpenCCData`,
+`TestPhrasePrecedence`, `TestPreserveOptions`, `TestNonChineseIsUntouched`,
+`TestTranscriptNormalizesTheAssembledText`, `TestSessionNormalizesTheRepairedText`,
+`TestSessionAppliesTheNormalizerOnceToARepair`,
+`TestSessionNormalizesStreamingTextWhenRepairIsOff` and
+`TestValidateRejectsUnknownTextCleanupValues`.

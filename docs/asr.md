@@ -305,6 +305,50 @@ Three things in that trace are the design in miniature:
 | `skipped` | something was not done, and why |
 | `summary` | the session's totals, then `{"command":"stream","ok":true,…}` |
 
+## Text form: digits and script
+
+The two passes disagree about text form, and the repair pass is the one whose text is
+delivered. SenseVoice has inverse text normalization (ITN), so the streaming draft says
+`2025年10月21号`; Qwen3-ASR has no ITN, so the same audio comes back as
+`二零二五年十月二十一号`. Qwen3 can also answer in Traditional characters. Neither is
+what a user dictating into a Simplified Chinese document wants.
+
+`internal/textnorm` normalizes raw recognizer text at the point where it leaves the
+transcript:
+
+* **The transcript getters** (`asr.Transcript.Text`, `ProvisionalText`,
+  `CommitProvisional`) normalize the *assembled* text. That is what lets a number split
+  across two streaming windows (`一千` then `二百`) be read as one number, and it covers
+  the case where repair is off or a repair failed and the draft is what gets committed.
+* **The repair worker** stores the offline decode unchanged. It normalizes a copy only
+  for the `repair` event, so the event reports what the reader will produce without
+  applying the conversion twice. OpenCC's `t2s` data is not idempotent: `乾圖` becomes
+  `乾图` in one pass and `干图` in a second, so normalized text must never be written
+  back into the transcript and normalized again.
+
+The chunks keep the model's raw text. `partial` events and the summary's `stream_text`
+therefore show what the model wrote, while `preedit`, `repair`, `commit` and
+`voiceime_text` show what the user sees. That is deliberate: when a conversion looks
+wrong, the raw string is still in the trace.
+
+Two settings select the conversions. They only apply when `language` names Chinese
+(`zh`, `zh-CN`, `zh-Hant`, `cmn`, `yue`, `Chinese`, ...); for Japanese or Korean the
+normalizer is a no-op, because converting kanji or hanja would be corruption.
+
+| Key | Default | Values | Effect |
+|---|---|---|---|
+| `text_script` | `simplified` | `simplified`, `preserve` | Convert Traditional characters to Simplified. The data is OpenCC's `t2s` dictionaries, embedded in the binary (39 KB, Apache-2.0; see `internal/textnorm/data/NOTICE`). |
+| `text_numbers` | `arabic` | `arabic`, `preserve` | Convert Chinese numerals to Arabic digits, including dates, decimals, percentages, fractions and measured quantities. Idioms and fixed words (`一起`, `十分`, `千万`, `百分比`, `五花八门`) are left alone. |
+
+The number conversion is idempotent and conservative. `arabic` does not rewrite text
+that is already digits, and it only converts a numeral run when it looks like a number:
+a place-value form (`一千二百三十四`), a digit string (`二零二五`, a phone number), or a
+single digit followed by a measure word (`一个人`, `两天`). A miss is visible and
+harmless, while a wrong conversion changes the sentence, so ambiguous forms are left
+as the model wrote them: `一两银子` is not turned into `12`, and `一点` (a little) is
+left alone unless it is a time (`一点钟`). `preserve` is the way back for a user who
+wants Traditional output or Chinese numerals.
+
 ## Tuning
 
 Settings that change behaviour, and what they trade:
@@ -319,6 +363,8 @@ Settings that change behaviour, and what they trade:
 | `refine_on_segment_end` | true | The only switch that trades accuracy for latency. |
 | `asr_server_timeout_ms` | 30000 | Deadline for one repair. |
 | `language` | `zh` | Passed to both passes; empty lets the model detect. |
+| `text_script` | `simplified` | Chinese output script: `simplified` or `preserve`. See [Text form](#text-form-digits-and-script). |
+| `text_numbers` | `arabic` | Chinese numerals: `arabic` or `preserve`. See [Text form](#text-form-digits-and-script). |
 
 The model paths, `chunk_seconds`, `threads`, `backend` and the option maps are read by
 the service at **startup**, so changing one needs `voiceime config apply` (which
@@ -343,7 +389,8 @@ None of the families voiceime selects emits snapshots today.
 |---|---|
 | `internal/asr/stream.go` | the live session: handshake, chunked writes, SSE parsing, error propagation |
 | `internal/asr/server.go` | the offline decode over multipart, and `RepairRequestOptions` |
-| `internal/asr/transcript.go` | the two-layer text model: `AppendStream`, `Place`, `RepairSpan`, `CommitProvisional` |
+| `internal/asr/transcript.go` | the two-layer text model: `AppendStream`, `Place`, `RepairSpan`, `CommitProvisional`, and the normalizer hook |
+| `internal/textnorm` | Traditional-to-Simplified (embedded OpenCC `t2s` data) and Chinese numerals to digits |
 | `internal/daemon/session.go` | capture → endpointing → repair queue → commit, and the failure rules |
 | `internal/audio/segmenter.go` | the energy detector that decides where an utterance begins and ends |
 | `internal/audio/buffer.go` | the rolling buffer a repair reads its audio from |

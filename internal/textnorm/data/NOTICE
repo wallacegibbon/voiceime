@@ -1,0 +1,4 @@
+TSCharacters.txt and TSPhrases.txt come from OpenCC 1.1.7
+(https://github.com/BYVoid/OpenCC), the Traditional Chinese to Simplified
+Chinese dictionaries. They are licensed under the Apache License, Version 2.0;
+see LICENSE in this directory.

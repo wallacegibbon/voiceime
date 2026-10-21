@@ -21,7 +21,7 @@ func TestReviewDefaultsNamesTheSettingsThatAreNotPortable(t *testing.T) {
 	for _, review := range reviews {
 		byKey[review.Key] = review
 	}
-	for _, want := range []string{"audio_cpp_dir", "threads", "backend", "language", "silence_rms_threshold", "download_mirror"} {
+	for _, want := range []string{"audio_cpp_dir", "threads", "backend", "language", "text_script", "text_numbers", "silence_rms_threshold", "download_mirror"} {
 		if _, found := byKey[want]; !found {
 			t.Errorf("%s is not reviewed", want)
 		}

@@ -28,10 +28,25 @@ type Transcript struct {
 	mu        sync.Mutex
 	chunks    []Chunk
 	committed int
+	// normalize is applied to the text the getters return, not to the chunks.
+	// Applying it to the assembled text is what lets a number split across two
+	// streaming windows ("一千" then "二百") be read as one number, and it keeps
+	// the chunks as the models produced them for logging and measurement. Nil
+	// leaves text unchanged.
+	normalize func(string) string
 }
 
 // NewTranscript returns an empty transcript.
 func NewTranscript() *Transcript { return &Transcript{} }
+
+// SetNormalizer installs the function applied to committed and provisional text.
+// It must be called before the transcript is used, which is where the session
+// sets it: the transcript is built first and the language comes from the config.
+func (t *Transcript) SetNormalizer(normalize func(string) string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.normalize = normalize
+}
 
 // AppendStream adds a provisional chunk decoded from the window that just ended.
 //
@@ -239,6 +254,9 @@ func (t *Transcript) textLocked() string {
 	for _, chunk := range t.chunks {
 		builder.WriteString(chunk.Text)
 	}
+	if t.normalize != nil {
+		return t.normalize(builder.String())
+	}
 	return builder.String()
 }
 
@@ -246,6 +264,9 @@ func (t *Transcript) provisionalTextLocked() string {
 	var builder strings.Builder
 	for index := t.committed; index < len(t.chunks); index++ {
 		builder.WriteString(t.chunks[index].Text)
+	}
+	if t.normalize != nil {
+		return t.normalize(builder.String())
 	}
 	return builder.String()
 }

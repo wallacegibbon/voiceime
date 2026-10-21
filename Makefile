@@ -53,7 +53,7 @@ build: ## Build bin/voiceime for this machine
 	@echo "built $(BIN_DIR)/$(BINARY) ($(VERSION))"
 
 .PHONY: install
-install: build ## Install to $(DESTDIR)$(PREFIX)/bin (and docs to $(PREFIX)/docs)
+install: build ## Install to $(DESTDIR)$(PREFIX)/bin (docs to $(PREFIX)/docs)
 	install -d $(DESTDIR)$(PREFIX)/bin
 	install -m 0755 $(BIN_DIR)/$(BINARY) $(DESTDIR)$(PREFIX)/bin/$(BINARY)
 	@# The hotkey unit records the absolute path of docs/AGENT.md beside the binary
@@ -61,21 +61,30 @@ install: build ## Install to $(DESTDIR)$(PREFIX)/bin (and docs to $(PREFIX)/docs
 	@# unit's Documentation= is a dead link.
 	install -d $(DESTDIR)$(PREFIX)/docs
 	install -m 0644 docs/*.md $(DESTDIR)$(PREFIX)/docs/
-	@echo "installed $(DESTDIR)$(PREFIX)/bin/$(BINARY) and $(DESTDIR)$(PREFIX)/docs/"
+	@# The binary embeds OpenCC's t2s tables (Apache-2.0); the licence and notice
+	@# travel with it so a machine that has only the installed binary can still
+	@# satisfy the redistribution terms.
+	install -d $(DESTDIR)$(PREFIX)/licenses/opencc
+	install -m 0644 internal/textnorm/data/LICENSE internal/textnorm/data/NOTICE \
+		$(DESTDIR)$(PREFIX)/licenses/opencc/
+	@echo "installed $(DESTDIR)$(PREFIX)/bin/$(BINARY), $(DESTDIR)$(PREFIX)/docs/ and the OpenCC licence"
 
 .PHONY: uninstall
-uninstall: ## Remove the installed binary and docs
+uninstall: ## Remove the installed binary, docs and licences
 	rm -f $(DESTDIR)$(PREFIX)/bin/$(BINARY)
 	rm -f $(DESTDIR)$(PREFIX)/docs/*.md
+	rm -f $(DESTDIR)$(PREFIX)/licenses/opencc/LICENSE $(DESTDIR)$(PREFIX)/licenses/opencc/NOTICE
+	-rmdir $(DESTDIR)$(PREFIX)/licenses/opencc $(DESTDIR)$(PREFIX)/licenses 2>/dev/null
 
 .PHONY: dist
 dist: build ## Package a release tarball under dist/
 	@mkdir -p dist
 	@name=$(BINARY)-$(VERSION)-linux-amd64; \
-	rm -rf dist/$$name; mkdir -p dist/$$name/docs; \
+	rm -rf dist/$$name; mkdir -p dist/$$name/docs dist/$$name/licenses/opencc; \
 	cp $(BIN_DIR)/$(BINARY) dist/$$name/; \
 	cp README.md dist/$$name/; \
 	cp docs/*.md dist/$$name/docs/; \
+	cp internal/textnorm/data/LICENSE internal/textnorm/data/NOTICE dist/$$name/licenses/opencc/; \
 	tar -C dist -czf dist/$$name.tar.gz $$name; \
 	rm -rf dist/$$name; \
 	echo "dist/$$name.tar.gz"

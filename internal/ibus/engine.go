@@ -6,6 +6,7 @@ import (
 	"os"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/godbus/dbus/v5"
 )
@@ -43,8 +44,8 @@ type IBusText struct {
 }
 
 // NewText builds a text payload with no attributes, which is what a plain commit
-// needs: attributes describe preedit underlining and are only meaningful for text
-// the application shows as a composition.
+// needs. Preedit text needs an attribute to be drawn as a composition; see
+// NewPreeditText.
 func NewText(text string) IBusText {
 	return IBusText{
 		TypeName:    "IBusText",
@@ -53,6 +54,60 @@ func NewText(text string) IBusText {
 		Attributes:  dbus.MakeVariant(newAttrList()),
 	}
 }
+
+// NewPreeditText builds the text payload for a preedit: the whole string
+// underlined, which is what marks it as an in-progress composition.
+//
+// Without an attribute the text is still accepted and shown, but the application
+// draws it as ordinary text with no underline - measured on X11, where GTK's IM
+// module renders the preedit itself and takes the underline from these attributes
+// alone. (On Wayland the same text came out underlined without them, which is why
+// the omission went unnoticed: the compositor's text-input path marks the
+// composition by itself.) The empty preedit that ends a composition keeps an empty
+// list, because there is nothing to underline.
+func NewPreeditText(text string) IBusText {
+	payload := NewText(text)
+	length := uint32(utf8.RuneCountInString(text))
+	if length == 0 {
+		return payload
+	}
+	list := newAttrList()
+	list.Attributes = append(list.Attributes, dbus.MakeVariant(IBusAttribute{
+		TypeName:    "IBusAttribute",
+		Attachments: map[string]dbus.Variant{},
+		Type:        attrTypeUnderline,
+		Value:       attrUnderlineSingle,
+		StartIndex:  0,
+		EndIndex:    length,
+	}))
+	payload.Attributes = dbus.MakeVariant(list)
+	return payload
+}
+
+// IBusAttribute is one entry in an attribute list, which is what tells an
+// application how to draw part of a text: the values are IBus's own enum numbers,
+// the indices count characters (not bytes) and end is exclusive.
+//
+// The field order and types are libibus's, not a guess: serialising a single
+// underline over a six-character string with libibus 1.5.29's own
+// `serialize_object` produces
+//
+//	('IBusAttribute', @a{sv} {}, uint32 1, uint32 1, uint32 0, uint32 6)
+//
+// which is this struct, in this order.
+type IBusAttribute struct {
+	TypeName    string
+	Attachments map[string]dbus.Variant
+	Type        uint32 // IBUS_ATTR_TYPE_*
+	Value       uint32 // IBUS_ATTR_UNDERLINE_* for an underline
+	StartIndex  uint32
+	EndIndex    uint32
+}
+
+const (
+	attrTypeUnderline   = 1 // IBUS_ATTR_TYPE_UNDERLINE
+	attrUnderlineSingle = 1 // IBUS_ATTR_UNDERLINE_SINGLE
+)
 
 type ibusAttrList struct {
 	TypeName    string
@@ -350,7 +405,9 @@ func (c *engineControl) Commit(text string) error {
 
 func (c *engineControl) Preedit(text string, cursor int, visible bool) error {
 	// mode 0 is IBus's "clear and replace" update; the engine has no other mode.
-	return c.conn.Emit(c.path, signalPreedit, dbus.MakeVariant(NewText(text)), uint32(cursor), visible, uint32(0))
+	// The payload carries an underline attribute, which is what draws the
+	// composition underline in the application; see NewPreeditText.
+	return c.conn.Emit(c.path, signalPreedit, dbus.MakeVariant(NewPreeditText(text)), uint32(cursor), visible, uint32(0))
 }
 
 func (c *engineControl) DeleteSurroundingText(offset int32, chars uint32) error {

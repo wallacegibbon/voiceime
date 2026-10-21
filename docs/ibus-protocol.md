@@ -225,8 +225,40 @@ So the signatures are:
 
 `UpdatePreeditText` carries the same text variant plus
 `(u cursor_pos, b visible, u mode)`; mode 0 means "replace the composition".
+
 Attributes are what draws the preedit underline; an empty attribute list is
-accepted (and is what a plain commit uses).
+accepted (and is what a plain commit uses), but on X11 it means **no underline**:
+GTK's IM module renders the preedit itself and takes the underline from these
+attributes alone. Measured here: the engine had sent an empty list since it was
+written and nobody noticed, because on Wayland the compositor's text-input path
+marks a composition by itself. The same engine, same signals, differs by session
+type — so this is the one part of the payload that has to be built rather than
+left to the client.
+
+An attribute is `(sa{sv}uuuu)` — type name, attachments, type, value, start index,
+end index. Taken from libibus 1.5.29 itself, by serialising one every-character
+underline over a six-character string with its own `serialize_object`:
+
+```
+('IBusAttribute', @a{sv} {}, uint32 1, uint32 1, uint32 0, uint32 6)
+```
+
+* type `1` is `IBUS_ATTR_TYPE_UNDERLINE`, value `1` is `IBUS_ATTR_UNDERLINE_SINGLE`.
+* The indices count **characters**, not bytes (`6` above is six Chinese
+  characters, eighteen bytes), and `end_index` is exclusive. A byte count would
+  underline past the end of the text.
+* The attributes sit inside the `IBusAttrList`'s `as`, each element a variant
+  wrapping the struct.
+
+Verified round trip on a private daemon: the engine emitted
+
+```
+('IBusText', @a{sv} {}, 'Good morning. Could you tell me …', <('IBusAttrList', @a{sv} {}, [<('IBusAttribute', @a{sv} {}, uint32 1, uint32 1, uint32 0, uint32 58)>])>)
+```
+
+and a minimal client that created an input context for it received the same text
+with the same attribute — the daemon had deserialised and re-serialised it, which
+is the part that can fail silently if the struct is wrong.
 
 ## Verified path
 

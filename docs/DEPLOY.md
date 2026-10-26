@@ -30,6 +30,11 @@ reports `engine_registered: false` on a machine where the engine is registered.
 over ssh, copy the session's environment first (`DISPLAY=:0` or whatever `ps` shows
 `ibus-daemon` holding, or its `IBUS_ADDRESS`).
 
+**Scope.** The procedure: one numbered path from checkout to dictating, plus
+updating, recovery and uninstall. The command reference is [AGENT.md](AGENT.md); the
+reasons behind the steps are in [decisions.md](decisions.md); the measured numbers
+are in [measurements.md](measurements.md).
+
 ---
 
 ## 0. Prerequisites
@@ -111,26 +116,12 @@ its location, `~/.config/voiceime/config.toml` by default).
 `config init` prints what to look at before you trust the defaults, and discovers
 an audio.cpp checkout when it can find one - the default `audio_cpp_dir` is the
 layout of the machine voiceime was developed on, so a fresh install would otherwise
-start with a path that does not exist:
-
-```
-$ voiceime config init
-wrote /home/u/.config/voiceime/config.toml
-discovered an audio.cpp checkout at /home/u/src/audio.cpp
-review audio_cpp_dir          ~/playground/audio.cpp  (the default names the checkout voiceime was developed in, ...)
-review threads                4  (this machine has 8 physical cores; more threads than cores contend ...)
-review language               zh  (the reference user's language; ...)
-review text_script            simplified  (the reference user writes Simplified Chinese; ...)
-review backend                cpu  (...)
-review silence_rms_threshold  600  (the reference room's noise level; measure yours - see step 6)
-review download_mirror        https://hf-mirror.com  (...)
-```
-
-The list is also in `--json` under `data.review`. Only the entries a new machine
-should look at rather than accept are on it - the reference machine's paths and
-resources, and the user preferences that default to the reference user's choices.
-Everything else in the file is either a hard constraint (the 16 kHz capture rate)
-or policy that is the same everywhere.
+start with a path that does not exist. The list is also in `--json` under
+`data.review` (sample output in [AGENT.md, Configure](AGENT.md#configure)); it
+carries only the entries a new machine should look at rather than accept - the
+reference machine's paths and resources, and the user preferences that default to
+the reference user's choices. Everything else in the file is either a hard
+constraint (the 16 kHz capture rate) or policy that is the same everywhere.
 
 Then set what the list flagged, plus anything you know better than it does:
 
@@ -206,13 +197,13 @@ Why the roles are split that way:
 * **Repair is where accuracy is worth paying for**, because it re-reads a finished
   utterance with the whole utterance as context. That is exactly the difference
   measured above: the sentence split and the wrong character, repaired.
-* **On CPU that accuracy used to be unaffordable**: 5.66 s for a 4.24 s segment, most
-  of it loading a 1.07 GiB checkpoint once per segment, and it accumulated - the third
-  sentence of a run landed 11.7 s after it was spoken. The resident service removes that
-  cost rather than hiding it: the checkpoint is loaded when the *service* starts and
-  never again, so the same repair is a 0.5-0.8 s request and a dictation begins in
-  microseconds. The price is memory: both entries stay resident (1403 MB at startup,
-  1907 MB once both have run).
+* **On CPU that accuracy used to be unaffordable** as a process per utterance: the
+  model load was paid for every sentence, and the repairs queued behind it accumulated.
+  The resident service removes that cost rather than hiding it: the checkpoint is loaded
+  when the *service* starts and never again, so the same repair is a 0.5-0.8 s request
+  and a dictation begins in microseconds (the process-versus-resident measurements are
+  in [measurements.md](measurements.md); the rationale is [decisions.md, D22](decisions.md)).
+  The price is memory: both entries stay resident.
 
 CPU with the more accurate repair (Qwen3) read by the resident service:
 
@@ -251,8 +242,8 @@ What it writes and where to look when something is wrong:
 
 Two entries rather than one because the server holds a model for the whole length of a
 request: a repair sent to the entry a live dictation owns waits for that dictation to
-end (measured: 10.9s). The two may point at the same GGUF - that costs two resident
-copies, and is what a machine with one small model should do.
+end (measured; [decisions.md, D22](decisions.md)). The two may point at the same GGUF -
+that costs two resident copies, and is what a machine with one small model should do.
 
 `server install` also **records** which checkpoints it chose: `streaming_model` and
 `refine_model` are written into the configuration, so after deployment the file names what
@@ -290,34 +281,34 @@ non-zero (`3`) when the value it wrote leaves the file unusable, while still wri
 staging a model path before the download finishes stays possible. An edit that looks like
 it did nothing is the failure this project keeps running into.
 
-The unit runs `voiceime server run` rather than audio.cpp directly: that subcommand
-renders `~/.config/voiceime/asr-server.json` from the settings and then runs the server.
-There is therefore one source of truth - the configuration - and no generated file that
-can disagree with it. `config apply` waits until the entries being served are the ones
-the settings name, because a restart that has not finished loading is a service that
-still answers the old requests.
-
-`doctor` compares the *paths* being served with the paths configured, so a service left
-on the previous checkpoint cannot hide: the entry ids never change, and the symptom of a
-stale service is slightly different text rather than an error.
-
-The same applies to everything else the service reads at startup: `chunk_seconds`,
-`threads`, `backend`, `streaming_model`, and the option maps. `--stream-model` and
-`--repair-model` still exist on `server install` for a one-off, but they write settings -
-a plain restart is what applies them.
+The unit runs `voiceime server run` rather than audio.cpp directly, which renders
+`~/.config/voiceime/asr-server.json` from the settings before exec'ing the server -
+the settings stay the only source of truth, and there is no generated file that can
+disagree with it ([asr.md, the service](asr.md#the-service)). `config apply` waits
+until the entries being served are the ones the settings name, because a restart that
+has not finished loading is a service that still answers the old requests, and
+`doctor` compares the *paths* being served with the paths configured, so a service
+left on the previous checkpoint cannot hide: the entry ids never change, and the
+symptom of a stale service is slightly different text rather than an error. All
+settings the service reads at startup apply the same way
+([AGENT.md, Configure](AGENT.md#configure)); `--stream-model` and `--repair-model` on
+`server install` are one-off overrides that write settings, and a plain restart is
+what applies them.
 
 #### Why the server needs the model memory
 
-The service keeps its entries resident, so the machine holds both models all the time
-(1403 MB at startup and 1907 MB after both models have run, measured with SenseVoice Q8 and Qwen3-ASR-0.6B Q8 on the reference machine). That is the
-whole trade: a repair is a 0.5s request instead of a 5s process, and a dictation starts
-in microseconds instead of loading a model. If that memory is not available,
+The service keeps its entries resident (both loaded at once: about 1.4-1.9 GB,
+[measurements.md, models on this machine](measurements.md#models-on-this-machine)),
+so the machine holds both models all the time. That is the whole trade: a repair is a
+0.5-0.8 s request instead of a 5 s process, and a dictation starts instead of
+loading a model; the full rationale and the rejected alternatives are in
+[decisions.md, D22](decisions.md). If that memory is not available,
 `voiceime server uninstall` puts the machine back to "no dictation" rather than quietly
-degrading - there is no slower route left to fall back to, by design (D22).
+degrading - there is no slower route left to fall back to, by design.
 
-**The GPU half of this table is an inference, not a measurement.** No GPU backend
-has been benchmarked for this project (`docs/measurements.md`, "Not measured yet");
-what is measured is that the repair cost on CPU is dominated by weight loading,
+**The GPU half of this table is an inference, not a measurement**
+([measurements.md, not measured yet](measurements.md#not-measured-yet)): what is
+measured is that the repair cost on CPU is dominated by weight loading,
 which is the part a GPU shortens along with the decode. Verify it on your own
 machine by watching the `repair` event:
 
@@ -357,11 +348,9 @@ microphone, replay a file at real time: `"$BIN" stream --file speech.wav --realt
 
 Measured behaviour worth knowing before you judge the output: a quiet room is not
 digital silence, and the recogniser can emit a short hallucination when the noise
-floor crosses the threshold. That happened here, and it turned out to be a detector
-bug rather than a model quirk - the adaptive noise floor was never actually active,
-so the threshold sat inside the room's own noise distribution and utterances never
-ended. Both are fixed, and the numbers are in
-[measurements.md](measurements.md#endpointing-in-a-real-room).
+floor crosses the threshold - a real detector bug this project once had, since
+fixed; the measurement and its history are in
+[measurements.md, endpointing in a real room](measurements.md#endpointing-in-a-real-room).
 
 Set the threshold from data, not by guessing, because the room's *spikiness* is
 what matters rather than its average:
@@ -406,15 +395,12 @@ too low only adds occasional junk, so prefer the lower value when in doubt.
 
 `--apply` is the part that matters. It writes the component file, adds its
 directory to `IBUS_COMPONENT_PATH`, deletes the registry cache and restarts IBus.
-Without it you get a file IBus never reads. Two facts make this step surprising, so
-they are spelled out:
-
-* `IBUS_COMPONENT_PATH` **replaces** the default search path. The value written
-  lists both directories (`.../voiceime/component:/usr/share/ibus/component`); if
-  only ours were listed, every other input method would disappear from the panel.
-* The daemon caches the component registry. A newly added path stays invisible
-  until `~/.cache/ibus/bus/registry` is deleted, which is why `--apply` removes it
-  before restarting.
+Without it you get a file IBus never reads. The two measured daemon facts that make
+this surprising - `IBUS_COMPONENT_PATH` **replaces** the default search path (so the
+value always lists `/usr/share/ibus/component` too), and the daemon's component
+registry is **cached** (so the stale `~/.cache/ibus/bus/registry` must be deleted
+before the restart) - are in
+[ibus-protocol.md, how the daemon learns about an engine](ibus-protocol.md#how-the-daemon-learns-about-an-engine).
 
 Verify:
 

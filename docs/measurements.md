@@ -1,8 +1,9 @@
 # Measurements
 
-Every number here was measured on the reference machine, and each one has the
+Every number in this project's documentation is recorded here, and each one has the
 command that produced it. Nothing is estimated unless the row says so explicitly;
-the two inferences are marked `(inferred)` and say what they are inferred from.
+the inferences are marked `(inferred)` and say what they are inferred from. Other
+documents cite this file rather than restate a number.
 
 Machine: AMD Ryzen 7 5800U (8 cores / 16 threads), 14 GiB RAM, Ubuntu 24.04,
 Wayland session, CPU-only inference (no GPU used). audio.cpp built from source as
@@ -18,6 +19,10 @@ numbers below. The streaming window lives in the server configuration now
 |---|---|---:|---|
 | SenseVoice-Small Q8 GGUF | `sensevoice_small_q8` | 254,211,200 (242 MiB) | its repo `FunAudioLLM/SenseVoiceSmall-GGUF-audiocpp` is served over the Hugging Face protocol and does **not** exist on ModelScope |
 | Qwen3-ASR-0.6B Q8 GGUF | `qwen3_asr_0_6b_q8_0` | 1,151,272,416 (1.07 GiB) | published in the aggregate repo `audio-cpp/audio.cpp-gguf`, which is mirrored on both |
+
+Both entries loaded and resident in the service (SenseVoice Q8 + Qwen3-ASR Q8):
+1403 MB RSS at service startup, 1907 MB after both have run (the service process's
+RSS; the measurement context is recorded in [decisions.md, D22](decisions.md)).
 
 Two models were deliberately not installed, and the reasons matter:
 
@@ -162,21 +167,8 @@ room: **600**, not the 800 first tried, and not the 350 that the third row above
 shows sitting inside the room's own noise. A speaker quiet enough to be missed at
 600 should lower it further and re-run the check above.
 
-To measure a different room, the same way:
-
-```bash
-parec --format=s16le --rate=16000 --channels=1 --raw --latency-msec=40 | head -c 640000 > /tmp/room.raw
-python3 - <<'PY'
-import struct
-data = open('/tmp/room.raw','rb').read()
-s = struct.unpack('<%dh' % (len(data)//2), data)
-frame = 320                      # 20 ms at 16 kHz, the detector's frame
-rms = sorted((sum(x*x for x in s[i:i+frame])/frame) ** 0.5 for i in range(0, len(s)-frame, frame))
-p = lambda q: rms[int(len(rms)*q/100)]
-print("p10=%.0f p50=%.0f p90=%.0f p99=%.0f max=%.0f" % (p(10), p(50), p(90), p(99), rms[-1]))
-PY
-```
-
+To measure a different room, the same way: the procedure - a 20 s capture plus the
+percentile script - is in [DEPLOY.md, step 6](DEPLOY.md#6-verify-the-microphone-path).
 Set `silence_rms_threshold` above the idle p90, then confirm the other direction
 with the same command while speaking: the empty room must produce no `segment`
 event, and a sentence must produce one.
@@ -303,9 +295,10 @@ Stated plainly so nobody mistakes an assumption for a result:
 
 * **GPU backends.** Nothing here has been measured on a GPU: `backend` accepts
   cuda/vulkan/hip/metal and passes it through to audio.cpp, but every figure in
-  this document is from the CPU backend. The model recommendation for a GPU machine
-  in [DEPLOY.md](DEPLOY.md#4-install-a-model) is an inference from the CPU
-  measurement (the repair cost is dominated by weight loading), not a result.
+  this document is from the CPU backend. The model recommendation for a GPU
+  machine in [DEPLOY.md, step 4](DEPLOY.md#4-install-a-model-and-start-the-server) is an
+  inference from the CPU measurement (the repair cost is dominated by weight
+  loading), not a result.
 * **Confucius4-R2T2**, i.e. the append-only long-context streaming family. Its
   viability on this CPU is an inference from a sibling model, not a result.
 * **Endpointing against a human voice in this room.** The detector is covered by

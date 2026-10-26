@@ -5,6 +5,13 @@ voiceime without a human. Every command is non-interactive, idempotent and has a
 `--json` mode. `voiceime capabilities` prints the same surface at runtime,
 derived from the code, so it is the authoritative version if the two disagree.
 
+**Scope.** The command reference and operational semantics: what each command does,
+what the exit codes mean, which setting fixes which symptom. The procedure for a new
+machine is [DEPLOY.md](DEPLOY.md); the recognition pipeline is [asr.md](asr.md);
+measured numbers are in [measurements.md](measurements.md); the reasons are in
+[decisions.md](decisions.md). A fact is restated here only when operating on this
+machine needs it, and always with a pointer to its home.
+
 ## Building and installing
 
 Deploying on a new machine end to end — prerequisites, configuration, model,
@@ -118,6 +125,7 @@ Settings that matter, and the reasoning a caller needs to pick values:
 | `streaming_model` | `""` | Which checkpoint drafts while the user speaks. Empty means "pick the best installed streaming model", which is what `voiceime server install` does once and then **writes here** - so after deployment this setting names the file that runs. Clear it and re-run install to pick again. |
 | `refine_model` | `""` | Which checkpoint decides the final text. Empty means reuse the streaming model, and install records that too. A machine with one model ends up with both settings naming the same file - two entries, because the server holds a model per request, so two resident copies. |
 | `asr_server_url` | `""` | Where the resident recognition server listens. `voiceime server install` sets it; empty means dictation cannot run, and `doctor` says so. It must be `http://`: the live stream is spoken over a raw socket and cannot do TLS, so `config validate` rejects `https://` rather than letting the repair path work while dictation fails. Both passes go through this one service, which serves two entries - `stream` (partials) and `refine` (repair) - whose ids are fixed by what `server run` writes. |
+| `asr_server_timeout_ms` | `30000` | Deadline for one repair decode: a repair slower than the sentence is worse than no repair. |
 | `language` | `zh` | Passed to the model; empty asks it to auto-detect. Also gates the two text-cleanup settings below: they do nothing unless this names Chinese. |
 | `text_script` | `simplified` | Chinese output script, `simplified` or `preserve`. The repair model (Qwen3-ASR) has no ITN and sometimes answers in Traditional characters; `simplified` converts them with embedded OpenCC `t2s` data. `preserve` keeps the model's script. |
 | `chunk_seconds` | `3` | The streaming window: how much audio a draft is decoded from. Below 1.5 measurably corrupts CJK output; validate warns. It does not gate when text is committed - a finished utterance is decoded offline and delivered when it closes - so it can be raised for accuracy without making delivery wait. |
@@ -125,8 +133,12 @@ Settings that matter, and the reasoning a caller needs to pick values:
 | `capture_source` | `""` | PipeWire source name; empty uses the default input. |
 | `silence_rms_threshold` | `600` | **Floor**, not a fixed threshold: the detector adapts up to twice the noise floor it measures in the stream, and never below this value. 600 clears the reference room's idle noise (20ms p90 = 436 RMS) and stays under normal speech; too high a value makes quiet speech silently ignored, so measure before raising it - see [measurements.md](measurements.md#endpointing-in-a-real-room). |
 | `endpoint_min_speech_ms` | `300` | Speech shorter than this is not an utterance. Raise it in a room with impulsive noise (keystrokes, chair). A phrase shorter than it is treated as noise and is **not committed at all** when dictation stops — if it is the only thing in the session, nothing is delivered and the session reports how much it withheld. Lower it only if you dictate short words, and expect more noise to be taken for speech. |
+| `endpoint_silence_ms` | `800` | Silence after speech before an utterance closes. Also sets the repair pad to half of it: without the pad a quiet tail is lost. |
+| `max_utterance_seconds` | `60` | Forces a segment boundary after this long, and sizes the rolling buffer a repair reads its audio from. |
 | `download_mirror` | `https://hf-mirror.com` | Endpoint downloads go through, written to `HF_ENDPOINT`. Any Hugging Face protocol host works: `https://huggingface.co`, a company cache, a LAN address. |
 | `request_options` | `{}` | Extra audio.cpp request options for the repair entry, written into the server config. Set one with `voiceime config set request_options audio_chunk_mode=none`; an empty value removes it. |
+| `hotkey` | `<F9>` | The key the shortcut listener registers; a tap toggles dictation. Use a function key, never a modifier combination ([decisions.md, D13](decisions.md)). |
+| `ibus_engine_name` | `voiceime` | The IBus engine name registered for text delivery. Changing it rewrites the installed component and restarts IBus through `config apply` ([decisions.md, D33](decisions.md)). |
 
 Every setting is read by some resident process when it starts - the model paths,
 `chunk_seconds`, `threads`, `backend` and the option maps by the recognition service;
@@ -177,26 +189,14 @@ passed to the model manager as `HF_ENDPOINT`. Whether an endpoint works is a
 property of the endpoint *and* the package: `models install` reports the failure, so a
 caller that sees a 404 can set another endpoint and retry the same package.
 
-Packages to install, by machine (measured on the reference machine; see
-[measurements.md](measurements.md) for the numbers and
-[DEPLOY.md](DEPLOY.md#4-install-a-model) for the commands):
+Which packages to install, by machine, and the measured trade (memory, repair cost):
+[DEPLOY.md, step 4](DEPLOY.md#4-install-a-model-and-start-the-server); the numbers:
+[measurements.md](measurements.md); the rationale in one entry: [decisions.md,
+D22](decisions.md).
 
-| Machine | `streaming_model` | `refine_model` | Package ids |
-|---|---|---|---|
-| **CPU only** | `sensevoice_small_q8` | empty - reuses the streaming model | `sensevoice_small_q8` |
-| **With a GPU** | `sensevoice_small_q8` | `qwen3_asr_0_6b_q8_0` | both |
-
-* `sensevoice_small_q8` (242 MiB) is the streaming model on both: multilingual,
-  ~21x realtime on CPU, 0.3 s to load per session. On CPU it is also the repair
-  model, because it repairs a finished sentence in 0.55 s.
-* `qwen3_asr_0_6b_q8_0` (1.07 GiB) is the more accurate offline reader and the
-  only reason to add a second model. It costs its memory all the time (the service keeps
-  both entries resident: 1403 MB at startup, 1907 MB after both have run, with the pair above) and saves the decode, which is the
-  point of the service: a repair is a 0.5-0.8 s request instead of a 5.7 s process, and
-  a dictation starts in microseconds. See docs/decisions.md D22.
-* `voiceime server install` picks the models and records them, so `streaming_model`
-  and `refine_model` end up naming the files that run. Clearing one and running install
-  again is how to have it pick afresh; `models list` prints what is installed with sizes.
+`voiceime server install` picks the models and records them, so `streaming_model`
+and `refine_model` end up naming the files that run. Clearing one and running install
+again is how to have it pick afresh; `models list` prints what is installed with sizes.
 
 ## Verify
 
@@ -247,15 +247,13 @@ So "the text stays underlined" always means "the detector has not found a bounda
 yet": check `silence_rms_threshold` and `endpoint_silence_ms` before anything else.
 
 A session that ends without the endpointer accepting a single utterance commits
-nothing, because streaming ASR produces plausible words for almost any input and
-typing them into a focused application is worse than typing nothing. It is not a
-silent loss: the text was visible as preedit, so the reason names how much of it
-was withheld (`no speech detected; withheld N characters the recogniser produced
-for audio the detector never called speech`) and the composition is cleared as the
-session ends - a session that is stopping is the only thing that could have finished
-that text. A `skipped` reason with a count means
-the detector could not hear the speaker - the fix is the room measurement below. No
-reason at all, with text on screen, means the session ended some other way.
+nothing and says so (`skipped: no speech detected; withheld N characters ...`):
+streaming ASR produces plausible words for almost any input, and typing them into
+a focused application is worse than typing nothing. The count means the detector
+could not hear the speaker - the fix is the room measurement in
+[DEPLOY.md, step 6](DEPLOY.md#6-verify-the-microphone-path). A failed stream withholds
+its stranded draft too; the full failure contract is in
+[asr.md, the failure contract](asr.md#the-failure-contract).
 
 With `--realtime`, the `fed_seconds` of a partial is also the time from the user
 speaking to that text appearing, which is the latency number to compare against
@@ -275,19 +273,14 @@ voiceime engine status --json        # is the engine registered, and where is it
 voiceime engine uninstall
 ```
 
-Two facts decide whether this works, and both were measured (see
-[docs/ibus-protocol.md](ibus-protocol.md)):
-
-* IBus reads `/usr/share/ibus/component` and whatever `IBUS_COMPONENT_PATH`
-  names. It does **not** read `~/.local/share/ibus/component`, so a user install
-  must set that variable in the activation environment and restart the daemon.
-* `IBUS_COMPONENT_PATH` **replaces** the default search path. A value naming only
-  voiceime's directory hides every system engine, which is why the value printed
-  by `engine install` always includes `/usr/share/ibus/component`.
-* The daemon's component registry is **cached** (`~/.cache/ibus/bus/registry`) and
-  a cached run does not look at a newly configured directory, so `--apply`
-  removes that file before restarting IBus. Without this the engine stays
-  invisible even though the environment variable took effect.
+A user install works only if two measured daemon facts are handled
+([ibus-protocol.md, how the daemon learns about an engine](ibus-protocol.md#how-the-daemon-learns-about-an-engine)):
+`IBUS_COMPONENT_PATH` **replaces** the default search path (so the value printed by
+`engine install` always includes `/usr/share/ibus/component` - a value naming only
+voiceime's directory hides every system engine), and the daemon's component registry
+is **cached** at `~/.cache/ibus/bus/registry` (so `--apply` removes that file before
+restarting IBus - without this the engine stays invisible even though the
+environment variable took effect).
 
 Then either switch to the engine directly (`ibus engine voiceime`, and away again
 to stop), or run the shortcut listener so one key does it:

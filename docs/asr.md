@@ -1,9 +1,9 @@
 # How the ASR pipeline works
 
-This is the wiring diagram for anyone who has to change the recognition path. It
-describes what goes over the socket, why there are two passes, and what happens when
-one of them fails. The reasons behind each choice are in
-[decisions.md](decisions.md) (D20-D22, D24); the numbers are in
+**Scope.** The current wiring of the recognition path — what goes over the socket,
+what the two passes do, and what happens when one of them fails. This document
+describes the *what*; the *why* of each choice is in [decisions.md](decisions.md)
+(D7, D20-D22, D24, D25, D29, D36), and every measured number is in
 [measurements.md](measurements.md).
 
 The short version: **voiceime does not run a model.** A resident service does, and
@@ -54,10 +54,10 @@ The rendered config names **two entries**, and they cannot be merged:
 
 * `lazy_load: false` is the point of the service: the weights belong to its startup,
   so nothing on the request path ever waits for a load. A session start is a TCP
-  connect - 144 µs in D22's measurement, 157 µs in the run below.
+  connect, not a process start.
 * **Two entries, even when they name the same file.** The server holds a model for the
   whole length of a request, so a repair sent to the id a live dictation owns waits for
-  that dictation to end - measured at 10.9 s behind a 12 s session.
+  that dictation to end (measured; [decisions.md, D22](decisions.md)).
 
 Two probes are used by `doctor`, `server status` and `server restart`:
 
@@ -69,16 +69,17 @@ GET /v1/models   → {"object":"list","data":[
                      {"id":"refine", … "mode":"offline","loaded":true,"path":"…/qwen3-asr-0.6b-q8_0.gguf"}]}
 ```
 
-`doctor` compares those `path`s with `streaming_model` and `refine_model`. The entry
-ids never change, so a service left on the previous checkpoint is invisible otherwise -
-it just produces slightly different text.
+`doctor` compares those `path`s with `streaming_model` and `refine_model`: the entry
+ids never change, so a service left on the previous checkpoint is reported by name
+rather than showing up as slightly different text.
 
 ## Pass 1 - the live session (draft text)
 
 `internal/asr/stream.go` writes HTTP/1.1 by hand, and that is not gold-plating:
 `http.Client.Do` does not return until the request body is finished, even when the
 server has already answered, so the standard client cannot express "open the session,
-then send audio". curl can because it speaks HTTP directly; so does this.
+then send audio". What that implies for validation and deadlines is
+[decisions.md, D28](decisions.md).
 
 ### Request
 
@@ -131,12 +132,8 @@ data: [DONE]
   exists to absorb that approximation.
 * A delta whose span contains **no audio the endpointer called speech** is dropped, and
   said so once per pause (`dropped streaming text for audio the detector never called
-  speech`). A live model decodes every window, including windows of room silence, and
-  answers with something - measured: one `。` per three-second window in a quiet room. Kept
-  as provisional text, that sat under the caret until the next sentence's commit flushed it
-  into the application. The test is unpadded on purpose: the repair pads, because it has to
-  recover a quiet tail, but a streaming window cannot be split at the speech boundary, so
-  padding would admit windows of pure silence.
+  speech`). The test is unpadded on purpose; the rationale and the measurement are in
+  [decisions.md, D36](decisions.md).
 * The provisional text is published as **preedit** - underlined, not yet delivered.
 * **done** → recorded as `Result.Text` and reported by `stream --events` as
   `stream_text`. It is **not** used to commit: the offline pass decides what is final,
@@ -199,7 +196,7 @@ Three cases, and the distinction is where the reported bugs came from:
    `endpoint_silence_ms / 2` on each side (default ±400 ms). A short utterance always
    lands here: it closes 800 ms after the speech ends, while a draft arrives only every
    `chunk_seconds`. The detector stops on the last loud frame, so without the pad a
-   quiet tail is lost - measured: `Some call me。` instead of `Some call me nature.`.
+   quiet tail is lost (measured; [decisions.md, D20](decisions.md)).
 3. **Too short (< 0.4 s) or fallen out of the buffer** → do not decode; commit the
    draft and report why (`skipped`).
 
@@ -315,8 +312,8 @@ document wants.
 transcript:
 
 * **The transcript getters** (`asr.Transcript.Text`, `ProvisionalText`,
-  `CommitProvisional`) normalize the *assembled* text, which covers the case where repair
-  is off or a repair failed and the draft is what gets committed.
+  `CommitProvisional`) normalize the *assembled* text, which covers the case where
+  repair is off or a repair failed and the draft is what gets committed.
 * **The repair worker** stores the offline decode unchanged. It normalizes a copy only
   for the `repair` event, so the event reports what the reader will produce without
   applying the conversion twice. OpenCC's `t2s` data is not idempotent: `乾圖` becomes
@@ -328,37 +325,22 @@ therefore show what the model wrote, while `preedit`, `repair`, `commit` and
 `voiceime_text` show what the user sees. That is deliberate: when a conversion looks
 wrong, the raw string is still in the trace.
 
-One setting selects the conversion. It only applies when `language` names Chinese
-(`zh`, `zh-CN`, `zh-Hant`, `cmn`, `yue`, `Chinese`, ...); for Japanese or Korean the
-normalizer is a no-op, because converting kanji or hanja would be corruption.
-
-| Key | Default | Values | Effect |
-|---|---|---|---|
-| `text_script` | `simplified` | `simplified`, `preserve` | Convert Traditional characters to Simplified. The data is OpenCC's `t2s` dictionaries, embedded in the binary (39 KB, Apache-2.0; see `internal/textnorm/data/NOTICE`). |
-
-Chinese numerals are left exactly as the repair model wrote them. An earlier version
-converted them to digits; it was withdrawn because it changed ordinary words more often
-than it helped (docs/decisions.md D37).
+The conversion is selected by one setting, `text_script` (`simplified` or `preserve`,
+documented in [AGENT.md, Configure](AGENT.md#configure)). It applies only when
+`language` names Chinese (`zh`, `zh-CN`, `zh-Hant`, `cmn`, `yue`, `Chinese`, ...); for
+Japanese or Korean the normalizer is a no-op, because converting kanji or hanja would
+be corruption. The rationale, including the withdrawn numeral conversion, is in
+[decisions.md, D37](decisions.md).
 
 ## Tuning
 
-Settings that change behaviour, and what they trade:
-
-| Key | Default | Effect |
-|---|---|---|
-| `chunk_seconds` | 3 | Streaming window. Below 1.5 measurably corrupts CJK (`config validate` warns). Does **not** gate when text is committed - a closed utterance is decoded offline. |
-| `endpoint_silence_ms` | 800 | Silence after speech before an utterance closes. Also sets the repair pad to half of it. |
-| `endpoint_min_speech_ms` | 300 | Shorter is treated as noise and never committed. |
-| `silence_rms_threshold` | 600 | **Floor** of the adaptive detector, not a fixed threshold. Too high makes quiet speech invisible; measure before raising it. |
-| `max_utterance_seconds` | 60 | Forces a boundary, and sizes the rolling buffer that repairs read from. |
-| `refine_on_segment_end` | true | The only switch that trades accuracy for latency. |
-| `asr_server_timeout_ms` | 30000 | Deadline for one repair. |
-| `language` | `zh` | Passed to both passes; empty lets the model detect. |
-| `text_script` | `simplified` | Chinese output script: `simplified` or `preserve`. See [Text form](#text-form-script). |
-
-The model paths, `chunk_seconds`, `threads`, `backend` and the option maps are read by
-the service at **startup**, so changing one needs `voiceime config apply` (which
-restarts the unit and waits until it serves the new entries).
+The pipeline settings and their defaults are in [AGENT.md, Configure](AGENT.md#configure)
+— the config reference; `voiceime config show --json` is the complete surface. The
+split that matters for applying a change: the model paths, `chunk_seconds`, `threads`,
+`backend` and the option maps are read by the recognition service at **startup**;
+`language` and the endpoint settings by the engine; `hotkey` by the shortcut listener.
+That is why `voiceime config set` names `voiceime config apply` as the next step for
+every key ([decisions.md, D26](decisions.md)).
 
 ## Known gap: whole-transcript snapshots
 

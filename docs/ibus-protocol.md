@@ -5,6 +5,11 @@ Python/C bindings hide all of it. Everything below was measured against a live
 daemon on the reference machine, not inferred from source. It is recorded because
 each fact cost time to find and would cost the same again.
 
+**Scope.** Measured facts about the IBus daemon's protocol for third-party engines -
+a property of the daemon, not of voiceime; a fact here changes only when it is
+re-measured. voiceime's behaviour around this protocol (install, hotkey, logs) is in
+[AGENT.md](AGENT.md); the recognition pipeline is in [asr.md](asr.md).
+
 ## Reproducing the experiments safely
 
 Never experiment against the session daemon. A malformed `RegisterComponent` call

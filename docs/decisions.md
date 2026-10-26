@@ -1,7 +1,53 @@
 # Decisions
 
-Each entry records a decision, the reason, and what would change it. Numbers
-referenced here are in [measurements.md](measurements.md).
+Each entry records a decision, the reason, and what would change it. Superseded
+entries are kept - they record what was tried and why it changed - but they are
+marked, and the index below is the place to check whether an entry is still in force
+before trusting it. Numbers referenced here are in [measurements.md](measurements.md).
+
+| # | Decision | Status |
+|---|---|---|
+| D1 | no GUI: a configuration file and subcommands | current |
+| D2 | commands non-interactive, idempotent, machine-readable | current |
+| D3 | Go, no cgo | current |
+| D4 | streaming through the audio.cpp CLI over a pipe, not the C API | partially superseded by D22 |
+| D5 | capture is a subprocess; 16 kHz mono end to end | current |
+| D6 | text delivery is an IBus engine | current |
+| D7 | two layers of text; repair rewrites only the provisional | current |
+| D8 | endpointing in voiceime, not in the model | current |
+| D9 | model discovery asks audio.cpp, and caches the answer | current |
+| D10 | downloads delegated to the model manager | current |
+| D11 | while the engine is active, voiceime dictates | partially superseded (the hotkey exists: D13-D14, D19) |
+| D12 | the engine process hosts the pipeline | current |
+| D13 | the trigger is a function key, never a modifier | current |
+| D14 | releasing the shortcut is not a deregistration | current |
+| D15 | one configurable download endpoint, no preset names | current |
+| D16 | the detector learns from the stream; an utterance must be earned | current |
+| D17 | a test is not a caller; installed artifacts are checked | current |
+| D18 | machine-specific values are discovered, reported or advised | current |
+| D19 | a held key is one press on the command path too | current |
+| D20 | every accepted utterance is decoded offline; streaming only drafts | current |
+| D21 | a resident server, on demand, for the repair pass | superseded by D22 |
+| D22 | one resident service serves both recognition roles | current |
+| D23 | delete what stopped paying for itself | current |
+| D24 | a failed stream is a failure, not a short transcript | current |
+| D25 | the decode outlives the session; audio handed to it is a copy | current |
+| D26 | a written value is not a setting in force; a write is atomic | current |
+| D27 | one activation is one input context; the text follows the newest | current |
+| D28 | what the client cannot do is a validation error | current |
+| D29 | a requested stop is not a session failure, on the read side too | current |
+| D30 | the engine writes down what it did | current |
+| D31 | stop what you own; never guess a keyboard | current |
+| D32 | which model each role uses is one answer, in one place | current |
+| D33 | the IBus component is one of the things `config apply` applies | current |
+| D34 | the engine to return to is one record | current |
+| D35 | one command writes the model cache | current |
+| D36 | streaming text is kept only for audio the endpointer called speech | current |
+| D37 | text form is cleaned after recognition | current |
+| D38 | one fact, one home: the documentation is a set of owned references | current |
+
+*current* is in force; *superseded* is replaced by the entry named; *partially
+superseded* still has part of the decision in force, and the entry says which part.
 
 ## D1 — The interface is a configuration file and subcommands. There is no GUI.
 
@@ -57,6 +103,12 @@ host later, CGEvent on macOS). `go build` is the whole build. The cost is the IB
 engine having to speak D-Bus directly — see D6.
 
 ## D4 — The streaming interface is the audio.cpp CLI over a pipe, not the C API.
+
+**Status: partially superseded by D22.** The per-session `audiocpp_cli` streaming
+process is gone: streaming now runs through the resident service's live endpoint,
+which is the `audiocpp_server` route this entry rejected. What remains in force is
+the rest of the conclusion - the C API is still not linked, and the adapter's narrow
+exports still make it a per-file swap.
 
 **Decision.** voiceime spawns `audiocpp_cli --mode streaming --audio -` per
 dictation session, writes raw PCM to stdin and parses the line protocol on stdout.
@@ -234,10 +286,17 @@ which endpoint, which packages to recommend, and machine-readable results.
 
 **Consequence.** Endpoint availability is per package, not global: a package that
 one endpoint does not carry is reported with its id and the error text rather than
-falling back silently, and `models sizes <pkg>` answers reachability without
-downloading.
+falling back silently. **Note (D23).** `models sizes <pkg>`, which answered
+reachability without downloading, was removed with the other model-manager wrapper
+verbs; `models install` failing with the package id and the error text is now the
+report.
 
 ## D11 — While the engine is active, voiceime dictates.
+
+**Status: partially superseded.** The core decision - activation is the dictation
+switch, and deactivation stops it - is in force. "There is no global hotkey in this
+version, and no push-to-talk" is obsolete: the hotkey listener
+(D13, D14, D19) is the convenience this entry deferred rather than half-built.
 
 **Decision.** Activation starts the dictation session; deactivation stops it and
 commits whatever was still provisional. There is no global hotkey in this version,
@@ -670,6 +729,11 @@ adjacent utterances.
 
 ## D21 — A model that cannot keep up as a process per utterance is served resident, on demand.
 
+**Status: superseded by D22.** The on-demand lifetime (spawn at session start, stop
+after the last repair) and the repair-only scope are gone: one resident service
+serves both roles. Kept for the measurement record - the process-per-utterance
+versus resident commit latency is the number that motivated D22.
+
 **Decision.** The offline decode can run through a resident `audiocpp_server`
 instead of a process per utterance, and voiceime starts that server itself when a
 dictation session begins and stops it when the session ends. It is configured with
@@ -733,6 +797,8 @@ silently when the server cannot start - a user who configured it needs to know, 
 the failure is reported once per session and the CLI route carries the utterance.
 
 ## D22 — One resident service serves both recognition roles. (Supersedes D21.)
+
+**Status: current.**
 
 **Decision.** Both passes run against a single `audiocpp_server` that voiceime installs
 as a systemd user unit (`voiceime server install`) with `lazy_load: false`, so its two
@@ -1479,3 +1545,52 @@ Pinned by `TestNormalizeTraditionalToSimplified`, `TestScriptConversionIsSingleP
 `TestSessionAppliesTheNormalizerOnceToARepair`,
 `TestSessionNormalizesStreamingTextWhenRepairIsOff`, `TestValidateRejectsUnknownTextCleanupValues`
 and `TestLoadIgnoresARetiredSetting`.
+
+## D38 — One fact, one home: the documentation is a set of owned references.
+
+**Decision.** The seven documents keep their audience split - README (the front door
+and the routing of readers), DEPLOY (the procedure), AGENT (the command reference and
+operational semantics), asr (the pipeline contract), ibus-protocol (the measured
+daemon protocol), measurements (the numbers), decisions (the reasons) - and every
+recurring fact has exactly one home:
+
+* measured numbers: measurements.md. Other documents say "measured; see ..." and never
+  restate the value.
+* the model selection table and the room-measurement procedure: DEPLOY.md, step 4 and
+  step 6.
+* the config key reference, the exit-code contract and the symptom-to-action table:
+  AGENT.md.
+* the pipeline contract - what goes over the wire, the failure contract, the event
+  kinds - and the single pipeline diagram: asr.md, which states the *what* and links
+  here for the *why*.
+* the IBus daemon protocol facts: ibus-protocol.md, which changes only when
+  re-measured.
+* the status table and the routing of readers: README.md.
+
+Each document opens with a scope statement: what it answers, and what it does not
+cover and where that lives. decisions.md carries a status index (current /
+superseded / partially superseded), and a change to behaviour marks the superseded
+entry in the same commit that changes the behaviour documents. Static documentation
+defers to the runtime surface (`voiceime capabilities`, `doctor`, the `fix` of an
+error): if the two disagree, the runtime wins, and the document is the bug.
+
+**Why.** The documentation is agent-operable - an agent reads it the way it reads
+code - so a stale sentence is a false fact, not a cosmetic one. Before this rule,
+about fifteen facts each had three to five copies: the model table existed in three
+shapes, the room-measurement script twice verbatim, and the repair latency appeared
+as 5.66, 5.7 and 5.79 s in different places, while two ADRs (D4, D11) stated the
+opposite of the current design without a marker. The ratio is not the problem -
+about four lines of documentation per line of Go, maintained on nearly every commit -
+it is that each duplicated fact is maintained several times, and drift is the failure
+mode a foundational component cannot afford.
+
+**Consequence.** `make docs-check` (part of `make check`) verifies that every
+relative link and anchor in the documentation resolves, so the cross-reference
+structure cannot rot silently. The cost of the rule is a few extra hops of reading:
+a number lives one file away from the prose that uses it.
+
+**What would change it.** docs/ growing past about fifteen files - then an index
+file inside docs/ is justified; a documentation toolchain replacing raw Markdown and
+the Makefile distribution - then "the docs are part of the installed product" moves
+with it; or the documentation being generated from the code, which would invert the
+runtime-wins rule into a build step.

@@ -337,6 +337,11 @@ func runConfig(ctx *Context, args []string, force bool) error {
 		}
 		existed := fileExists(ctx.ConfigPath)
 		if existed && !force {
+			// A refusal that prints nothing is indistinguishable from success in
+			// human mode (exit 0, empty stdout), and the step is documented without
+			// --json: it has to say it did nothing. JSON mode carries the same fact
+			// in the note, and Print stays out of the single JSON document.
+			ctx.Print("config already exists at %s; not written (pass --force to overwrite)", ctx.ConfigPath)
 			return ctx.Emit("config init", map[string]any{
 				"path":    ctx.ConfigPath,
 				"written": false,

@@ -78,6 +78,19 @@ func TestConfigInitRefusesThenOverwritesWithForce(t *testing.T) {
 		t.Error("init changed a file it said it had not written")
 	}
 
+	// The refusal has to be visible in human mode too: the step is documented
+	// without --json, and exit 0 with no output reads as a success.
+	code, stdout, stderr = runForTest(t, "config", "init", "--config", configPath)
+	if code != ExitOK {
+		t.Fatalf("init on an existing file (human mode): exit %d, stderr %s", code, stderr)
+	}
+	if !strings.Contains(stdout, "already exists") {
+		t.Errorf("init said nothing in human mode, where a refusal and a success look alike:\n%s", stdout)
+	}
+	if _, err := os.Stat(configPath); err != nil {
+		t.Fatalf("config file missing after a no-op init: %v", err)
+	}
+
 	code, stdout, stderr = runForTest(t, "config", "init", "--force", "--json", "--config", configPath)
 	if code != ExitOK {
 		t.Fatalf("init --force: exit %d, stderr %s", code, stderr)

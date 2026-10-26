@@ -144,8 +144,17 @@ deadcode: ## Fail if main cannot reach some code in the shipped packages
 	rm -rf "$$bin" "$$out"; \
 	echo "deadcode: every function in cmd/ and internal/ is reachable from main"
 
+.PHONY: docs-check
+docs-check: ## Fail if a relative link or anchor in the documentation does not resolve
+	@# Build tooling, like deadcode above: it lives under tools/ rather than cmd/,
+	@# so it is not part of the shipped command surface and the unreachable-code
+	@# check (cmd/ and internal/ only) never reaches it. Go rather than python3:
+	@# a machine that builds this project has the toolchain by definition, while
+	@# python3 is not a build prerequisite. Stdlib only, so no network.
+	@$(GO) run ./tools/check_docs
+
 .PHONY: check
-check: fmt-check vet test deadcode ## Everything CI should run
+check: fmt-check vet test deadcode docs-check ## Everything CI should run
 
 .PHONY: tidy
 tidy: ## Tidy go.mod and go.sum

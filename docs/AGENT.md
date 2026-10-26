@@ -35,10 +35,10 @@ the version reporting as `dev`. An installed copy is not required: running
 and nothing in the program depends on being on `PATH`.
 
 Installing does not restart anything: a process keeps the binary it was started
-from, so rebuilt code runs only after the engine and the listener have been
-restarted, and until then `doctor` reports the difference as a `warn` on
-`engine_process` / `hotkey_process`. The procedure, and which of the restarts
-systemd does for you, is
+from, so rebuilt code runs only after the engine, the listener and the service
+have been restarted, and until then `doctor` reports the difference as a `warn`
+on `engine_process` / `hotkey_process` / `server_process`. The procedure, and
+which of the restarts systemd does for you, is
 [DEPLOY.md § Updating an installed copy](DEPLOY.md#updating-an-installed-copy).
 
 ## Ground rules
@@ -217,7 +217,7 @@ otherwise), IBus engine registration, the settings that are properties of the ma
 built with), the installed artifacts (the component file's `<exec>` and both systemd
 units' `ExecStart` - each records an absolute path, and a server unit written by a
 checkout binary is a `make install` that does not reach the running service), whether the
-running engine and listener are the binary running `doctor`, and optional
+running engine, listener and service are the binary running `doctor`, and optional
 notification/sound tooling. Exit code 3 means at least one check failed; the `fix` of each
 failure is the next command to run.
 Loop until it exits 0.

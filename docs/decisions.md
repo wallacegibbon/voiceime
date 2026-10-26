@@ -587,6 +587,11 @@ the binary running `doctor`. That last one is also the honest way to run the
 development loop: `doctor` from the checkout against a deployment in
 `~/.local/bin` reports the difference instead of pretending they are the same.
 
+**Note.** The running-process table gained a third row - `server_process`, for the
+recognition service - so a service left on a previous build is a `warn` like the
+engine and the listener. `server_unit` verifies the unit's path and `asr_server`
+its answers; the process itself was the half that was missing.
+
 ## D18 — Machine-specific values are discovered, reported or advised, never guessed silently.
 
 **Decision.** Three mechanisms, each for a different kind of value.

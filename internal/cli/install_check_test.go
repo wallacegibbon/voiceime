@@ -83,6 +83,24 @@ func TestRunningBinaryVerdict(t *testing.T) {
 	}
 }
 
+// The process checks walk a table, and a missing row is a stale process doctor
+// cannot see: the service in particular holds the models, so a stale one serves
+// old inference while every other check passes. The rows are pinned here.
+func TestRunningKindsCoverTheResidentProcesses(t *testing.T) {
+	ids := map[string]string{}
+	for _, kind := range runningKinds {
+		ids[kind.id] = kind.fix
+		if kind.pattern == "" || kind.fix == "" {
+			t.Errorf("%s needs both a pattern and a fix", kind.id)
+		}
+	}
+	for _, id := range []string{"engine_process", "hotkey_process", "server_process"} {
+		if ids[id] == "" {
+			t.Errorf("runningKinds lost %s: a stale %s is then invisible to doctor", id, id)
+		}
+	}
+}
+
 // processesRunning reads /proc, so this checks it does not match a process that
 // merely has voiceime in the command line it was launched with.
 func TestProcessesRunningRequiresTheBinaryToBeOurs(t *testing.T) {

@@ -122,22 +122,32 @@ func unitExecStart(path string) (string, error) {
 // A process keeps the binary it was started from, so a rebuild does not take
 // effect until it is restarted, and a deleted binary keeps working until then
 // too. Both are invisible from the outside, which is what made them expensive.
+// runningKinds is the table the running-binary checks walk: one row per
+// voiceime process a deployment can leave stale. The rows are pinned by test,
+// because a missing row is a stale process doctor cannot see - the checks are
+// only as broad as this table.
+//
+// `config apply` stops the engine by pid (its SIGTERM path commits the sentence in
+// progress) and restarts the listener; a pkill pattern here would also match the
+// shell of anyone who pasted the suggestion.
+var runningKinds = []struct {
+	id      string
+	pattern string
+	fix     string
+}{
+	{"engine_process", "ibus-engine", "voiceime config apply"},
+	{"hotkey_process", "hotkey run", "systemctl --user restart voiceime-hotkey"},
+	// The service holds the models, so a stale one serves old inference while every
+	// other check passes: server_unit verifies the unit's path, asr_server the answers.
+	{"server_process", "server run", "voiceime config apply"},
+}
+
 func runningBinaryChecks(ctx *Context, report func(Check)) {
 	ourselves, err := os.Executable()
 	if err != nil {
 		return
 	}
-	for _, kind := range []struct {
-		id      string
-		pattern string
-		fix     string
-	}{
-		// `config apply` stops the engine by pid (its SIGTERM path commits the sentence in
-		// progress) and restarts the listener; a pkill pattern here would also match the
-		// shell of anyone who pasted the suggestion.
-		{"engine_process", "ibus-engine", "voiceime config apply"},
-		{"hotkey_process", "hotkey run", "systemctl --user restart voiceime-hotkey"},
-	} {
+	for _, kind := range runningKinds {
 		processes := processesRunning(kind.pattern)
 		if len(processes) == 0 {
 			continue
@@ -179,7 +189,7 @@ func runningBinaryVerdict(running process, ourselves string) (status, detail str
 	original := strings.TrimSuffix(binary, " (deleted)")
 	if !fileExists(original) {
 		return "fail", fmt.Sprintf(
-			"pid %d is running %s, which no longer exists: the checkout was moved or renamed, and the engine will fail as soon as it is restarted",
+			"pid %d is running %s, which no longer exists: the checkout was moved or renamed, and the process will fail as soon as it is restarted",
 			running.PID, original), true
 	}
 	return "warn", fmt.Sprintf(

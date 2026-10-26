@@ -498,7 +498,7 @@ if the key seems to do nothing.
 "$BIN" engine status --json | grep -q '"engine_registered": *true';  engine=$?
 "$BIN" hotkey status --json  | grep -q '"service_active": *true';    listener=$?
 "$BIN" server status --json  | grep -q '"listening": *true';         server=$?
-pgrep -f "ibus-engine --ibus" >/dev/null;                          engine_process=$?
+pgrep -f "ibus-engine --ibu[s]" >/dev/null;                        engine_process=$?
 echo "doctor=$doctor engine=$engine listener=$listener server=$server engine_process=$engine_process"
 [ "$doctor" = 0 ] && [ "$engine" = 0 ] && [ "$listener" = 0 ] && [ "$server" = 0 ]
 ```
@@ -510,7 +510,10 @@ block echoed `ok` for each whatever the command returned, so it could not fail.
 on the first activation, so it reads `1` on a fresh machine until you tap the key
 once (`ibus engine voiceime` does it too). Once dictation has been activated, `0`
 there is the end-to-end proof that the engine, capture and the recogniser all came
-up. `doctor`'s `asr_server` line is part of `doctor=0`: it fails when no server is configured
+up. The pattern is `--ibu[s]` rather than `--ibus` on purpose: `pgrep -f` matches
+any command line that contains the pattern - including this snippet's own shell,
+the same trap [decisions.md, D31](decisions.md) recorded for the `pkill` it
+replaced. `doctor`'s `asr_server` line is part of `doctor=0`: it fails when no server is configured
 or nothing answers at the address, and there is no per-utterance fallback for that to hide
 behind - a missing service is a dictation that refuses to start. `doctor` also carries the
 model check, so a file nobody has run `models list --refresh` for is reported there with
@@ -529,12 +532,11 @@ were measured on the reference machine rather than reasoned about.
 
 ```sh
 make build && make install                 # replaces ~/.local/bin/voiceime, ~/.local/docs and the OpenCC licence
-"$BIN" server install                      # rewrite the config for any changed settings
-systemctl --user restart voiceime-asr-server   # the service runs the build it started with
+"$BIN" server install                      # rewrites the config and restarts the service, waiting for the new build
 "$BIN" engine install --apply              # component, activation env, ibus restart
 "$BIN" engine status --json                # assert: engine_registered == true
 "$BIN" hotkey install                      # only if the unit or the keybinding changed
-"$BIN" doctor --json                       # exit 0, and both process checks ok
+"$BIN" doctor --json                       # exit 0, and the process checks ok
 ibus engine voiceime                       # only if dictation was on before
 ```
 
@@ -549,7 +551,7 @@ What each step actually does:
   replaced in place - there is no `Text file busy` - and the process started from
   it keeps the old inode, so `/proc/<pid>/exe` then reads
   `/home/u/.local/bin/voiceime (deleted)`. That is exactly what `doctor` reports as
-  a `warn` on `engine_process` and `hotkey_process` ("still running the previous
+  a `warn` on `engine_process`, `hotkey_process` and `server_process` ("still running the previous
   build"). So that warning is the *expected* state between the two steps, not a
   fault to hunt, and nothing has to be stopped before installing.
 * **`engine install --apply` ends both running processes, and only one of them is

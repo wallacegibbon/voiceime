@@ -347,6 +347,10 @@ Deliver-boundary check with no audio at all:
 "$BIN" stream --file some.wav --realtime --events   # the real pipeline: drafts, repairs, timing
 ```
 
+Use a short clip: `--realtime` makes wall time equal the file's length. The ten-minute `speech.wav`
+in the audio.cpp checkout is the long-form measurement sample, not a quick check - replaying it
+here looks like a hang for most of that time while working correctly.
+
 ## 6. Verify the microphone path
 
 ```sh
@@ -418,8 +422,20 @@ Verify:
 ```sh
 "$BIN" engine status --json
 # assert: data.engine_registered == true, data.engine_visible == true
-ibus engine voiceime && ibus engine            # switch, then read back
+ibus engine voiceime                           # switch; its exit code is unreliable (below)
+ibus engine                                     # the assertion: must read `voiceime`
 ```
+
+Two measured traps in this block. Run `engine status` a few seconds after `--apply`, not in the
+same breath: the daemon restart is not synchronous, and `ibus list-engine` fails with exit 1 while
+the daemon is coming up, so `engine status` reports `engine_registered: false` with
+`detail: ibus list-engine failed` on a machine where the engine is registered - the same symptom
+the session-environment warning above describes, with a different cause (that one shows a clean
+`detail`, this one names the failing call). Re-check before treating it as a failure; the
+recovery-section registry fix is for the persistent case and changes nothing here. And do not
+assert on the exit code of `ibus engine voiceime`: it exits non-zero even when the switch
+succeeds (measured: six consecutive switches, no-op and real, all exited 1 while the read-back
+reported `voiceime` and the engine process came up). The read-back is the assertion.
 
 A healthy activation starts capture and connects to the recognition service - the
 end-to-end proof that both work:
@@ -536,7 +552,8 @@ echo "doctor=$doctor engine=$engine listener=$listener server=$server engine_pro
 block echoed `ok` for each whatever the command returned, so it could not fail.
 `engine_process` is deliberately not part of that test: the engine is spawned lazily
 on the first activation, so it reads `1` on a fresh machine until you tap the key
-once (`ibus engine voiceime` does it too). Once dictation has been activated, `0`
+once (`ibus engine voiceime` does it too, despite exiting non-zero itself - step 7).
+Once dictation has been activated, `0`
 there is the end-to-end proof that the engine, capture and the recogniser all came
 up. The pattern is `--ibu[s]` rather than `--ibus` on purpose: `pgrep -f` matches
 any command line that contains the pattern - including this snippet's own shell,

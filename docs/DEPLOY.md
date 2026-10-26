@@ -109,7 +109,8 @@ The configuration file is the only source of truth (`voiceime config path` print
 its location, `~/.config/voiceime/config.toml` by default).
 
 ```sh
-"$BIN" config init                    # idempotent; refuses to overwrite without --force
+"$BIN" config init                    # fresh machine: writes the file and prints the defaults to review;
+                                       # existing file: one line and exit 0, nothing written; --force rewrites it
 "$BIN" config validate --json         # exit 0, or exit 3 with a fix per issue
 ```
 
@@ -137,6 +138,16 @@ Then set what the list flagged, plus anything you know better than it does:
 If `audio_cpp_dir` is wrong, `doctor` still works: `audiocpp_cli` is looked for on
 `PATH` and in a checkout found in a conventional location, so the check reports what
 it found rather than failing on the configured path.
+
+**The file outlives versions.** A new version's settings need no migration: the loader
+starts from the defaults with the file's values over them, so a key a new version adds
+takes its default on the next load with no one touching the file, and a key a version
+removes is tolerated, ignored and dropped at the next write - a removed setting must
+not brick the file the version that wrote it no longer runs. A key that matches nothing
+is rejected, with `voiceime capabilities` named in the error, so a typo cannot silently
+do nothing. `config init --force` is the one command that rewrites the file itself: it
+keeps every value the file chose, adds the new keys at their defaults and drops the
+removed ones - a migration, not a clobber.
 
 Two settings are deliberate and normally left alone:
 
@@ -414,14 +425,19 @@ A healthy activation starts capture and connects to the recognition service - th
 end-to-end proof that both work:
 
 ```sh
-pgrep -af "ibus-engine --ibus"
-pgrep -af parec                                 # capture, a child of the engine
-pgrep -af "voiceime server run"                 # the service: one process, all dictations
+pgrep -af "ibus-engine --ibu[s]"
+pgrep -af par[e]c                               # capture, a child of the engine
+pgrep -af "voiceime server ru[n]"               # the service: one process, all dictations
 ibus engine xkb:us::eng                         # switching away stops capture, not the service
 ```
 
 The service is a user unit, not a child of the engine, so it is running whether or not
-anyone is dictating. That is the point of it: no dictation pays a model load.
+anyone is dictating. That is the point of it: no dictation pays a model load. The
+bracketed patterns (`--ibu[s]`, `par[e]c`, `ru[n]`) are not decoration: `pgrep -f`
+matches any command line that contains the pattern, so a raw pattern run from a shell
+whose command line carries it - a script, an agent's `bash -c` - reports the prober as
+the process. Step 10's probe carries the same guard, and [decisions.md, D31](decisions.md)
+records the trap.
 
 The engine's own session log goes to `~/.cache/voiceime/engine.log`, because the
 daemon spawns it with stdout and stderr on pipes it discards. `voiceime engine status`
@@ -439,6 +455,18 @@ For the D-Bus calls as well, run the engine by hand as described in `docs/AGENT.
 `hotkey install` also runs `systemctl --user daemon-reload` and
 `enable --now`, and is idempotent. The default trigger is `<F9>`.
 
+The key's source of truth is the configuration (`config set hotkey <combo>` then
+`config apply`): the unit names no key of its own, so re-running `hotkey install`
+never changes it, and the install converges the *mechanism* for the current session
+type (on Wayland it removes a GNOME keybinding an X11 install left behind; on X11 it
+adds one) - which is why a machine that switched session types must re-run it.
+`--keys` is the one exception: `hotkey install --keys <combo>` bakes the combo into
+the unit's `ExecStart`, where `hotkey run` prefers it over the configuration - a
+one-shot pin, not a setting, and the next plain `hotkey install` rewrites the unit
+and the trigger falls back to the configuration ([decisions.md, D26](decisions.md)
+records why the unit used to bake the *configured* key and what that did to a
+`config set`).
+
 **The commands do not change; the mechanism does, and the choice is automatic.**
 The listener registers the shortcut through IBus
 (`org.freedesktop.IBus.GlobalShortcutKeys`), which the compositor honours on
@@ -452,7 +480,7 @@ with the same commands; only the trigger differs:
 | who grabs the key | the compositor | `gsd-media-keys` |
 | who runs the toggle | the listener (`hotkey run`), in process | a GNOME keybinding that runs `voiceime hotkey toggle` |
 | a **held** key | collapsed by the listener's `held` flag | collapsed by `hotkey toggle`'s repeat guard |
-| fresh install of the key | *removes* any leftover GNOME keybinding | *adds* the GNOME keybinding |
+| any **install** of the key | *removes* any leftover GNOME keybinding | *adds* the GNOME keybinding |
 | `hotkey status` says | `trigger: IBus global shortcut` | `trigger: GNOME keybinding` |
 
 Both rows matter. On Wayland the keybinding is removed so two consumers never fight
@@ -525,6 +553,17 @@ it.
 
 ## Updating an installed copy
 
+This list serves two situations: rebuilding the same version, and upgrading from an
+older release. They differ less than they look: every step is idempotent, `"$BIN"` is
+always the *new* binary, so a component an older install never had - the recognition
+server unit is the current example - is installed by the same step a fresh machine
+runs. What the list cannot know is what this machine is missing; that is the closing
+`doctor`, whose failing checks each carry the `fix` command - the step this version
+needs on this machine, run until it exits 0. `config.toml` needs no migration of its
+own ([step 3](#3-configure)): a new version's settings take their defaults on load.
+The numbered path above stays the reference for fresh machines and for what each step
+does.
+
 `make build && make install` replaces the binary and nothing else happens: a
 process keeps the binary it was started from, so the code you just built is not
 running until the process is. Both halves of that are counter-intuitive, so both
@@ -535,9 +574,11 @@ make build && make install                 # replaces ~/.local/bin/voiceime, ~/.
 "$BIN" server install                      # rewrites the config and restarts the service, waiting for the new build
 "$BIN" engine install --apply              # component, activation env, ibus restart
 "$BIN" engine status --json                # assert: engine_registered == true
-"$BIN" hotkey install                      # only if the unit or the keybinding changed
-"$BIN" doctor --json                       # exit 0, and the process checks ok
+"$BIN" hotkey install                      # safe to re-run; converges the trigger for the current session type
+"$BIN" doctor --json                       # exit 0, and the process checks ok; on an upgrade its `fix` lines name
+                                            # the steps this version adds and this machine does not have yet
 ibus engine voiceime                       # only if dictation was on before
+# the step 10 acceptance block is the gate: doctor, engine, listener and server each assert 0
 ```
 
 (`$BIN` is the installed binary, as in step 2. Run `doctor` from that copy, not

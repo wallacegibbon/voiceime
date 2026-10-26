@@ -65,7 +65,9 @@ which of the restarts systemd does for you, is
 * **`fix` is a runnable command.** Findings from `doctor`, `config validate` and
   precondition failures carry one.
 * **Nothing is destructive without a flag.** `models install` writes into the
-  models directory; `config init` refuses to overwrite without `--force`.
+  models directory; `config init` refuses to overwrite without `--force`, and
+  `--force` is a migration, not a clobber: it keeps the file's values, adds the new
+  keys at their defaults and drops the removed ones.
 * **Writing is not applying.** `config set` writes the file and names `voiceime config
   apply` as the next step; a value that leaves the file unusable is still written - staging a
   model path before the download finishes is how a deployment is scripted - but the command
@@ -100,7 +102,13 @@ review text_script            simplified  (the reference user writes Simplified 
 
 The same list is in `config init --json` under `data.review`, with a `fix` for the entries that
 have one. Nothing is changed silently: a value is only written when the file did
-not exist or `--force` was given.
+not exist or `--force` was given. On an existing file without `--force` it prints one
+line (`config already exists at <path>; not written`), changes nothing and exits 0;
+`--json` says the same under `data.written` and `data.note`. New versions do not need
+a migration of the file: the loader takes the defaults for keys the file does not
+set, and a key a version removed is tolerated and dropped at the next write; run
+`config init --force` to re-render the file (its values kept, new keys added, removed
+keys dropped) and make that visible.
 
 Set keys with the generic setter — it converts types, writes atomically and
 reports the new config's validity:

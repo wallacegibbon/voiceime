@@ -35,6 +35,22 @@ updating, recovery and uninstall. The command reference is [AGENT.md](AGENT.md);
 reasons behind the steps are in [decisions.md](decisions.md); the measured numbers
 are in [measurements.md](measurements.md).
 
+**Choosing your entry point.** The numbered path below is the route for a fresh
+machine. If any piece of the deployment already exists, the machine is in the state
+the [Updating an installed copy](#updating-an-installed-copy) section converges
+from, and that list is the route to run: every step in it is idempotent, so a
+machine that is fresh, partial, or fully deployed ends up the same place. Probe
+with the plain tools, before the build:
+
+```sh
+ls ~/.config/voiceime/config.toml ~/.config/systemd/user/voiceime-*.service 2>/dev/null
+```
+
+(the config path shown is the default; `voiceime config path` names a custom one
+once the binary exists). Nothing listed: fresh machine - run the numbered path
+below. Anything listed: already deployed in part - run the update list, and close
+with the [step 10](#10-acceptance-in-one-command) acceptance block as the gate.
+
 ---
 
 ## 0. Prerequisites
@@ -347,9 +363,15 @@ Deliver-boundary check with no audio at all:
 "$BIN" stream --file some.wav --realtime --events   # the real pipeline: drafts, repairs, timing
 ```
 
-Use a short clip: `--realtime` makes wall time equal the file's length. The ten-minute `speech.wav`
-in the audio.cpp checkout is the long-form measurement sample, not a quick check - replaying it
-here looks like a hang for most of that time while working correctly.
+Use a short clip: `--realtime` makes wall time equal the file's length, so the
+check takes as long as the file. The audio.cpp checkout carries test recordings
+under `assets/resources/`; `sample_16k.wav` there (14 s, 16 kHz mono) is the right
+size - measured through this command: five partials, and a repair that committed
+the clean sentence in 14.2 s of wall time. The long-form `speech.wav` in the same
+directory (7 minutes) is the measurement sample, not a quick check - replaying it
+here looks like a hang for most of that time while working correctly. Any
+recording works; find a short one with `find <audio_cpp_dir> -name '*.wav' -size -1M`
+(`<audio_cpp_dir>` as configured).
 
 ## 6. Verify the microphone path
 
@@ -452,8 +474,13 @@ anyone is dictating. That is the point of it: no dictation pays a model load. Th
 bracketed patterns (`--ibu[s]`, `par[e]c`, `ru[n]`) are not decoration: `pgrep -f`
 matches any command line that contains the pattern, so a raw pattern run from a shell
 whose command line carries it - a script, an agent's `bash -c` - reports the prober as
-the process. Step 10's probe carries the same guard, and [decisions.md, D31](decisions.md)
-records the trap.
+the process. The guard holds only while the raw word appears nowhere else in the
+prober's own command line: a label or echo in the same compound command that carries
+`parec` re-arms the trap (measured: `echo "parec_left=$(pgrep -cf par[e]c)"` in a
+`bash -c` probe counted exactly one match - which could only have been the prober's
+own shell, its command line carrying the raw word in the `parec_left=` label - so the
+real capture had already exited). Step 10's probe carries the same guard, and
+[decisions.md, D31](decisions.md) records the trap.
 
 The engine's own session log goes to `~/.cache/voiceime/engine.log`, because the
 daemon spawns it with stdout and stderr on pipes it discards. `voiceime engine status`

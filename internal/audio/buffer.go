@@ -1,6 +1,9 @@
 package audio
 
-import "slices"
+import (
+	"slices"
+	"sync"
+)
 
 // RollingBuffer keeps the most recent audio of a bounded length so the repair
 // pass can re-read a finished segment.
@@ -11,6 +14,11 @@ import "slices"
 // range has already fallen off so the caller can skip the repair rather than
 // decode a truncated segment.
 type RollingBuffer struct {
+	// mu guards the buffer against being read while it is written. The capture
+	// loop appends and a decode group is dispatched from a timer goroutine, so the
+	// two do meet: the copy Slice returns is what makes the *bytes* safe to hand
+	// to a decoder, and this is what makes the buffer itself safe to ask.
+	mu          sync.Mutex
 	data        []byte
 	startSample int64
 	limitBytes  int
@@ -23,6 +31,8 @@ func NewRollingBuffer(seconds float64) *RollingBuffer {
 
 // Append adds a block that starts at startSample. Blocks must arrive in order.
 func (b *RollingBuffer) Append(data []byte, startSample int64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if len(b.data) == 0 {
 		b.startSample = startSample
 	}
@@ -59,6 +69,8 @@ func (b *RollingBuffer) Append(data []byte, startSample int64) {
 // whatever the room happened to contain) and had its text committed as the corrected
 // sentence. One copy per utterance is nothing; a wrong sentence is not.
 func (b *RollingBuffer) Slice(startSample, endSample int64) ([]byte, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if endSample <= startSample {
 		return nil, false
 	}
@@ -82,6 +94,8 @@ func (b *RollingBuffer) Slice(startSample, endSample int64) ([]byte, bool) {
 //
 // Like Slice, the bytes returned are a copy.
 func (b *RollingBuffer) SliceClamped(startSample, endSample int64) ([]byte, int64, int64, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	heldEnd := b.startSample + int64(SampleCount(b.data))
 	if startSample < b.startSample {
 		startSample = b.startSample

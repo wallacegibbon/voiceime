@@ -26,7 +26,7 @@ before trusting it. Numbers referenced here are in [measurements.md](measurement
 | D17 | a test is not a caller; installed artifacts are checked | current |
 | D18 | machine-specific values are discovered, reported or advised | current |
 | D19 | a held key is one press on the command path too | current |
-| D20 | every accepted utterance is decoded offline; streaming only drafts | current |
+| D20 | every accepted utterance is decoded offline; streaming only drafts | current; the unit of an utterance is D39 |
 | D21 | a resident server, on demand, for the repair pass | superseded by D22 |
 | D22 | one resident service serves both recognition roles | current |
 | D23 | delete what stopped paying for itself | current |
@@ -45,6 +45,7 @@ before trusting it. Numbers referenced here are in [measurements.md](measurement
 | D36 | streaming text is kept only for audio the endpointer called speech | current |
 | D37 | text form is cleaned after recognition | current |
 | D38 | one fact, one home: the documentation is a set of owned references | current |
+| D39 | a pause is not a sentence: the offline decode follows `refine_merge_ms` | current |
 
 *current* is in force; *superseded* is replaced by the entry named; *partially
 superseded* still has part of the decision in force, and the entry says which part.
@@ -1599,3 +1600,46 @@ file inside docs/ is justified; a documentation toolchain replacing raw Markdown
 the Makefile distribution - then "the docs are part of the installed product" moves
 with it; or the documentation being generated from the code, which would invert the
 runtime-wins rule into a build step.
+
+## D39 — A pause is not a sentence: the offline decode follows `refine_merge_ms`.
+
+**Decision.** The endpointer's segment boundary is treated as a *candidate* boundary.
+Segments that follow each other within `refine_merge_ms` (default 8000) are decoded as
+one request; only a longer silence ends the sentence. A session that ends - the hotkey,
+the end of a file - flushes immediately instead of waiting the window out. A group is
+capped at `max_utterance_seconds` of audio, which is also what the buffer holds.
+
+**Why.** Decoding each segment separately was reported as "it always cuts in the wrong
+place, so the result is much worse than handing the whole recording to the model", and
+the report is correct in a way no tuning can fix: an energy detector cannot tell a breath
+or a pause to think from the end of a sentence. Every such pause split one sentence into
+two decodes, and each half lost the other's context - which is exactly the damage the
+offline pass exists to remove (D20), caused by the pass itself. The fix cannot be a
+better detector, because the information is not in the energy signal; it has to be a
+window wide enough to contain the pauses a speaker actually takes. Eight seconds is the
+reference user's thinking pause.
+
+**The window measures silence, so speech that resumes cancels it.** The detector reports
+the resume (`SpeechStart`) before it has anything to say about how the next segment ends,
+and that is where the countdown has to stop - measured on a real recording, a one-second
+pause followed by a five-second sentence was still split, because the countdown had been
+running through the sentence itself and fired the moment it ended.
+
+**Consequence.** Text is delivered later when the user pauses without pressing the
+hotkey: up to `refine_merge_ms` after the last word, plus the decode. That is the trade,
+and it is invisible in the application beyond the composition staying visible a little
+longer. It also means the session must keep the whole group's audio, not one segment's -
+the buffer was already sized for the cap.
+
+**Rejected.** One refine per dictation (the whole session in one request). It removes the
+cut entirely, but the wait becomes `RTF x the whole utterance`: measured costs are 0.05
+RTF for SenseVoice and 0.28 for Qwen3-ASR ([measurements.md](measurements.md)), so 30 s
+of speech is 1.5 s or 8.4 s of the user watching an uncommitted composition, and the
+longer they speak the longer they wait. The window bounds that wait at one sentence's
+worth of speech while keeping cross-pause context, which is the part that was actually
+hurting quality.
+
+**What would change it.** A refine model fast enough that `RTF x max_utterance_seconds`
+is a couple of seconds (then the whole session in one request is the simpler design), or
+a model that reports its own sentence boundaries (then the window is a fallback rather
+than the decision).

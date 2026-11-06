@@ -246,8 +246,7 @@ func (s *Service) connect(address string) error {
 	}
 	s.conn = conn
 
-	// Export the objects *before* claiming the well-known name. Claiming the name
-	// is what makes this process visible to ibus-daemon, and the daemon calls
+	// Export the objects *before* claiming the well-known name. Claiming the name	// is what makes this process visible to ibus-daemon, and the daemon calls
 	// CreateEngine on the name the moment it appears; if the factory is not
 	// exported yet, that call fails with
 	//   UnknownInterface: Object does not implement the interface

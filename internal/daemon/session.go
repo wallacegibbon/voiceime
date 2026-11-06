@@ -10,6 +10,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -120,8 +121,6 @@ func (o Options) Run(ctx context.Context) (Result, error) {
 		MaxUtteranceSeconds: cfg.MaxUtteranceSeconds,
 		Adaptive:            true,
 	})
-	// The buffer holds enough audio for one repair: the longest utterance plus one
-	// streaming window, since a segment can end a window late.
 	buffer := audio.NewRollingBuffer(cfg.MaxUtteranceSeconds + cfg.ChunkSeconds)
 
 	normalizer := textnorm.New(cfg.Language, textnorm.Options{Script: cfg.TextScript})
@@ -138,6 +137,20 @@ func (o Options) Run(ctx context.Context) (Result, error) {
 		buffer:     buffer,
 		segmenter:  segmenter,
 		padSamples: int64(cfg.EndpointSilenceMS) * int64(audio.SampleRate) / 2000,
+		// The buffer holds enough audio for one decode group: the longest accepted
+		// utterance plus one streaming window, since a segment can end a window late.
+		// A group is capped at the same length (see onSegmentEnd), so merging cannot
+		// ask for audio that is no longer held.
+		maxGroupSamples: int64(cfg.MaxUtteranceSeconds * audio.SampleRate),
+	}
+	// With repair off there is nothing to merge: each segment is committed as it
+	// closes, and holding it back would only delay delivery.
+	if cfg.RefineOnSegmentEnd {
+		pipeline.mergeWindow = time.Duration(cfg.RefineMergeMS) * time.Millisecond
+		pipeline.mergeSamples = int64(pipeline.mergeWindow.Seconds() * audio.SampleRate)
+		// Where the detector last heard speech is what the window is measured
+		// against: it is a property of the audio, not of the events.
+		pipeline.heardSpeech = segmenter.Speech
 	}
 	// The repair route is brought up before the streaming model is loaded, not after.
 	// A route that has to load its own model starts doing so in the background, and
@@ -245,6 +258,7 @@ func (o Options) Run(ctx context.Context) (Result, error) {
 		pipeline.audioFed.Store(int64(time.Duration(engine.FedSamples()) * time.Second / audio.SampleRate))
 		buffer.Append(chunk.Data, chunk.StartSample)
 
+		pipeline.lastSample.Store(chunk.StartSample + int64(audio.SampleCount(chunk.Data)))
 		for _, event := range segmenter.Push(chunk.Data, chunk.StartSample) {
 			if event.Kind != audio.SpeechEnd {
 				continue
@@ -262,6 +276,11 @@ func (o Options) Run(ctx context.Context) (Result, error) {
 	for _, event := range segmenter.Flush() {
 		pipeline.onSegmentEnd(event)
 	}
+	// Whatever the coalescer is still holding is the end of a sentence by
+	// definition - the session is over, so there is nothing left to merge with -
+	// and waiting out mergeWindow here would delay the stop for no reason. This is
+	// what makes a dictation end immediately however the merge window is set.
+	pipeline.flushPending()
 
 	result, engineErr := engine.Close()
 	<-engineDone
@@ -373,6 +392,36 @@ type session struct {
 	// repairClose makes closing the queue idempotent: the normal shutdown path and
 	// an early return both end the session, and closing twice would panic.
 	repairClose sync.Once
+	// queueMu makes a close safe against a send. The coalescer dispatches from a
+	// timer goroutine, so the two can meet: a plain send to a channel that was
+	// just closed is a panic, not a dropped utterance.
+	queueMu     sync.Mutex
+	queueClosed bool
+
+	// Coalescing: what the endpointer reports is a pause, not a sentence, so
+	// segments that follow each other within mergeWindow are decoded as one
+	// request. mergeWindow <= 0 decodes every segment on its own.
+	mergeWindow time.Duration
+	// mergeSamples is the same window on the audio timeline, which is what decides
+	// whether the silence after the last speech is long enough. Wall-clock events
+	// cannot: a click opens a speech region that can close without a boundary, so a
+	// countdown that trusted the event stream stopped for good and the text sat in
+	// preedit until the key was pressed.
+	mergeSamples int64
+	// lastSample is how much audio has been fed, and heardSpeech reports the bounds
+	// of the audio the detector called speech. Together they answer "how long has it
+	// been quiet", which is the only question the window asks.
+	lastSample      atomic.Int64
+	heardSpeech     func() (int64, int64)
+	maxGroupSamples int64
+	mergeMu         sync.Mutex
+	pending         bool
+	pendingStart    int64
+	pendingEnd      int64
+	mergeTimer      *time.Timer
+	// finished is set once the session stops accepting work, so a timer that fires
+	// late cannot commit text into a session that has already delivered its last.
+	finished atomic.Bool
 
 	// buffer is the recent audio an offline decode re-reads.
 	buffer *audio.RollingBuffer
@@ -452,7 +501,13 @@ func (s *session) startRepairWorker(ctx context.Context, options Options) {
 			// data is not idempotent: 乾圖 -> 乾图 -> 干图. The event still
 			// reports the normalized decode, because it is the measurement
 			// surface and should show what the reader will produce.
-			s.transcript.Place(job.startSample, job.endSample, text)
+			if strings.TrimSpace(text) == "" {
+				// The model read the audio and heard no words: the draft the streaming
+				// layer produced for it was the recogniser's answer to a room.
+				s.transcript.Drop(job.startSample, job.endSample)
+			} else {
+				s.transcript.Place(job.startSample, job.endSample, text)
+			}
 			if s.notify.Repair != nil {
 				s.notify.Repair(s.normalizer.Normalize(text), took, float64(job.endSample-job.startSample)/audio.SampleRate)
 			}
@@ -467,8 +522,33 @@ func (s *session) startRepairWorker(ctx context.Context, options Options) {
 }
 
 func (s *session) closeRepairs() {
+	s.queueMu.Lock()
+	defer s.queueMu.Unlock()
 	if s.repairQueue != nil {
-		s.repairClose.Do(func() { close(s.repairQueue) })
+		s.repairClose.Do(func() {
+			s.queueClosed = true
+			close(s.repairQueue)
+		})
+	}
+}
+
+// enqueue hands one decode to the worker, reporting false when there is no worker
+// or the queue is full or already closed.
+//
+// It is a method rather than a plain channel send because the coalescer dispatches
+// from a timer goroutine: a send that meets the session's own close is a panic, and
+// the mutex is what turns that into a dropped decode.
+func (s *session) enqueue(job repairJob) bool {
+	s.queueMu.Lock()
+	defer s.queueMu.Unlock()
+	if s.repairQueue == nil || s.queueClosed {
+		return false
+	}
+	select {
+	case s.repairQueue <- job:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -485,6 +565,9 @@ const repairDrainBudget = 5 * time.Second
 // after budget. The error, when there is one, is what the user is owed: it says a
 // sentence was delivered from the draft because the decode did not land in time.
 func (s *session) finishRepairs(budget time.Duration) error {
+	// Nothing may be queued from here on: a merge timer that fires after this point
+	// would commit text into a session that has already delivered its last.
+	s.finished.Store(true)
 	s.closeRepairs()
 	if s.repairQueue == nil {
 		return nil
@@ -542,15 +625,174 @@ func (s *session) acceptPartial(text string, start, end int64, report func(strin
 	return true
 }
 
-// onSegmentEnd closes an utterance: queue its offline decode, or commit straight
-// away when repair is off.
+// onSegmentEnd notes one pause the detector found.
+//
+// The endpointer's boundary is a *candidate*: it hears silence, and silence is not
+// the same as the end of a sentence - a breath, a pause to think, or the gap before a
+// subordinate clause all look identical to an energy detector. What separates them is
+// how long the speaker stays away, which is what mergeWindow measures: segments that
+// follow each other within it are decoded as one request, so the offline model reads
+// the whole sentence instead of two halves that each lost the other's context. That
+// is the fix for the reported "it always cuts in the wrong place": the cut still
+// happens, but it no longer splits what the model reads.
+//
+// A group is capped at maxGroupSamples, which is also what the buffer holds. Without
+// the cap, a long dictation would produce one request large enough to fall out of the
+// audio retained for it, and the decode would have to be skipped entirely.
 func (s *session) onSegmentEnd(event audio.SegmentEvent) {
 	s.segments.Add(1)
-	if s.notify.Segment != nil {
-		s.notify.Segment(float64(event.StartSample)/audio.SampleRate,
-			float64(event.EndSample)/audio.SampleRate, event.DurationSeconds())
+
+	start, end := event.StartSample, event.EndSample
+	if s.mergeWindow <= 0 {
+		// No coalescing: every segment is its own decode group.
+		s.dispatch(start, end)
+		return
 	}
-	s.resolveSegment(event)
+
+	var (
+		dispatch   bool
+		readyStart int64
+		readyEnd   int64
+	)
+
+	s.mergeMu.Lock()
+	switch {
+	case !s.pending:
+		s.pending, s.pendingStart, s.pendingEnd = true, start, end
+	case s.maxGroupSamples > 0 && unionLength(s.pendingStart, s.pendingEnd, start, end) > s.maxGroupSamples:
+		// This pause would grow the group past what one decode may cover, so the
+		// group ends here rather than growing.
+		dispatch, readyStart, readyEnd = true, s.pendingStart, s.pendingEnd
+		s.pendingStart, s.pendingEnd = start, end
+	default:
+		s.pendingStart = min(s.pendingStart, start)
+		s.pendingEnd = max(s.pendingEnd, end)
+	}
+	if dispatch {
+		// The group that just ended is ready; the new one starts its own countdown.
+		s.resetMergeTimerLocked()
+	} else if s.mergeTimer == nil {
+		s.mergeTimer = time.AfterFunc(s.mergeWindow, s.onMergeTimeout)
+	} else {
+		s.mergeTimer.Reset(s.mergeWindow)
+	}
+	s.mergeMu.Unlock()
+
+	if dispatch {
+		s.dispatch(readyStart, readyEnd)
+	}
+}
+
+// onMergeTimeout is the pause that did end the sentence: no speech has been heard for
+// the whole window, so the group is decoded now.
+//
+// The check is against the audio, not against the events that produced it. A countdown
+// that relied on the last thing the endpointer said could stop for good - a click opens a
+// speech region, and a region shorter than endpoint_min_speech_ms closes without an end
+// event - which left the text in preedit until the key was pressed. Silence is measurable,
+// so it is what gets measured: if speech has been heard more recently than one window ago,
+// the group is still open and the timer comes back for the rest of the wait.
+func (s *session) onMergeTimeout() {
+	s.mergeMu.Lock()
+	if !s.pending {
+		s.mergeMu.Unlock()
+		return
+	}
+	if wait := s.remainingSilenceLocked(); wait > 0 {
+		if s.mergeTimer != nil {
+			s.mergeTimer.Reset(wait)
+		}
+		s.mergeMu.Unlock()
+		return
+	}
+	ready, start, end := s.takePendingLocked()
+	s.mergeMu.Unlock()
+	if ready {
+		s.dispatch(start, end)
+	}
+}
+
+// remainingSilenceLocked is how much longer the group has to stay open: the window less
+// the silence measured since the last sample the detector heard speech in.
+func (s *session) remainingSilenceLocked() time.Duration {
+	if s.mergeSamples <= 0 || s.heardSpeech == nil {
+		return 0
+	}
+	_, heardTo := s.heardSpeech()
+	fed := s.lastSample.Load()
+	if heardTo <= 0 || fed <= 0 {
+		return 0
+	}
+	quiet := fed - heardTo
+	if quiet >= s.mergeSamples {
+		return 0
+	}
+	return time.Duration(s.mergeSamples-quiet) * time.Second / audio.SampleRate
+}
+
+// flushPending dispatches whatever the coalescer is holding, which is what a session
+// stop and a merge cap both need: the speaker has finished, so waiting out the window
+// would delay the result for no reason.
+func (s *session) flushPending() {
+	s.mergeMu.Lock()
+	ready, start, end := s.takePendingLocked()
+	s.mergeMu.Unlock()
+	if ready {
+		s.dispatch(start, end)
+	}
+}
+
+func (s *session) resetMergeTimerLocked() {
+	if s.mergeTimer == nil {
+		s.mergeTimer = time.AfterFunc(s.mergeWindow, s.onMergeTimeout)
+		return
+	}
+	s.mergeTimer.Reset(s.mergeWindow)
+}
+
+// takePendingLocked empties the coalescer and stops its timer. It reports false when
+// there is nothing to decode, so a stopped timer and a group already dispatched cannot
+// be dispatched twice.
+func (s *session) takePendingLocked() (bool, int64, int64) {
+	if !s.pending {
+		return false, 0, 0
+	}
+	start, end := s.pendingStart, s.pendingEnd
+	s.pending = false
+	if s.mergeTimer != nil {
+		s.mergeTimer.Stop()
+	}
+	return true, start, end
+}
+
+// dispatch hands one group to the decode path and reports it as the utterance that
+// closed. It is the only place an Observer.Segment notification comes from now: a
+// segment event means "this audio was decoded as one thing", not "the detector heard
+// a pause", which is what a reader of the log needs.
+func (s *session) dispatch(start, end int64) {
+	if s.finished.Load() {
+		return
+	}
+	if s.notify.Segment != nil {
+		s.notify.Segment(float64(start)/audio.SampleRate, float64(end)/audio.SampleRate,
+			float64(end-start)/audio.SampleRate)
+	}
+	s.resolveSegment(audio.SegmentEvent{
+		Kind:        audio.SpeechEnd,
+		StartSample: start,
+		EndSample:   end,
+	})
+}
+
+func unionLength(startA, endA, startB, endB int64) int64 {
+	start, end := startA, endA
+	if startB < start {
+		start = startB
+	}
+	if endB > end {
+		end = endB
+	}
+	return end - start
 }
 
 // resolveSegment queues the offline decode of a finished utterance, or commits it
@@ -622,9 +864,7 @@ func (s *session) resolveSegment(event audio.SegmentEvent) {
 		s.commitProvisional()
 		return
 	}
-	select {
-	case s.repairQueue <- repairJob{pcm: pcm, startSample: startSample, endSample: endSample}:
-	default:
+	if !s.enqueue(repairJob{pcm: pcm, startSample: startSample, endSample: endSample}) {
 		if s.notify.Skipped != nil {
 			s.notify.Skipped("repair queue full; committing stream text")
 		}

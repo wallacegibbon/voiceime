@@ -620,6 +620,9 @@ func TestSessionDropsStreamingTextFromSilenceBetweenSentences(t *testing.T) {
 	writeWAV(t, wav, payload)
 
 	options, sink := sessionOptionsForWAV(t, server, true, wav)
+	// Merging off: the point here is what happens at one boundary, and an 8s merge
+	// window would fold both sentences into one decode and one commit.
+	options.Config.RefineMergeMS = 0
 	result := runSession(t, options)
 
 	commits := sink.commits()

@@ -138,14 +138,15 @@ Settings that matter, and the reasoning a caller needs to pick values:
 | `text_script` | `simplified` | Chinese output script, `simplified` or `preserve`. The repair model (Qwen3-ASR) has no ITN and sometimes answers in Traditional characters; `simplified` converts them with embedded OpenCC `t2s` data. `preserve` keeps the model's script. |
 | `chunk_seconds` | `3` | The streaming window: how much audio a draft is decoded from. Below 1.5 measurably corrupts CJK output; validate warns. It does not gate when text is committed - a finished utterance is decoded offline and delivered when it closes - so it can be raised for accuracy without making delivery wait. |
 | `refine_on_segment_end` | `true` | The pass that repairs window-boundary damage. |
+| `refine_merge_ms` | `3000` | What counts as the end of a sentence for the offline decode. The endpointer only reports a *pause*; pauses closer together than this are decoded as one request, so the model reads the whole sentence instead of halves that each lost the other's context. `0` decodes every segment on its own, which is what used to happen and is why a sentence with a pause in it came back mangled. A dictation that ends flushes at once, so this never delays the end of a session. |
 | `capture_source` | `""` | PipeWire source name; empty uses the default input. |
 | `silence_rms_threshold` | `600` | **Floor**, not a fixed threshold: the detector adapts up to twice the noise floor it measures in the stream, and never below this value. 600 clears the reference room's idle noise (20ms p90 = 436 RMS) and stays under normal speech; too high a value makes quiet speech silently ignored, so measure before raising it - see [measurements.md](measurements.md#endpointing-in-a-real-room). |
 | `endpoint_min_speech_ms` | `300` | Speech shorter than this is not an utterance. Raise it in a room with impulsive noise (keystrokes, chair). A phrase shorter than it is treated as noise and is **not committed at all** when dictation stops — if it is the only thing in the session, nothing is delivered and the session reports how much it withheld. Lower it only if you dictate short words, and expect more noise to be taken for speech. |
 | `endpoint_silence_ms` | `800` | Silence after speech before an utterance closes. Also sets the repair pad to half of it: without the pad a quiet tail is lost. |
-| `max_utterance_seconds` | `60` | Forces a segment boundary after this long, and sizes the rolling buffer a repair reads its audio from. |
+| `max_utterance_seconds` | `60` | Caps one offline decode (and the buffer that holds its audio) after this long, and forces a segment boundary at the same point. |
 | `download_mirror` | `https://hf-mirror.com` | Endpoint downloads go through, written to `HF_ENDPOINT`. Any Hugging Face protocol host works: `https://huggingface.co`, a company cache, a LAN address. |
 | `request_options` | `{}` | Extra audio.cpp request options for the repair entry, written into the server config. Set one with `voiceime config set request_options audio_chunk_mode=none`; an empty value removes it. |
-| `hotkey` | `<F9>` | The key the shortcut listener registers; a tap toggles dictation. Use a function key, never a modifier combination ([decisions.md, D13](decisions.md)). |
+| `hotkey` | `<F9>` | The key the shortcut listener registers; a tap enters or leaves dictation mode (it switches to this engine and back). Use a function key, never a modifier combination ([decisions.md, D13](decisions.md)). |
 | `ibus_engine_name` | `voiceime` | The IBus engine name registered for text delivery. Changing it rewrites the installed component and restarts IBus through `config apply` ([decisions.md, D33](decisions.md)). |
 
 Every setting is read by some resident process when it starts - the model paths,
@@ -249,10 +250,13 @@ re-decode of a segment, with its cost), `skipped` (something was not done, with
 the reason - `no speech detected; nothing committed` is the common one), `commit`
 (text delivered), `summary`.
 
-Text is committed only when the endpointer closes an utterance. An open utterance
-is preedit, which applications render underlined, and pressing Escape discards it.
-So "the text stays underlined" always means "the detector has not found a boundary
-yet": check `silence_rms_threshold` and `endpoint_silence_ms` before anything else.
+Text is committed when a sentence ends: the endpointer hears a pause, and
+`refine_merge_ms` decides that the pause was the end of the sentence rather than a
+breath. Until then the text is preedit, which applications render underlined.
+So "the text stays underlined" means one of two things: the detector has not found
+even a pause yet (check `silence_rms_threshold` and `endpoint_silence_ms`), or it has
+and the merge window is still open - which is normal and is what keeps a sentence
+with a pause in it from being decoded as two halves.
 
 A session that ends without the endpointer accepting a single utterance commits
 nothing and says so (`skipped: no speech detected; withheld N characters ...`):
@@ -368,7 +372,7 @@ tail -f ~/.cache/voiceime/engine.log
 | Text is corrupted and windows are short | `chunk_seconds` below 1.5 | `voiceime config set chunk_seconds 3` |
 | Model aborts with `only supports sample_rate=16000` | capture is not producing 16 kHz | `voiceime doctor`; capture is fixed at 16 kHz, so this means the PipeWire source is resampling badly |
 | `models list` shows unrelated files | the models directory is shared | expected; discovery filters to ASR models and reports the count it ignored |
-| Text stays underlined and never commits | the detector has not closed an utterance, so it is still preedit (text decoded from a pause is dropped now, so what remains is a sentence the detector never closed); Escape discards preedit | measure the room and set `silence_rms_threshold` / `endpoint_min_speech_ms` (see [measurements.md](measurements.md#endpointing-in-a-real-room)); `stream --events` shows whether a `segment` event happens |
+| Text stays underlined and never commits | either the detector has not seen a pause yet, or `refine_merge_ms` is still open, or the decode is running | measure the room and set `silence_rms_threshold` / `endpoint_min_speech_ms` (see [measurements.md](measurements.md#endpointing-in-a-real-room)); `stream --events` shows whether a `segment` event happens; lower `refine_merge_ms` if you want text sooner and can accept sentences split at pauses |
 | Dictation produces nothing, and `stream --events` reports `no speech detected` | the threshold is above the speaker's voice | lower `silence_rms_threshold` and retry |
 | Dictation produces nothing, and the session reports `withheld N characters` | the recogniser heard something but the endpointer never called it speech, so committing it would type the recogniser's guess | measure the room; lower `silence_rms_threshold` (a quiet speaker) or `endpoint_min_speech_ms` (short utterances). `N` is the size of what the room measurement got wrong |
 | The service restarts forever with `status=203/EXEC` | the unit's `ExecStart` names a binary that no longer exists (the checkout was moved or renamed) | `voiceime hotkey install` then `voiceime doctor`; see [DEPLOY.md § Recovery](DEPLOY.md#recovery) |

@@ -175,6 +175,30 @@ func (t *Transcript) Place(startSample, endSample int64, text string) {
 	t.chunks = kept
 }
 
+// Drop removes every provisional chunk that overlaps the range, and returns how many it
+// removed.
+//
+// It is what an empty decode means: the offline model read that audio and found no words
+// in it, so the draft text the streaming layer produced for the same audio was the
+// recogniser's answer to a room, not to speech. Replacing it with nothing is the honest
+// correction - and unlike Place(""), it is distinguishable from "the decode failed",
+// which must keep the draft (a failed decode is not evidence that nothing was said).
+func (t *Transcript) Drop(startSample, endSample int64) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	dropped := 0
+	kept := make([]Chunk, 0, len(t.chunks))
+	for index, chunk := range t.chunks {
+		if index >= t.committed && overlaps(chunk, startSample, endSample) {
+			dropped++
+			continue
+		}
+		kept = append(kept, chunk)
+	}
+	t.chunks = kept
+	return dropped
+}
+
 // RepairSpan returns the audio that a repair for [startSample, endSample) has to
 // re-decode: the union of that range and every provisional chunk the repair will
 // replace.

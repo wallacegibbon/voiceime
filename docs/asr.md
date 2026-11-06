@@ -8,12 +8,13 @@ describes the *what*; the *why* of each choice is in [decisions.md](decisions.md
 
 The short version: **voiceime does not run a model.** A resident service does, and
 voiceime is its client. A dictation is one long-lived HTTP connection; each finished
-sentence is one HTTP POST.
+sentence is one HTTP POST. What ends a sentence is `refine_merge_ms`, not the
+endpointer: the detector only reports pauses.
 
 ```
 microphone ──► capture (parec, 16 kHz mono s16le, 20 ms blocks)
                    │
-                   ├──► endpointer (energy VAD) ── utterance closed ──┐
+                   ├──► endpointer (energy VAD) ── pause ── merge window ─┐
                    │                                                 │
                    ▼                                                 ▼
    POST /v1/audio/transcriptions/live             POST /v1/audio/transcriptions
@@ -141,9 +142,12 @@ data: [DONE]
 
 ## Pass 2 - the repair decode (final text)
 
-When the endpointer closes an utterance (default: 800 ms of silence after speech, and
-at least 300 ms of speech in total), `internal/daemon/session.go` queues an offline
-decode of that audio. One worker, in order, off the audio path.
+The endpointer closes a segment after a short silence (default: 800 ms after speech,
+and at least 300 ms of speech in total). That closes a *pause*, not a sentence, so
+`internal/daemon/session.go` waits out `refine_merge_ms` (default 3 s) before decoding:
+a speaker who starts again within the window was thinking, not finished, and the two
+halves have to reach the model as one request. A session that ends flushes at once.
+One worker, in order, off the audio path.
 
 ### Request
 
@@ -186,19 +190,34 @@ sentence is worse than no repair.
 
 ### Which audio is decoded
 
-Three cases, and the distinction is where the reported bugs came from:
+**First, what a group is.** The endpointer reports a *pause*, not a sentence: it hears
+silence for `endpoint_silence_ms` and closes a segment. A breath, a pause to think and
+the gap before a subordinate clause all look the same to an energy detector, so a
+segment boundary is a candidate, not a decision. `refine_merge_ms` (default 3000) is
+the actual decision: segments that follow each other within that window are decoded as
+**one request**, and only a longer silence ends the sentence. The countdown is cancelled
+the moment speech resumes, so the window measures silence rather than the length of the
+sentence that follows it. That is the fix for "it
+always cuts in the wrong place" - the cut still happens, but it no longer splits what
+the model reads. A dictation that ends (the hotkey, the end of a file) flushes
+immediately, so the window never delays the end of a session.
 
-1. **Streaming text covers the utterance** → decode the **union** of the utterance's
+Within one group:
+
+1. **Streaming text covers the utterance** → decode the **union** of the group's
    range and every provisional chunk the repair will replace (`RepairSpan`). A chunk is
    decoded as one unit and extends past the range; decoding only the range would delete
    its text for the overhang without re-reading it.
-2. **Nothing covers it** → decode the utterance itself, widened by
-   `endpoint_silence_ms / 2` on each side (default ±400 ms). A short utterance always
-   lands here: it closes 800 ms after the speech ends, while a draft arrives only every
-   `chunk_seconds`. The detector stops on the last loud frame, so without the pad a
-   quiet tail is lost (measured; [decisions.md, D20](decisions.md)).
+2. **Nothing covers it** → decode the group itself, widened by
+   `endpoint_silence_ms / 2` on each side (default ±400 ms). The detector stops on the
+   last loud frame, so without the pad a quiet tail is lost (measured;
+   [decisions.md, D20](decisions.md)).
 3. **Too short (< 0.4 s) or fallen out of the buffer** → do not decode; commit the
    draft and report why (`skipped`).
+
+A group is capped at `max_utterance_seconds` of audio, which is also what the rolling
+buffer holds - a group that outgrew the buffer could not be decoded at all. The cap
+ends the group rather than growing it, so it also bounds how long one refine may take.
 
 ### How the text becomes final
 
@@ -296,7 +315,7 @@ Three things in that trace are the design in miniature:
 | `ready` | the session is open (`load` is connect time, nanosecond integer) |
 | `partial` | new draft text, with the audio position at which it arrived |
 | `preedit` | the whole provisional text as a composition snapshot |
-| `segment` | the endpointer closed an utterance |
+| `segment` | a group was closed for decoding: the endpointer's pause plus the merge window (`refine_merge_ms`) decided it was the end of a sentence |
 | `repair` | an offline decode finished, its text and its cost |
 | `commit` | text delivered to the application |
 | `skipped` | something was not done, and why |

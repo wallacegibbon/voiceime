@@ -80,6 +80,13 @@ type Config struct {
 	// re-decode of a finished segment is what actually corrects them.
 	RefineOnSegmentEnd  bool    `toml:"refine_on_segment_end" desc:"Re-transcribe a completed segment with the offline path."`
 	MaxUtteranceSeconds float64 `toml:"max_utterance_seconds" desc:"Force a segment boundary after this many seconds."`
+	// RefineMergeMS decides what counts as the end of a sentence for the offline
+	// decode. The endpointer closes a segment after a short silence, which is a
+	// *candidate* boundary - a breath, or a pause to think, is not a sentence - so
+	// segments that follow each other within this window are decoded as one
+	// request. Raising it sends more context to the model and delays nothing the
+	// user is watching: the draft stays visible as preedit until the decode lands.
+	RefineMergeMS int `toml:"refine_merge_ms" desc:"A pause shorter than this does not end the sentence; the audio on either side is decoded as one request. 0 decodes every segment."`
 
 	// Offline decode via a resident audio.cpp server. Empty asr_server_url keeps
 	// the process-per-utterance route, which needs no daemon and is fast enough
@@ -132,6 +139,14 @@ func Default() *Config {
 		TextScript:          "simplified",
 		RefineOnSegmentEnd:  true,
 		MaxUtteranceSeconds: 60,
+		// 3s is a speaking pause, not a sentence end: the reference user stops to
+		// think mid-sentence, and every such stop used to split one sentence into two
+		// decodes that each lost the other half's context. The cost is that an
+		// unattended pause holds the text back this long, so the value trades context
+		// against how long the last words sit as a composition; a dictation that ends
+		// (the hotkey, the end of a file) flushes immediately, so it never delays the
+		// end of a session.
+		RefineMergeMS: 3000,
 		// 30s is generous for one utterance: the point of a deadline here is to
 		// abandon a repair that has stopped being worth waiting for, not to bound
 		// a decode that is running normally.
@@ -447,6 +462,9 @@ func (c *Config) Validate() []Issue {
 	}
 	if c.MaxUtteranceSeconds < c.ChunkSeconds {
 		add("warning", "max_utterance_seconds", "shorter than one streaming window", "")
+	}
+	if c.RefineMergeMS < 0 {
+		add("error", "refine_merge_ms", "must not be negative", "voiceime config set refine_merge_ms 8000")
 	}
 	if c.EndpointSilenceMS <= 0 {
 		add("error", "endpoint_silence_ms", "must be positive", "voiceime config set endpoint_silence_ms 800")

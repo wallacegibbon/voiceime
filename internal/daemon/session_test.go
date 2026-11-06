@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -319,6 +320,195 @@ func TestSegmentEndStillSkipsASpanThatFellOutOfTheBuffer(t *testing.T) {
 	}
 	if got := sink.commits(); len(got) != 1 {
 		t.Fatalf("commits = %v, want the stream text: the repair cannot run", got)
+	}
+}
+
+// newMergeTestSession wires a session whose only job is to exercise the coalescer:
+// a queue to catch what it dispatches, and a buffer holding the audio a decode would
+// read.
+func newMergeTestSession(t *testing.T, window time.Duration, maxGroup int64) *session {
+	t.Helper()
+	session := newTestSession(&recordingSink{})
+	session.repairQueue = make(chan repairJob, 4)
+	session.buffer = audio.NewRollingBuffer(63)
+	session.buffer.Append(make([]byte, 96000*audio.BytesPerSample), 0)
+	session.mergeWindow = window
+	session.maxGroupSamples = maxGroup
+	return session
+}
+
+// nextRepairJob waits for one queued decode.
+func nextRepairJob(t *testing.T, session *session, within time.Duration) repairJob {
+	t.Helper()
+	select {
+	case job := <-session.repairQueue:
+		return job
+	case <-time.After(within):
+		t.Fatalf("no decode was queued within %v", within)
+		return repairJob{}
+	}
+}
+
+// A pause the endpointer heard is not a sentence end. Two segments that follow each
+// other within the merge window must reach the offline model as one request, which is
+// the whole point: decoded apart, each half loses the other's context and the text
+// comes back as it was cut. This is the reported "it always cuts in the wrong place".
+func TestPausesWithinTheMergeWindowDecodeAsOneGroup(t *testing.T) {
+	session := newMergeTestSession(t, 60*time.Millisecond, 0)
+
+	session.onSegmentEnd(audio.SegmentEvent{Kind: audio.SpeechEnd, StartSample: 16000, EndSample: 32000})
+	session.onSegmentEnd(audio.SegmentEvent{Kind: audio.SpeechEnd, StartSample: 40000, EndSample: 56000})
+
+	// Nothing may be decoded while the speaker may still pick the sentence up.
+	select {
+	case job := <-session.repairQueue:
+		t.Fatalf("decoded [%d,%d) during the window: a pause was taken for a sentence end", job.startSample, job.endSample)
+	case <-time.After(30 * time.Millisecond):
+	}
+
+	job := nextRepairJob(t, session, 2*time.Second)
+	if job.startSample != 16000 || job.endSample != 56000 {
+		t.Fatalf("decode span = [%d,%d), want [16000,56000): the group must span both pauses",
+			job.startSample, job.endSample)
+	}
+}
+
+// The window is measured in silence, not in the events that report it.
+//
+// Measured on a real recording: a one-second pause was followed by a five-second
+// sentence; an event-driven countdown kept running through that sentence and split it off
+// the moment it ended. Silence is a property of the audio, so the audio is what gets
+// measured: while the detector keeps hearing speech, the group stays open however long
+// that goes on.
+func TestTheMergeWindowIsMeasuredInSilence(t *testing.T) {
+	session := newMergeTestSession(t, 60*time.Millisecond, 0)
+	var heardTo atomic.Int64
+	session.heardSpeech = func() (int64, int64) { return 0, heardTo.Load() }
+	session.mergeSamples = int64(session.mergeWindow.Seconds() * audio.SampleRate)
+
+	session.lastSample.Store(32000)
+	heardTo.Store(32000) // speech up to the last sample fed
+	session.onSegmentEnd(audio.SegmentEvent{Kind: audio.SpeechEnd, StartSample: 0, EndSample: 16000})
+
+	// Past the wall-clock window many times over: the speaker is still going.
+	time.Sleep(150 * time.Millisecond)
+	select {
+	case job := <-session.repairQueue:
+		t.Fatalf("decoded [%d,%d) while the speaker was still being heard", job.startSample, job.endSample)
+	default:
+	}
+
+	// The speaker stops; the audio keeps arriving, so the silence grows with it.
+	session.lastSample.Store(32000 + session.mergeSamples)
+	job := nextRepairJob(t, session, 2*time.Second)
+	if job.startSample != 0 || job.endSample != 16000 {
+		t.Fatalf("decode span = [%d,%d), want [0,16000)", job.startSample, job.endSample)
+	}
+}
+
+// A burst too short to be an utterance must not postpone the group for good.
+//
+// This is the reported "it often does not finish by itself": a click or a breath opens a
+// speech region, the region closes without an end event (it is shorter than
+// endpoint_min_speech_ms), and a countdown that waited for the next event never fired
+// again. The text stayed in preedit until the key was pressed. Measured in silence, the
+// burst only postpones the group by the window it started.
+func TestAShortBurstDoesNotPostponeTheGroupForGood(t *testing.T) {
+	session := newMergeTestSession(t, 60*time.Millisecond, 0)
+	var heardTo atomic.Int64
+	session.heardSpeech = func() (int64, int64) { return 0, heardTo.Load() }
+	session.mergeSamples = int64(session.mergeWindow.Seconds() * audio.SampleRate)
+
+	session.lastSample.Store(16000)
+	heardTo.Store(15000)
+	session.onSegmentEnd(audio.SegmentEvent{Kind: audio.SpeechEnd, StartSample: 0, EndSample: 16000})
+
+	// A click 20ms before the end of the audio, and then nothing.
+	heardTo.Store(16000)
+	time.Sleep(30 * time.Millisecond)
+
+	// The audio keeps arriving with no further speech in it.
+	session.lastSample.Store(16000 + session.mergeSamples)
+	job := nextRepairJob(t, session, 2*time.Second)
+	if job.startSample != 0 || job.endSample != 16000 {
+		t.Fatalf("decode span = [%d,%d), want [0,16000)", job.startSample, job.endSample)
+	}
+}
+
+// A pause longer than the window is a sentence end// A pause longer than the window is a sentence end, and each group is decoded on its
+// own - otherwise nothing would ever be delivered before the next thing is said.
+func TestPausesBeyondTheMergeWindowDecodeSeparately(t *testing.T) {
+	session := newMergeTestSession(t, 30*time.Millisecond, 0)
+
+	session.onSegmentEnd(audio.SegmentEvent{Kind: audio.SpeechEnd, StartSample: 1000, EndSample: 9000})
+	first := nextRepairJob(t, session, 2*time.Second)
+	if first.startSample != 1000 || first.endSample != 9000 {
+		t.Fatalf("first decode = [%d,%d), want [1000,9000)", first.startSample, first.endSample)
+	}
+
+	session.onSegmentEnd(audio.SegmentEvent{Kind: audio.SpeechEnd, StartSample: 50000, EndSample: 58000})
+	second := nextRepairJob(t, session, 2*time.Second)
+	if second.startSample != 50000 || second.endSample != 58000 {
+		t.Fatalf("second decode = [%d,%d), want [50000,58000)", second.startSample, second.endSample)
+	}
+}
+
+// A group cannot grow past what the buffer holds: one decode has to be able to read
+// all of it, or the text would have to be delivered from the draft. The cap ends the
+// group instead, which is also what bounds how long one refine may take.
+func TestMergeGroupIsCappedAtTheLongestUtterance(t *testing.T) {
+	session := newMergeTestSession(t, time.Hour, 20000)
+
+	session.onSegmentEnd(audio.SegmentEvent{Kind: audio.SpeechEnd, StartSample: 0, EndSample: 16000})
+	session.onSegmentEnd(audio.SegmentEvent{Kind: audio.SpeechEnd, StartSample: 16000, EndSample: 32000})
+
+	// The first group is released even though the window has not elapsed, because
+	// adding the second segment would exceed the cap.
+	capped := nextRepairJob(t, session, time.Second)
+	if capped.startSample != 0 || capped.endSample != 16000 {
+		t.Fatalf("capped decode = [%d,%d), want [0,16000)", capped.startSample, capped.endSample)
+	}
+	select {
+	case job := <-session.repairQueue:
+		t.Fatalf("a second group was decoded while it was still open: [%d,%d)", job.startSample, job.endSample)
+	default:
+	}
+
+	// The new group is still pending, and a stop releases it at once.
+	session.flushPending()
+	rest := nextRepairJob(t, session, time.Second)
+	if rest.startSample != 16000 || rest.endSample != 32000 {
+		t.Fatalf("released decode = [%d,%d), want [16000,32000)", rest.startSample, rest.endSample)
+	}
+}
+
+// A session that stops releases whatever the coalescer holds, without waiting out the
+// window: the stop is itself the end of the sentence, and the merge window exists only
+// to decide whether a *pause* is one.
+func TestStoppingFlushesThePendingGroup(t *testing.T) {
+	session := newMergeTestSession(t, time.Hour, 0)
+	session.onSegmentEnd(audio.SegmentEvent{Kind: audio.SpeechEnd, StartSample: 16000, EndSample: 32000})
+
+	session.flushPending()
+	job := nextRepairJob(t, session, time.Second)
+	if job.startSample != 16000 || job.endSample != 32000 {
+		t.Fatalf("decode = [%d,%d), want the pending group", job.startSample, job.endSample)
+	}
+}
+
+// A timer that fires after the session has ended must not deliver anything: the
+// session has already committed its last text, and a late decode would insert it
+// again into whatever the user is doing by then.
+func TestLateMergeTimerDoesNotDispatchAfterTheSessionEnds(t *testing.T) {
+	session := newMergeTestSession(t, 40*time.Millisecond, 0)
+	session.onSegmentEnd(audio.SegmentEvent{Kind: audio.SpeechEnd, StartSample: 16000, EndSample: 32000})
+	session.finished.Store(true)
+	session.flushPending()
+
+	select {
+	case job := <-session.repairQueue:
+		t.Fatalf("queued [%d,%d) after the session ended", job.startSample, job.endSample)
+	case <-time.After(150 * time.Millisecond):
 	}
 }
 

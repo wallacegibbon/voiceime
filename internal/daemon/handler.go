@@ -127,29 +127,7 @@ func (h *EngineHandler) Enable(control ibus.Control) {
 		Transcriber:      h.Transcriber,
 		Sink:             h.sink,
 		MinRepairSeconds: h.MinRepairSeconds,
-		Observer: Observer{
-			Ready: func(load time.Duration) {
-				h.logf("listening (model loaded in %v)", load)
-			},
-			Partial: func(text string, fedSeconds float64) {
-				h.logf("partial at %.2fs: %s", fedSeconds, text)
-			},
-			Segment: func(start, end, speech float64) {
-				h.logf("utterance %.2f-%.2fs (%.2fs of speech)", start, end, speech)
-			},
-			Repair: func(text string, took time.Duration, speech float64) {
-				h.logf("repaired %.2fs of speech in %v: %s", speech, took, text)
-			},
-			Committed: func(text string) {
-				// The line that says text left this process. Without it the log could
-				// not tell "the session delivered nothing" from "the application did
-				// not show it", which is the difference between a recognition problem
-				// and a delivery one.
-				h.logf("committed %d character(s): %s", len([]rune(text)), firstRunes(text, 120))
-			},
-			Skipped: func(reason string) { h.logf("skipped: %s", reason) },
-			Error:   func(err error) { h.logf("error: %v", err) },
-		},
+		Observer:         h.observer(),
 	}
 
 	if h.AudioFile != "" {
@@ -198,6 +176,33 @@ func (h *EngineHandler) Disable() {
 	}
 	cancel()
 	<-done
+}
+
+// observer is what a session reports, in the engine's log.
+func (h *EngineHandler) observer() Observer {
+	return Observer{
+		Ready: func(load time.Duration) {
+			h.logf("listening (model loaded in %v)", load)
+		},
+		Partial: func(text string, fedSeconds float64) {
+			h.logf("partial at %.2fs: %s", fedSeconds, text)
+		},
+		Segment: func(start, end, speech float64) {
+			h.logf("utterance %.2f-%.2fs (%.2fs of speech)", start, end, speech)
+		},
+		Repair: func(text string, took time.Duration, speech float64) {
+			h.logf("repaired %.2fs of speech in %v: %s", speech, took, text)
+		},
+		Committed: func(text string) {
+			// The line that says text left this process. Without it the log could not
+			// tell "the session delivered nothing" from "the application did not show
+			// it", which is the difference between a recognition problem and a delivery
+			// one.
+			h.logf("committed %d character(s): %s", len([]rune(text)), firstRunes(text, 120))
+		},
+		Skipped: func(reason string) { h.logf("skipped: %s", reason) },
+		Error:   func(err error) { h.logf("error: %v", err) },
+	}
 }
 
 // firstRunes shortens text for a log line without splitting a character in half.

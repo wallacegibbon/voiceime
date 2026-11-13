@@ -62,6 +62,8 @@ voiceime capabilities
 | `language` | `zh` | Passed to the model; empty asks it to auto-detect. |
 | `text_script` | `simplified` | Chinese output script: `simplified` or `preserve`. |
 | `max_utterance_seconds` | `60` | A hold whose key never comes up stops recording here. |
+| `silence_rms_threshold` | `600` | RMS level below which a frame counts as silence. A recording that never rises above it is not sent. |
+| `endpoint_min_speech_ms` | `300` | Speech must last this long for a recording to be sent. |
 | `asr_server_url` | `""` | The service root; `server install` writes it. Must be `http://`. |
 | `asr_server_timeout_ms` | `30000` | Deadline for one transcription. |
 | `capture_source` | `""` | PipeWire source name; empty uses the default input. |

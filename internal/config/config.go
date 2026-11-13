@@ -44,6 +44,11 @@ type Config struct {
 	// A hold whose key never comes up stops recording here.
 	MaxUtteranceSeconds float64 `toml:"max_utterance_seconds" desc:"Stop one recording after this many seconds."`
 
+	// A recording that never crosses this level for this long is not sent: a recogniser
+	// asked to read a room answers with words.
+	SilenceRMSThreshold int `toml:"silence_rms_threshold" desc:"RMS level below which a frame is silence."`
+	EndpointMinSpeechMS int `toml:"endpoint_min_speech_ms" desc:"A recording with no speech this long is not sent to the model."`
+
 	ASRServerURL       string `toml:"asr_server_url" desc:"Resident audiocpp_server root, e.g. http://127.0.0.1:18080; 'voiceime server install' sets it."`
 	ASRServerTimeoutMS int    `toml:"asr_server_timeout_ms" desc:"Deadline for one transcription."`
 
@@ -71,6 +76,10 @@ func Default() *Config {
 		TextScript:  "simplified",
 		// A forgotten key must not grow a recording without bound.
 		MaxUtteranceSeconds: 60,
+		// 600 sits above the reference room's idle noise (p90 436 RMS) and below normal
+		// speech.
+		SilenceRMSThreshold: 600,
+		EndpointMinSpeechMS: 300,
 		ASRServerTimeoutMS:  30000,
 		DownloadMirror:      DefaultDownloadEndpoint,
 		// A chord: the engine sees the key while the user is typing, so the press that
@@ -308,6 +317,10 @@ func (c *Config) Validate() []Issue {
 	if value := strings.TrimSpace(c.TextScript); value != "" && value != "simplified" && value != "preserve" {
 		add("error", "text_script", "must be simplified or preserve",
 			"voiceime config set text_script simplified")
+	}
+	if c.EndpointMinSpeechMS <= 0 {
+		add("error", "endpoint_min_speech_ms", "must be positive",
+			"voiceime config set endpoint_min_speech_ms 300")
 	}
 	if c.MaxUtteranceSeconds <= 0 {
 		add("error", "max_utterance_seconds", "must be positive",

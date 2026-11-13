@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/wallacegibbon/voiceime/internal/asr"
 	"github.com/wallacegibbon/voiceime/internal/audio"
@@ -309,6 +310,14 @@ func (h *PushToTalk) collect(recording *hold) {
 		h.logf("no audio was recorded; nothing was sent")
 		return
 	}
+	// The recording is sent whole, but only if it contains speech at all: a recogniser
+	// asked to read a room answers with words (measured: "我。" for two seconds of
+	// silence). Nothing is trimmed by this test.
+	if !audio.HasSpeech(pcm, float64(cfg.SilenceRMSThreshold), cfg.EndpointMinSpeechMS) {
+		h.logf("no speech heard in %.2fs of audio; nothing was sent",
+			float64(audio.SampleCount(pcm))/audio.SampleRate)
+		return
+	}
 	h.decode(utterance{
 		pcm:     pcm,
 		seconds: float64(audio.SampleCount(pcm)) / audio.SampleRate,
@@ -348,6 +357,10 @@ func (h *PushToTalk) work() {
 		}
 		if text == "" {
 			h.logf("the model heard no words in %.2fs of audio", job.seconds)
+			continue
+		}
+		if !hasContent(text) {
+			h.logf("the model answered only punctuation (%q); nothing was committed", text)
 			continue
 		}
 		// A decode is worth reporting even when delivery fails: the two failures look
@@ -393,6 +406,17 @@ func (h *PushToTalk) transcriber() asr.Transcriber {
 		Language: h.Config.Language,
 		Timeout:  time.Duration(h.Config.ASRServerTimeoutMS) * time.Millisecond,
 	}
+}
+
+// hasContent reports whether text carries a letter or a digit, which is what separates a
+// transcript from the punctuation a recogniser emits for audio it could not read.
+func hasContent(text string) bool {
+	for _, r := range text {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return true
+		}
+	}
+	return false
 }
 
 // firstRunes shortens text for a log line without splitting a character in half.

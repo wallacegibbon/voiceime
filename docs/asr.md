@@ -27,11 +27,12 @@ The server decodes it offline and answers once:
 voiceime commits `text` to the focused application. An empty `text`, or one that carries no
 letter or digit, commits nothing.
 
-A recording is only sent if it contains speech (`silence_rms_threshold` for
-`endpoint_min_speech_ms`), because the default model answers words to a room: two seconds
-of digital silence and two seconds of this room come back as `"我。"` and `"。"`
-([measurements.md](measurements.md#what-the-models-do-with-non-speech)). The gate decides
-whether to send; it never trims what it sends.
+Every recording is sent whole. Holding the trigger is the user saying "this is the audio",
+and the engine does not second-guess it: no level test decides whether a recording is worth
+sending. The default model does answer words to non-speech - two seconds of silence come
+back as `"我。"` ([measurements.md](measurements.md#what-the-models-do-with-non-speech)) -
+and a recording that contains only punctuation is dropped rather than typed, because a lone
+`"。"` is punctuation from audio the model could not read, not a transcript.
 
 ## The service
 

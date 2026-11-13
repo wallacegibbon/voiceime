@@ -31,10 +31,11 @@ Four recordings that contain no speech, sent to both models directly:
 | 0.4 s of key clicks | `"。"` | `""` |
 | 5 s of key clicks in a room | `"我。"` | `""` |
 
-Qwen3 answers nothing; SenseVoice answers words. That is why the engine does not ask the
-model about a recording that never crossed `silence_rms_threshold` for
-`endpoint_min_speech_ms` - and why a punctuation-only answer is dropped rather than typed.
-The gate decides whether to send; what passes it is still sent whole.
+Qwen3 answers nothing; SenseVoice answers words. The engine does not try to tell these
+apart before sending - holding the trigger is the user's statement that the audio is speech,
+and a level test that guessed wrong would swallow a quiet recording instead of typing a
+wrong word. What it does do is drop an answer that carries no letter or digit: a lone `"。"`
+is punctuation from audio the model could not read, not a transcript.
 
 Absent from the table: **accuracy on real speech.** The two models were not compared on a
 transcribed recording here, so "the larger one is more accurate" is the vendor's claim, not

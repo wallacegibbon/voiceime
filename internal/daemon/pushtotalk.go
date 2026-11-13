@@ -310,14 +310,6 @@ func (h *PushToTalk) collect(recording *hold) {
 		h.logf("no audio was recorded; nothing was sent")
 		return
 	}
-	// The recording is sent whole, but only if it contains speech at all: a recogniser
-	// asked to read a room answers with words (measured: "我。" for two seconds of
-	// silence). Nothing is trimmed by this test.
-	if !audio.HasSpeech(pcm, float64(cfg.SilenceRMSThreshold), cfg.EndpointMinSpeechMS) {
-		h.logf("no speech heard in %.2fs of audio; nothing was sent",
-			float64(audio.SampleCount(pcm))/audio.SampleRate)
-		return
-	}
 	h.decode(utterance{
 		pcm:     pcm,
 		seconds: float64(audio.SampleCount(pcm)) / audio.SampleRate,

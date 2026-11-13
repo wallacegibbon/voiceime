@@ -315,34 +315,6 @@ func TestPushToTalkSendsALongHoldAsOneRequest(t *testing.T) {
 	}
 }
 
-// A hold that contains no speech is not sent anywhere.
-//
-// The model is not asked, because it answers: measured on this machine, SenseVoice returns
-// "我。" for two seconds of digital silence and "。" for a room. The gate decides only
-// whether to send - what passes it is sent whole.
-func TestPushToTalkSendsNoSpeechNowhere(t *testing.T) {
-	handler, source, transcriber := newTestPushToTalk(t)
-	logs := &logCollector{}
-	handler.Log = logs.logf
-	control := &recordingControl{}
-	handler.Enable(control)
-
-	handler.KeyEvent(graveKeyval, 0, ibus.ModControl)
-	waitFor(t, "the capture to start", source.started)
-	source.publish(silence(1.0))
-	handler.KeyEvent(graveKeyval, 0, ibus.ModControl|ibus.ReleaseMask)
-
-	waitFor(t, "the log to say nothing was heard", func() bool {
-		return strings.Contains(logs.text(), "no speech heard")
-	})
-	if calls := transcriber.calls(); len(calls) != 0 {
-		t.Errorf("%d decodes were requested for silence", len(calls))
-	}
-	if got := control.delivered(); len(got) != 0 {
-		t.Errorf("the application received %v for silence", got)
-	}
-}
-
 // Punctuation is not a transcript: it is what a recogniser emits for audio it could not
 // read, and typing it into the application is worse than typing nothing.
 func TestPushToTalkCommitsNothingForPunctuation(t *testing.T) {

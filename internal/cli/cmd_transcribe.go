@@ -45,36 +45,43 @@ func runTranscribe(ctx *Context, file string, seconds float64) error {
 		}
 	}
 
-	var capture audio.Capture
-	var err error
-	if file != "" {
-		capture, err = audio.NewFileReplay(config.Expand(file), false)
-	} else {
-		capture, err = audio.NewMicrophone(cfg)
-	}
-	if err != nil {
-		return FailureError("%v", err)
-	}
-	if err := capture.Start(); err != nil {
-		return FailureError("%v", err)
-	}
-	defer capture.Stop()
-
-	// The same bound a dictation applies, so a forgotten command cannot record for ever.
-	limit := int64(cfg.MaxUtteranceSeconds * audio.SampleRate)
-	if file == "" && seconds > 0 {
-		limit = int64(seconds * audio.SampleRate)
-	}
+	// A file is read whole, not streamed: the capture path drops the oldest block when the
+	// consumer falls behind, which for a fast replay silently loses seconds of audio.
 	var pcm []byte
-	for chunk := range capture.Chunks() {
-		pcm = append(pcm, chunk.Data...)
-		if int64(audio.SampleCount(pcm)) >= limit {
-			break
+	if file != "" {
+		wav, err := audio.ReadWAV(config.Expand(file))
+		if err != nil {
+			return FailureError("%v", err)
 		}
-	}
-	capture.Stop()
-	if err := capture.Err(); err != nil {
-		fmt.Fprintf(ctx.Stderr, "voiceime: %v\n", err)
+		pcm = wav.Data
+	} else {
+		capture, err := audio.NewMicrophone(cfg)
+		if err != nil {
+			return FailureError("%v", err)
+		}
+		if err := capture.Start(); err != nil {
+			return FailureError("%v", err)
+		}
+		limit := int64(cfg.MaxUtteranceSeconds * audio.SampleRate)
+		if seconds > 0 {
+			limit = int64(seconds * audio.SampleRate)
+		}
+		var dropped int64
+		for chunk := range capture.Chunks() {
+			pcm = append(pcm, chunk.Data...)
+			dropped += chunk.DroppedSamples
+			if int64(audio.SampleCount(pcm)) >= limit {
+				break
+			}
+		}
+		capture.Stop()
+		if err := capture.Err(); err != nil {
+			fmt.Fprintf(ctx.Stderr, "voiceime: %v\n", err)
+		}
+		if dropped > 0 {
+			fmt.Fprintf(ctx.Stderr, "voiceime: capture dropped %.2fs of audio\n",
+				float64(dropped)/audio.SampleRate)
+		}
 	}
 	if len(pcm) == 0 {
 		return FailureError("no audio was recorded")

@@ -81,7 +81,9 @@ gsettings get org.gnome.desktop.input-sources sources
 ```
 
 `--apply` writes the component, adds its directory to `IBUS_COMPONENT_PATH`, deletes the
-registry cache, restarts IBus and adds the input source. The input source is the half that
+registry cache, restarts IBus and appends the input source. The source list is the user's:
+the install adds one entry and leaves the rest - their layouts, their other engines, their
+recent-use order - exactly as it found them. The input source is the half that
 is easy to miss: the desktop's switcher and indicator are drawn from that list, so without
 it the engine receives keystrokes but cannot be selected from the menu.
 

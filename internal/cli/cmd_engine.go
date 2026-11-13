@@ -199,7 +199,7 @@ func addInputSource(name string) (string, map[string]any) {
 	report["added"] = added
 	report["listed"] = true
 	if added {
-		return "added " + source.String() + " to the GNOME input sources (the top-right menu lists it now)", report
+		return "appended " + source.String() + " to the GNOME input sources; the sources already configured are untouched", report
 	}
 	return "already in the GNOME input sources", report
 }

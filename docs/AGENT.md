@@ -39,8 +39,10 @@ voiceime capabilities
   seconds each). Everything else reads the cache and says when a file has no answer yet.
 * `server install` sets `asr_server_url` and `model` in the configuration and starts the
   unit; `server run` is what the unit executes.
-* `engine install` writes the IBus component and adds `('ibus', voiceime)` to GNOME's
-  input-source list, which is what makes the desktop able to select and show it.
+* `engine install` writes the IBus component and **appends** `('ibus', voiceime)` to
+  GNOME's input-source list, which is what makes the desktop able to select and show it.
+  The list belongs to the user: nothing already configured is removed or reordered, the
+  recent-use order is not written, and `engine uninstall` removes only voiceime's own entry.
   `--apply` also sets the activation environment and restarts IBus.
 * `config apply` makes the running install match the file: restarts the service, rewrites
   the component when the engine name changed, converges the input source, and drops the

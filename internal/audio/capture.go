@@ -38,16 +38,12 @@ type Capture interface {
 
 // captureBase holds the reader-thread plumbing shared by every source.
 type captureBase struct {
-	rate    int
-	chunks  chan Chunk
-	stop    chan struct{}
-	stopped sync.Once
-	errMu   sync.Mutex
-	err     error
-	// diagnostic is the client's own last words on stderr. A capture client can
-	// be chatty about formats and latencies while working perfectly, so stderr is
-	// not treated as failure on its own: it is attached to the error when the
-	// stream really did fail or produced nothing.
+	rate       int
+	chunks     chan Chunk
+	stop       chan struct{}
+	stopped    sync.Once
+	errMu      sync.Mutex
+	err        error
 	diagnostic string
 
 	sampleCursor int64
@@ -101,10 +97,6 @@ func (c *captureBase) diagnosticTail() string {
 	return c.diagnostic
 }
 
-// publish hands a chunk to the consumer, dropping the oldest chunk when the
-// consumer is behind. Dropping the oldest rather than the newest keeps output
-// close to what is being said right now, which is the whole point of a live
-// input method.
 func (c *captureBase) publish(data []byte) {
 	chunk := Chunk{Data: data, StartSample: c.sampleCursor, DroppedSamples: c.dropped}
 	c.sampleCursor += int64(SampleCount(data))
@@ -127,9 +119,6 @@ func (c *captureBase) publish(data []byte) {
 	}
 }
 
-// readLoop blocks on reader, assembling fixed-size chunks. It is shared by every
-// subprocess-backed source because both parec and pw-record behave identically
-// here: a byte stream on stdout that ends when the process ends.
 func (c *captureBase) readLoop(reader io.Reader, wait func() error) {
 	defer close(c.chunks)
 	blockBytes := c.rate * FrameMS / 1000 * BytesPerSample
@@ -157,13 +146,6 @@ func (c *captureBase) readLoop(reader io.Reader, wait func() error) {
 			if wait != nil {
 				waitErr = wait()
 			}
-			// A stop we asked for is the normal way a session ends, and it is
-			// not a failure: Stop closes c.stop and then kills the client, so
-			// the client dies on a signal and the reader sees EOF - wait()
-			// reports the signal, never a clean exit. Checking the request
-			// before the status is what stops a clean shutdown surfacing as
-			// "capture process exited: signal: killed" on every run. A client
-			// that died on its own, with no stop requested, is still an error.
 			select {
 			case <-c.stop:
 				return
@@ -190,8 +172,6 @@ func (c *captureBase) readLoop(reader io.Reader, wait func() error) {
 }
 
 // --------------------------------------------------------------------------- //
-// Microphone
-// --------------------------------------------------------------------------- //
 
 // microphone captures from the sound server through a command-line client.
 type microphone struct {
@@ -201,9 +181,6 @@ type microphone struct {
 	finished chan struct{}
 }
 
-// NewMicrophone picks the capture client available on this machine. parec is
-// preferred because its PulseAudio-compatible interface is what PipeWire's pulse
-// server implements most completely, including --device selection by source name.
 func NewMicrophone(cfg *config.Config) (Capture, error) {
 	// The rate is not a setting: audio.cpp's bundled VAD rejects anything but 16 kHz,
 	// so a configurable value could only ever be wrong in one direction. It was one
@@ -303,12 +280,7 @@ func (m *microphone) Stop() {
 }
 
 // --------------------------------------------------------------------------- //
-// File replay
-// --------------------------------------------------------------------------- //
 
-// fileReplay replays a WAV file, either as fast as possible (accuracy work) or
-// paced at real time (latency measurements, which is what `voiceime stream
-// --file --realtime` needs).
 type fileReplay struct {
 	*captureBase
 	data     []byte

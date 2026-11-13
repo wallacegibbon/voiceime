@@ -24,17 +24,6 @@ type ReviewFacts struct {
 	GPUs []string
 }
 
-// ReviewDefaults lists the settings a fresh install should look at rather than
-// accept, and says for each why it might be wrong here.
-//
-// The list exists because every default in Default() is a measurement or a path
-// from the machine voiceime was developed on. Most of them are fine anywhere
-// (capture rate is a hard constraint; the endpoint and window policy is model
-// behaviour), but these are not, and nothing used to say so - an agent on a
-// new machine had no way to tell "4 threads" apart from "16000 Hz".
-//
-// It is not a validation report: nothing here is an error, and `doctor` is where
-// settings that are actually wrong are reported.
 func ReviewDefaults(cfg *Config, facts ReviewFacts) []Review {
 	reviews := []Review{}
 
@@ -93,14 +82,14 @@ func ReviewDefaults(cfg *Config, facts ReviewFacts) []Review {
 
 	reviews = append(reviews,
 		Review{
-			Key:   "silence_rms_threshold",
-			Value: cfg.SilenceRMSThreshold,
-			Why:   "the reference room's noise level. It is only a floor - the detector adapts upward - but a floor above your voice means nothing is transcribed at all. Measure with `voiceime stream --seconds 10 --events`: silence must produce no `segment`, one sentence must produce one",
+			Key:   "push_to_talk",
+			Value: cfg.PushToTalk,
+			Why:   "a chord of your choosing; it must not collide with a shortcut the applications you use claim",
 		},
 		Review{
 			Key:   "download_mirror",
 			Value: cfg.DownloadMirror,
-			Why:   "chosen because huggingface.co is unreachable from the reference network; any Hugging Face protocol endpoint works",
+			Why:   "chosen because huggingface.co was unreachable from the reference network; any Hugging Face protocol endpoint works",
 		},
 	)
 	return reviews

@@ -1,12 +1,4 @@
 // Package config holds every user-visible setting, the XDG paths they live in,
-// and the discovery rules for the external programs voiceime drives.
-//
-// There is deliberately no GUI anywhere in this project: the configuration file
-// is the single source of truth, and every operation that would have been a
-// dialog is a subcommand with machine-readable output. That is a hard design
-// constraint, not a preference - it means an automated agent can install,
-// configure and repair voiceime by reading docs/AGENT.md and running commands,
-// with no human in the loop. See docs/decisions.md (D1, D2).
 package config
 
 import (
@@ -27,105 +19,48 @@ import (
 // AppName is the directory name under every XDG base directory.
 const AppName = "voiceime"
 
-// DefaultModelsDir is where model packages live unless told otherwise. It
-// matches the convention used by audio.cpp's own model manager so models
-// downloaded by either tool are found by the other.
 const DefaultModelsDir = "~/models"
 
-// DefaultDownloadEndpoint is the host voiceime ships pointing downloads at. It
-// is an ordinary endpoint, not a special case: https://huggingface.co is equally
-// valid and is exactly what setting the value to it means. The default is a
-// mirror rather than the upstream project because it is the endpoint that works
-// from networks where huggingface.co is unreachable (measured on the reference
-// machine: a direct request to huggingface.co times out there).
 const DefaultDownloadEndpoint = "https://hf-mirror.com"
 
-// TargetRate is the only capture rate the pipeline supports. The ASR models'
-// bundled Silero VAD rejects anything else, so resampling happens in the capture
-// path (PipeWire does it server-side) rather than being papered over later.
 const TargetRate = 16000
 
-// Config is the whole settings surface. Field order is the order they are
-// written to the file, and the `toml` tag is the key. `voiceime config set` and
-// `voiceime capabilities` are both driven off this struct by reflection, so
-// adding a field here automatically exposes it to agents - there is no parallel
-// schema to keep in sync.
 type Config struct {
-	// Paths and external programs.
 	ModelsDir    string `toml:"models_dir" desc:"Directory scanned for model packages; downloads are written here."`
 	AudioCPPDir  string `toml:"audio_cpp_dir" desc:"audio.cpp checkout used to locate its CLI and model manager."`
 	ASRBin       string `toml:"asr_bin" desc:"Explicit path to audiocpp_cli; empty means discover."`
 	ModelManager string `toml:"model_manager" desc:"Explicit path to tools/model_manager_v2.py; empty means discover."`
 
-	// Inference.
 	Backend string `toml:"backend" desc:"audio.cpp backend: cpu, cuda, vulkan, hip, metal."`
 	Threads int    `toml:"threads" desc:"Worker threads handed to audio.cpp."`
 
-	// Model selection by absolute path; empty means pick automatically from the
-	// models that are installed.
-	StreamingModel string `toml:"streaming_model" desc:"Model used for live partials; empty picks a default."`
-	RefineModel    string `toml:"refine_model" desc:"Model used to re-transcribe a finished segment; empty reuses the streaming model."`
+	// The one checkpoint the service serves and the engine transcribes with. Empty picks
+	// the best installed ASR model.
+	Model string `toml:"model" desc:"Checkpoint the recognition service loads; empty picks the best installed ASR model."`
 
-	Language     string  `toml:"language" desc:"Recognition language code, e.g. zh or en."`
-	ChunkSeconds float64 `toml:"chunk_seconds" desc:"Streaming window length. Lower cuts latency, higher improves accuracy."`
-
-	// Text cleanup for Chinese output. The repair model (Qwen3-ASR) may answer in
-	// Traditional characters, which is not what a Simplified Chinese dictation
-	// target expects; the setting decides what the user sees before text is shown
-	// or committed. It only applies when language names Chinese.
+	Language   string `toml:"language" desc:"Recognition language code, e.g. zh or en."`
 	TextScript string `toml:"text_script" desc:"Chinese output script: simplified converts Traditional characters to Simplified; preserve leaves them."`
 
-	// Repair policy. The two-layer design is what makes 'correct earlier words'
-	// possible at all: window partials are provisional, and the offline
-	// re-decode of a finished segment is what actually corrects them.
-	RefineOnSegmentEnd  bool    `toml:"refine_on_segment_end" desc:"Re-transcribe a completed segment with the offline path."`
-	MaxUtteranceSeconds float64 `toml:"max_utterance_seconds" desc:"Force a segment boundary after this many seconds."`
-	// RefineMergeMS decides what counts as the end of a sentence for the offline
-	// decode. The endpointer closes a segment after a short silence, which is a
-	// *candidate* boundary - a breath, or a pause to think, is not a sentence - so
-	// segments that follow each other within this window are decoded as one
-	// request. Raising it sends more context to the model and delays nothing the
-	// user is watching: the draft stays visible as preedit until the decode lands.
-	RefineMergeMS int `toml:"refine_merge_ms" desc:"A pause shorter than this does not end the sentence; the audio on either side is decoded as one request. 0 decodes every segment."`
+	// A hold whose key never comes up stops recording here.
+	MaxUtteranceSeconds float64 `toml:"max_utterance_seconds" desc:"Stop one recording after this many seconds."`
 
-	// Offline decode via a resident audio.cpp server. Empty asr_server_url keeps
-	// the process-per-utterance route, which needs no daemon and is fast enough
-	// for a small model; a server pays the model load once instead of per
-	// utterance, which is what a large refine model needs.
 	ASRServerURL       string `toml:"asr_server_url" desc:"Resident audiocpp_server root, e.g. http://127.0.0.1:18080; 'voiceime server install' sets it."`
-	ASRServerTimeoutMS int    `toml:"asr_server_timeout_ms" desc:"Deadline for one server-side repair decode."`
+	ASRServerTimeoutMS int    `toml:"asr_server_timeout_ms" desc:"Deadline for one transcription."`
 
-	// Endpointing.
-	EndpointSilenceMS   int `toml:"endpoint_silence_ms" desc:"Silence after speech before a segment is closed."`
-	EndpointMinSpeechMS int `toml:"endpoint_min_speech_ms" desc:"Speech shorter than this is treated as noise."`
-	SilenceRMSThreshold int `toml:"silence_rms_threshold" desc:"RMS amplitude below which a frame counts as silence."`
-
-	// Capture.
 	CaptureSource string `toml:"capture_source" desc:"PipeWire source name; empty uses the default input."`
 
-	// Downloads. The value is an endpoint URL, not a preset name: every package
-	// audio.cpp's registry ships downloads over Hugging Face's protocol, so any
-	// HF-compatible host works (hf-mirror.com, huggingface.co, a LAN cache) and
-	// a preset table would only be a shorter way of writing the same two URLs.
-	// It is exported to the model manager as HF_ENDPOINT.
 	DownloadMirror string `toml:"download_mirror" desc:"HF-protocol endpoint URL model downloads go through, e.g. https://hf-mirror.com."`
 
-	// Integration.
-	Hotkey string `toml:"hotkey" desc:"Shortcut held down to dictate, e.g. <Control>apostrophe."`
-	// IBus's global-shortcut property carries a consumer byte, which it echoes
-	// back on every event so a listener can tell its own events from another
-	// consumer's (the panel's emoji shortcut, for one).
-	HotkeyShortcutType int    `toml:"hotkey_shortcut_type" desc:"Consumer byte for the IBus global shortcut registration."`
-	IBusEngineName     string `toml:"ibus_engine_name" desc:"IBus engine name registered for text delivery."`
+	// Held down to dictate. A modifier is required, so the press cannot also be ordinary
+	// typing.
+	PushToTalk     string `toml:"push_to_talk" desc:"Combination held down to dictate; the release transcribes the recording."`
+	IBusEngineName string `toml:"ibus_engine_name" desc:"IBus engine name registered for text delivery."`
 
-	// Escape hatch passed straight into the generated server config, so a new
-	// audio.cpp request option is usable without a voiceime release. One map, not two:
-	// session options have no reader now that voiceime is not a CLI caller.
-	RequestOptions map[string]string `toml:"request_options" desc:"Extra request options for the server's repair entry, set as key=value; an empty value removes one."`
+	// Passed straight into the generated server config, so a new audio.cpp request option
+	// is usable without a voiceime release.
+	RequestOptions map[string]string `toml:"request_options" desc:"Extra request options for the served model, set as key=value; an empty value removes one."`
 }
 
-// Default returns the settings tuned for a stock GNOME/Wayland machine with
-// audio.cpp built from source.
 func Default() *Config {
 	return &Config{
 		ModelsDir:   DefaultModelsDir,
@@ -133,50 +68,18 @@ func Default() *Config {
 		Backend:     "cpu",
 		Threads:     4,
 		Language:    "zh",
-		// 3s is the smallest window measured to keep Chinese output usable with
-		// SenseVoice's independent-window streaming; see docs/measurements.md.
-		ChunkSeconds:        3.0,
-		TextScript:          "simplified",
-		RefineOnSegmentEnd:  true,
+		TextScript:  "simplified",
+		// A forgotten key must not grow a recording without bound.
 		MaxUtteranceSeconds: 60,
-		// 3s is a speaking pause, not a sentence end: the reference user stops to
-		// think mid-sentence, and every such stop used to split one sentence into two
-		// decodes that each lost the other half's context. The cost is that an
-		// unattended pause holds the text back this long, so the value trades context
-		// against how long the last words sit as a composition; a dictation that ends
-		// (the hotkey, the end of a file) flushes immediately, so it never delays the
-		// end of a session.
-		RefineMergeMS: 3000,
-		// 30s is generous for one utterance: the point of a deadline here is to
-		// abandon a repair that has stopped being worth waiting for, not to bound
-		// a decode that is running normally.
 		ASRServerTimeoutMS:  30000,
-		EndpointSilenceMS:   800,
-		EndpointMinSpeechMS: 300,
-		// This is a floor, not a fixed threshold: the detector raises its
-		// threshold to twice the noise floor it measures in the stream, and never
-		// lowers it below this. 600 sits above the reference room's idle noise
-		// (20ms-frame p90 = 436 RMS, docs/measurements.md) and below normal speech,
-		// which is the narrow window the value has to fit in: too high and quiet
-		// speech is heard as silence, the failure that is invisible to the user
-		// because nothing at all comes out.
-		SilenceRMSThreshold: 600,
 		DownloadMirror:      DefaultDownloadEndpoint,
-		// A function key, not a modifier combination: IBus's global-shortcut
-		// mechanism consumes the key's release, so a shortcut containing a modifier
-		// leaves that modifier latched in the focused application (measured - Ctrl
-		// stayed down until tapped again, even when the engine switch was delayed by
-		// 300ms). A plain function key has no modifier state to latch.
-		Hotkey:             "<F9>",
-		HotkeyShortcutType: 1,
-		IBusEngineName:     "voiceime",
-		RequestOptions:     map[string]string{},
+		// A chord: the engine sees the key while the user is typing, so the press that
+		// starts a dictation must not be one the application was going to receive.
+		PushToTalk:     "<Control>grave",
+		IBusEngineName: "voiceime",
+		RequestOptions: map[string]string{},
 	}
 }
-
-// --------------------------------------------------------------------------- //
-// XDG locations
-// --------------------------------------------------------------------------- //
 
 func xdg(env, fallback string) string {
 	if value := os.Getenv(env); value != "" {
@@ -200,9 +103,6 @@ func DataDir() string {
 	return filepath.Join(xdg("XDG_DATA_HOME", filepath.Join(".local", "share")), AppName)
 }
 
-// RuntimeDir holds the daemon socket. XDG_RUNTIME_DIR is per-user, mode 0700 and
-// cleared at logout - exactly the lifetime a socket wants. The fallback keeps
-// the daemon usable from a plain shell with no session.
 func RuntimeDir() string {
 	if base := os.Getenv("XDG_RUNTIME_DIR"); base != "" {
 		if info, err := os.Stat(base); err == nil && info.IsDir() {
@@ -212,14 +112,6 @@ func RuntimeDir() string {
 	return filepath.Join(CacheDir(), "run")
 }
 
-// UserUnitDir is where a systemd user unit is installed. Named here because two
-// commands write units (the shortcut listener and the recognition service) and both
-// resolve the same XDG directory, so a session without XDG_CONFIG_HOME must not be
-// handled two ways.
-//
-// It returns "" when there is no home directory and no XDG override: a unit has to be
-// named by an absolute path, and a caller that cannot write one has to say so instead of
-// installing it relative to whatever the working directory happens to be.
 func UserUnitDir() string {
 	base := os.Getenv("XDG_CONFIG_HOME")
 	if base == "" {
@@ -257,13 +149,6 @@ func (c *Config) ResolvedModelsDir() string { return Expand(c.ModelsDir) }
 // AudioCPPDirPath returns the absolute audio.cpp location.
 func (c *Config) AudioCPPDirPath() string { return Expand(c.AudioCPPDir) }
 
-// DownloadEndpoint returns the host model downloads go through, normalized by
-// dropping any trailing slash.
-//
-// The check is deliberately syntactic. Whether a host is reachable or holds a
-// given package is a question for `voiceime models sizes`, which asks the
-// network; validation stays offline so `doctor` and `config validate` keep
-// working on a disconnected machine.
 func (c *Config) DownloadEndpoint() (string, error) {
 	raw := strings.TrimSpace(c.DownloadMirror)
 	if raw == "" {
@@ -286,11 +171,6 @@ func (c *Config) DownloadEndpoint() (string, error) {
 }
 
 // checkServerURL validates the address of the resident recognition server.
-//
-// It is the syntactic half only - whether anything answers there is `doctor`'s
-// question, so validation stays offline - but the scheme is part of the syntax here:
-// the live streaming endpoint is spoken over a raw socket and cannot do TLS, so an
-// https address is a configuration that half the pipeline can use.
 func checkServerURL(raw string) error {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
@@ -312,19 +192,19 @@ func checkServerURL(raw string) error {
 }
 
 // --------------------------------------------------------------------------- //
-// Load / save / validate
-// --------------------------------------------------------------------------- //
 
-// Load reads the config file. A missing file is not an error: the caller gets
-// the defaults, which is what a doctor or setup command needs on a fresh
-// machine. Unknown keys are rejected so a typo cannot silently do nothing.
-// retiredSettings are keys a previous version wrote that this one no longer has.
-// They are accepted and ignored, for the reason the loop in Load gives: a removed
-// key must not brick a configuration file.
 var retiredSettings = map[string]bool{
-	// The numeral conversion was removed: it changed ordinary words often enough
-	// (分, 升, 一点, 两 after a unit) that the output was worse than the input.
-	"text_numbers": true,
+	"streaming_model":        true,
+	"refine_model":           true,
+	"chunk_seconds":          true,
+	"refine_on_segment_end":  true,
+	"refine_merge_ms":        true,
+	"endpoint_silence_ms":    true,
+	"endpoint_min_speech_ms": true,
+	"silence_rms_threshold":  true,
+	"hotkey":                 true,
+	"hotkey_shortcut_type":   true,
+	"text_numbers":           true,
 }
 
 func Load(path string) (*Config, error) {
@@ -338,11 +218,6 @@ func Load(path string) (*Config, error) {
 	}
 	var unknown []string
 	for _, key := range metadata.Undecoded() {
-		// A retired setting is ignored rather than rejected. Load rejects unknown
-		// keys before any command runs, so refusing a key this program used to
-		// write would make every command fail on a file it wrote itself - including
-		// the `config set` that would remove it. The next write drops it, because
-		// Save renders the struct.
 		if retiredSettings[key.String()] {
 			continue
 		}
@@ -372,17 +247,6 @@ func Save(cfg *Config, path string) error {
 }
 
 // WriteFile replaces path with data atomically, creating its directory.
-//
-// Two things make this worth a shared function rather than os.WriteFile. A half-written
-// file is unreadable to every later command - a truncated config.toml stops the
-// program, a truncated model index silently forces a re-inspection - so the write goes
-// to a temporary file in the same directory and is renamed into place. And the
-// temporary name is generated, not derived: commands that write these files can run at
-// the same time (two agents, or a doctor beside a config set), and a fixed name made
-// every concurrent pair fail - measured, 18 of 40 paired `config set` runs died on
-// "rename ... .tmp: no such file or directory", because one writer's rename removed the
-// file the other was about to rename. The last writer still wins; losing a write is the
-// caller's problem to sequence, losing the file is not.
 func WriteFile(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -427,8 +291,7 @@ type Issue struct {
 	Fix      string `json:"fix,omitempty"`
 }
 
-// Validate reports settings that would stop the pipeline working, or that are
-// legal but known to hurt quality.
+// Validate reports settings that would stop the pipeline working.
 func (c *Config) Validate() []Issue {
 	var issues []Issue
 	add := func(severity, key, message, fix string) {
@@ -438,47 +301,22 @@ func (c *Config) Validate() []Issue {
 	if c.Threads <= 0 {
 		add("error", "threads", "must be positive", "voiceime config set threads 4")
 	}
-	if c.ChunkSeconds <= 0 {
-		add("error", "chunk_seconds", "must be positive", "voiceime config set chunk_seconds 3")
-	}
-	// Sub-1.5s windows are legal, so this is a warning rather than an error, but
-	// it is worth stating with the reason: the framework's streaming ASR decodes
-	// each window independently, so a shorter window means less context.
-	if c.ChunkSeconds > 0 && c.ChunkSeconds < 1.5 {
-		add("warning", "chunk_seconds",
-			"windows below 1.5s measurably corrupt CJK output with SenseVoice (docs/measurements.md)",
-			"voiceime config set chunk_seconds 3")
-	}
 	if c.Language == "" {
 		add("warning", "language", "empty; the model will be asked to auto-detect",
 			"voiceime config set language zh")
 	}
-	// Two spellings are worth rejecting loudly: "traditional" is a plausible
-	// value that this package does not implement, and a typo here would otherwise
-	// silently keep the model's output as it is.
 	if value := strings.TrimSpace(c.TextScript); value != "" && value != "simplified" && value != "preserve" {
 		add("error", "text_script", "must be simplified or preserve",
 			"voiceime config set text_script simplified")
 	}
-	if c.MaxUtteranceSeconds < c.ChunkSeconds {
-		add("warning", "max_utterance_seconds", "shorter than one streaming window", "")
-	}
-	if c.RefineMergeMS < 0 {
-		add("error", "refine_merge_ms", "must not be negative", "voiceime config set refine_merge_ms 8000")
-	}
-	if c.EndpointSilenceMS <= 0 {
-		add("error", "endpoint_silence_ms", "must be positive", "voiceime config set endpoint_silence_ms 800")
+	if c.MaxUtteranceSeconds <= 0 {
+		add("error", "max_utterance_seconds", "must be positive",
+			"voiceime config set max_utterance_seconds 60")
 	}
 	if _, err := c.DownloadEndpoint(); err != nil {
 		add("error", "download_mirror", err.Error(),
 			"voiceime config set download_mirror "+DefaultDownloadEndpoint)
 	}
-	// The address dictation decodes through, when it is set. Empty is not an error
-	// here: a fresh machine has no service yet, and `doctor` reports that once, with
-	// `voiceime server install` as the fix. What is checked is the spelling, because
-	// https is a *blocking* mistake rather than a warning - the live stream is spoken
-	// over a raw socket (internal/asr) and cannot do TLS, so the repair path would work
-	// while dictation did not, which is the worst shape a failure can take.
 	if raw := strings.TrimSpace(c.ASRServerURL); raw != "" {
 		if err := checkServerURL(raw); err != nil {
 			add("error", "asr_server_url", err.Error(),
@@ -492,29 +330,21 @@ func (c *Config) Validate() []Issue {
 		add("error", "ibus_engine_name", "must be set; text delivery has no other channel",
 			"voiceime config set ibus_engine_name voiceime")
 	}
+	if strings.TrimSpace(c.PushToTalk) == "" {
+		add("error", "push_to_talk", "must be set; the engine has no other way to start recording",
+			`voiceime config set push_to_talk "<Control>grave"`)
+	}
 	if c.ModelsDir == "" {
 		add("error", "models_dir", "must be set", "voiceime config set models_dir "+DefaultModelsDir)
 	}
-	// A model path is the one setting whose typo survives everything else here: it
-	// is valid TOML, it is a valid path string, and it only fails when the
-	// recognition service refuses to start - which then reads as "applied but
-	// nothing changed". The check is a local stat, so validation stays offline
-	// like the rest of this function.
-	for _, model := range []struct{ key, path string }{
-		{"streaming_model", c.StreamingModel},
-		{"refine_model", c.RefineModel},
-	} {
-		path := strings.TrimSpace(model.path)
-		if path == "" {
-			continue
-		}
+	if path := strings.TrimSpace(c.Model); path != "" {
 		if _, err := os.Stat(Expand(path)); err != nil {
 			reason := err.Error()
 			if errors.Is(err, os.ErrNotExist) {
 				reason = "does not exist"
 			}
-			add("error", model.key, fmt.Sprintf("%s %s", path, reason),
-				fmt.Sprintf("voiceime config set %s \"\"   # empty picks an installed model", model.key))
+			add("error", "model", fmt.Sprintf("%s %s", path, reason),
+				`voiceime config set model ""   # empty picks an installed model`)
 		}
 	}
 	return issues
@@ -531,9 +361,6 @@ func Errors(issues []Issue) []Issue {
 	return out
 }
 
-// --------------------------------------------------------------------------- //
-// Reflection-based access, so `config get/set` and `capabilities` never need
-// updating when a field is added.
 // --------------------------------------------------------------------------- //
 
 // Field describes one setting for agents: its TOML key, Go type, current value
@@ -578,9 +405,6 @@ func (c *Config) Get(key string) (any, error) {
 	return nil, fmt.Errorf("unknown setting %q; run `voiceime capabilities` for the list", key)
 }
 
-// Set assigns a setting from its command-line string form. The conversion lives
-// here so `voiceime config set` stays one generic command an agent can use for
-// any key without knowing the type.
 func (c *Config) Set(key, raw string) error {
 	value := reflect.ValueOf(c).Elem()
 	typ := value.Type()
@@ -612,10 +436,6 @@ func (c *Config) Set(key, raw string) error {
 			}
 			target.SetBool(boolean)
 		case reflect.Map:
-			// The one map setting (request_options) is a key=value table, and an
-			// agent has no other way to set it: `config set` exists so that nothing
-			// has to generate TOML by hand. An empty value removes the key, because
-			// otherwise a value set once could never be taken out again.
 			if target.Type().Key().Kind() != reflect.String || target.Type().Elem().Kind() != reflect.String {
 				return fmt.Errorf("%s cannot be set from the command line (%s)", key, target.Type())
 			}
@@ -643,14 +463,7 @@ func (c *Config) Set(key, raw string) error {
 }
 
 // --------------------------------------------------------------------------- //
-// External program discovery
-// --------------------------------------------------------------------------- //
 
-// FindASRBinary locates audiocpp_cli. Order: explicit setting, environment, the
-// checkout's build tree (a source build may hold several backends and the
-// configured one is preferred), a checkout found in a conventional location, then
-// PATH. Everything before the last resort expresses intent, and a deliberate
-// choice always wins over a guess.
 func (c *Config) FindASRBinary() (string, error) {
 	var candidates []string
 	if c.ASRBin != "" {
@@ -684,10 +497,6 @@ func (c *Config) FindASRBinary() (string, error) {
 	return "", errors.New("audiocpp_cli not found: set asr_bin or audio_cpp_dir, or put it on PATH")
 }
 
-// FindServerBinary locates audiocpp_server, the resident host for the offline
-// decode. Discovery mirrors FindASRBinary because the two ship together: the
-// configured CLI's own directory first (a build tree holds both, so a deliberate
-// choice of binary settles this too), then the checkout's build trees, then PATH.
 func (c *Config) FindServerBinary() (string, error) {
 	var candidates []string
 	if c.ASRBin != "" {
@@ -722,9 +531,6 @@ func (c *Config) FindServerBinary() (string, error) {
 		serverBinaryName, serverBinaryName)
 }
 
-// checkoutRoots returns the audio.cpp directories to look inside: the configured
-// one first, then a located one when it is somewhere else. The second is what
-// makes an unconfigured machine work when the checkout is in an obvious place.
 func (c *Config) checkoutRoots() []string {
 	var roots []string
 	if configured := c.AudioCPPDirPath(); configured != "" {
@@ -744,10 +550,6 @@ func (c *Config) checkoutRoots() []string {
 	return roots
 }
 
-// FindModelManager locates audio.cpp's model manager script. Downloads are
-// delegated to it on purpose: it already knows the registry, the pinned
-// revisions and the mirror rules, and it is the code path upstream tests.
-// Reimplementing that client here would drift from the registry silently.
 func (c *Config) FindModelManager() (string, error) {
 	var candidates []string
 	if c.ModelManager != "" {

@@ -5,10 +5,9 @@ Python/C bindings hide all of it. Everything below was measured against a live
 daemon on the reference machine, not inferred from source. It is recorded because
 each fact cost time to find and would cost the same again.
 
-**Scope.** Measured facts about the IBus daemon's protocol for third-party engines -
-a property of the daemon, not of voiceime; a fact here changes only when it is
-re-measured. voiceime's behaviour around this protocol (install, hotkey, logs) is in
-[AGENT.md](AGENT.md); the recognition pipeline is in [asr.md](asr.md).
+**Scope.** Measured facts about the IBus daemon's protocol for third-party engines. How
+voiceime installs and drives the engine is in [AGENT.md](AGENT.md); the recognition path is
+[asr.md](asr.md).
 
 ## Reproducing the experiments safely
 
@@ -118,7 +117,7 @@ and verified by loading a generated copy into a sandbox daemon:
       <license>...</license>
       <author>...</author>
       <layout>default</layout>
-      <longname>Voiceime (speech)</longname>
+      <longname>Voice</longname>
       <description>...</description>
       <rank>1</rank>
       <symbol>&#x1F3A4;</symbol>
@@ -126,43 +125,6 @@ and verified by loading a generated copy into a sandbox daemon:
   </engines>
 </component>
 ```
-
-## Global shortcuts, and why the trigger must not be a modifier
-
-IBus 1.5.29 adds a write-only property on the daemon, `GlobalShortcutKeys` of type
-`(y a(uuu))` - a consumer byte plus (keyval, keycode, state) keys - and a signal
-`GlobalShortcutKeyResponded(y type, b pressed, b backward)`. A third-party client
-may register (verified: the `Set` call succeeds on a private daemon), and the
-signal carries **both** edges, which is what a push-to-talk design would need.
-
-Measured behaviour of a registered combination:
-
-* While the key is held, the daemon emits a `pressed=true` event for **every**
-  auto-repeat tick - roughly 200 for a one-second hold - and exactly **one**
-  `pressed=false` at the real release. So the release, not the press, is what
-  identifies a tap, and a listener that acts on presses must ignore repeats itself.
-* `keycode` may be 0, meaning "any keycode for this keyval"; there is no need for a
-  local X11 keymap.
-* **A modifier in the combination latches in the focused application.** With
-  Ctrl+', the application received Ctrl's press (the grab only covers the complete
-  combination) and never its release, so Ctrl stayed held until the user tapped it
-  again. Delaying the engine switch by 300ms past the release did not help, which
-  rules out the switch as the cause and points at the daemon consuming the
-  modifier release along with the rest of the sequence. A function key has no
-  modifier state to latch, which is why the default trigger is `<F9>`.
-* **An empty key list aborts the daemon.** libibus asserts `size > 0` in
-  `_ibus_set_global_shortcut_keys`, so "unregister by writing an empty list" - the
-  obvious way to release a shortcut - kills ibus-daemon with SIGABRT (observed in
-  the session journal, twice in the GLib layer as well, with systemd restarting the
-  service and SIGKILLing the engine processes it had spawned). There is no way to
-  clear the registration while the daemon runs; a restart is the only thing that
-  does. voiceime therefore hands the slot to an inert combination
-  (Ctrl+Alt+Shift+Super+F24) when its listener stops, and `hotkey uninstall` runs
-  `ibus restart`.
-* The property is a **single slot**: the last writer owns the shortcut. Nothing on
-  the reference machine registers it today (gnome-shell, the ibus panel extensions
-  and ibus-dconf do not reference it; the emoji shortcut uses the older gsettings
-  path), so voiceime does not collide with anything - but a second consumer would.
 
 ## The engine process contract
 
@@ -203,6 +165,51 @@ unverified and voiceime does not depend on them.
 
 Only `Enable`, `Disable` and `ProcessKeyEvent` carry real meaning for a dictation
 engine; the rest are accepted and ignored.
+
+## Key events arrive on both edges
+
+A dictation that lasts until the user lets go needs the *release*, and the engine gets
+it: `ProcessKeyEvent(u keyval, u keycode, u state)` is the same call for both edges, and
+the state carries `IBUS_RELEASE_MASK` on the way up. The masks are libibus's own, not
+X11's (`ibustypes.h`, 1.5.29):
+
+| Bit | Meaning |
+|---|---|
+| `1 << 0` | Shift |
+| `1 << 1` | Lock (Caps Lock) |
+| `1 << 2` | Control |
+| `1 << 3` | Mod1 (Alt) |
+| `1 << 6` | Mod4 (Super) |
+| `1 << 30` | **release** (`IBUS_RELEASE_MASK`) |
+
+**Measured: a real client sends both edges.** A live session's engine receives the user's
+own keystrokes through this call, and they include releases with the bit set - captured in
+an engine trace while the engine was the selected input method:
+
+```
+ProcessKeyEvent(105,23,1073741824)     ← 'i' released          (105 = XK_i)
+ProcessKeyEvent(32,57,1073741824)      ← space released        (32 = XK_space, keycode 57)
+ProcessKeyEvent(65288,14,1073741824)   ← BackSpace released    (65288 = XK_BackSpace)
+ProcessKeyEvent(65507,29,0)            ← Ctrl pressed          (65507 = XK_Control_L)
+```
+
+`1073741824` is `1 << 30`. So the release edge is not an inference from the header: the
+daemon routes it, and a hold can be read from it. Two things were *not* observed, and are
+not claimed: a human holding the trigger (the presses in the trace above are a real
+client's typing, not ours), and a client that withholds a release. The end-to-end run -
+one recording opened by a press of the trigger and decoded after its release - is in
+[measurements.md](measurements.md#hold-to-talk-end-to-end).
+
+Two consequences shape voiceime's use of it :
+
+* **Only the trigger key's own events are consumed** (`ProcessKeyEvent` returns true for
+  them and false for everything else). An engine that consumed a modifier's press but not
+  its release would leave that modifier latched in the application - the failure measured
+  with the daemon's global shortcut (D13) - so modifiers are watched and always passed
+  through.
+* **A lost release ends nothing**, so the recording is capped by
+  `max_utterance_seconds` regardless: the cap is what keeps a missed key event from
+  holding a microphone open.
 
 ## The wire format of committed text
 
@@ -270,7 +277,7 @@ is the part that can fail silently if the struct is wrong.
 Reproduced end to end on a sandbox daemon:
 
 1. Component XML written to a directory named by `IBUS_COMPONENT_PATH`.
-2. `ibus list-engine` shows `voiceime - Voiceime (speech)`.
+2. `ibus list-engine` shows `voiceime - Voice`.
 3. `ibus engine voiceime` makes the daemon **spawn the `<exec>` command**, here
    the Go binary (`voiceime ibus-engine --ibus`).
 4. The process takes the component name, the daemon calls `CreateEngine`, and the

@@ -10,9 +10,6 @@ import (
 )
 
 // These call the real entry point with a temporary config file. The command
-// surface is the contract an agent programs against - one JSON object per
-// invocation, exit codes that branch without parsing prose - and it had no tests
-// at all until one documented flag turned out never to have worked.
 
 // runForTest runs the CLI as a caller would and returns what it wrote.
 func runForTest(t *testing.T, args ...string) (code int, stdout, stderr string) {
@@ -52,9 +49,6 @@ func decodeOne(t *testing.T, text string) map[string]any {
 	return object
 }
 
-// `config init --force` is the documented way to overwrite a config, and it used
-// to fail with "flag provided but not defined": the command looked for --force
-// among its positional arguments, which the flag parser rejects first.
 func TestConfigInitRefusesThenOverwritesWithForce(t *testing.T) {
 	configPath, _ := freshConfig(t)
 	original, err := os.ReadFile(configPath)
@@ -166,11 +160,6 @@ func TestUnknownCommandIsAUsageError(t *testing.T) {
 }
 
 // `config set` writes the value and then fails if the file it wrote cannot be used.
-//
-// Writing first is deliberate: staging a model path before the download finishes is how
-// a deployment is scripted, and `config apply` is where an unusable file is refused. What
-// must not happen is exit 0 - the report on stderr was invisible to a caller that
-// branches on exit codes, so "validate after changing anything" could not be automated.
 func TestConfigSetFailsWhenTheValueBreaksTheConfig(t *testing.T) {
 	configPath, _ := freshConfig(t)
 

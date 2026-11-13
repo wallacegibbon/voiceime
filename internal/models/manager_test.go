@@ -9,10 +9,6 @@ import (
 	"github.com/wallacegibbon/voiceime/internal/config"
 )
 
-// testConfig returns a configuration whose model manager script exists, so that
-// NewManager gets past the script lookup and the test can exercise the endpoint
-// rules. It skips when the interpreter NewManager requires is missing, because
-// that is a property of the machine rather than of the code under test.
 func testConfig(t *testing.T) *config.Config {
 	t.Helper()
 	if config.FindExecutable("python3", "python") == "" {
@@ -28,9 +24,6 @@ func testConfig(t *testing.T) *config.Config {
 	return cfg
 }
 
-// The endpoint is always written out, never inherited: HF_ENDPOINT is the
-// variable huggingface_hub reads, so an ambient value would otherwise choose the
-// download host and the config file would stop being the single source of truth.
 func TestEnvironmentPinsTheConfiguredEndpoint(t *testing.T) {
 	manager := &Manager{Endpoint: "https://mirror.example.com"}
 	environment := manager.environment()
@@ -54,9 +47,6 @@ func TestNewManagerCarriesTheEndpointAndNormalizesIt(t *testing.T) {
 	}
 }
 
-// A caller branches on this sentinel to offer the fix for download_mirror rather
-// than for the surrounding tooling: "set audio_cpp_dir" would be a wrong and
-// useless instruction for a typo in an endpoint.
 func TestNewManagerReportsAnUnusableEndpointAsItsOwnError(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.DownloadMirror = "hf-mirror"

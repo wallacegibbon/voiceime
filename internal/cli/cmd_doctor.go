@@ -11,10 +11,6 @@ import (
 )
 
 // Check is one doctor finding.
-//
-// Fix is the field that makes doctor usable without a human: it names the exact
-// command that resolves the finding, so an agent can iterate
-// doctor -> run Fix -> doctor until the report is clean.
 type Check struct {
 	ID     string `json:"id"`
 	Status string `json:"status"` // ok, warn, fail
@@ -110,10 +106,6 @@ func runDoctor(ctx *Context) []Check {
 	} else {
 		report(Check{ID: "model_manager", Status: "ok", Detail: manager})
 	}
-	// The endpoint is checked for syntax only. Whether a host is reachable or
-	// holds a package is what `voiceime models sizes` answers with a real
-	// request; doctor never touches the network, so it stays usable offline and
-	// cannot hang on an unreachable mirror.
 	if endpoint, err := cfg.DownloadEndpoint(); err != nil {
 		report(Check{
 			ID:     "download_mirror",
@@ -215,8 +207,6 @@ func runDoctor(ctx *Context) []Check {
 }
 
 // modelChecks reports which model will be used and whether the choice exists.
-// Findings are pushed through report so the human and JSON renderings cannot
-// drift apart.
 func modelChecks(ctx *Context, report func(Check)) {
 	cfg := ctx.Config
 	// A diagnostic reads. `models list --refresh` is the cache's only writer (D35), so
@@ -248,7 +238,7 @@ func modelChecks(ctx *Context, report func(Check)) {
 	if len(scanned) == 0 {
 		recommendation := models.RecommendedPackages()[0]
 		report(Check{
-			ID:     "streaming_model",
+			ID:     "model",
 			Status: "fail",
 			Detail: "no speech models found in " + cfg.ResolvedModelsDir(),
 			Fix:    fmt.Sprintf("voiceime models install %s   # %s", recommendation.ID, recommendation.Reason),
@@ -256,95 +246,55 @@ func modelChecks(ctx *Context, report func(Check)) {
 		return
 	}
 
-	if cfg.StreamingModel != "" {
-		found := models.Lookup(scanned, cfg.StreamingModel)
+	if cfg.Model != "" {
+		found := models.Lookup(scanned, cfg.Model)
 		switch {
 		case found == nil:
 			report(Check{
-				ID:     "streaming_model",
+				ID:     "model",
 				Status: "fail",
-				Detail: cfg.StreamingModel + " is configured but was not found under " + cfg.ResolvedModelsDir(),
+				Detail: cfg.Model + " is configured but was not found under " + cfg.ResolvedModelsDir(),
 				Fix:    "voiceime models list",
 			})
 		case found.Error != "":
 			report(Check{
-				ID:     "streaming_model",
+				ID:     "model",
 				Status: "fail",
 				Detail: found.Path + " cannot be loaded: " + found.Error,
-				Fix:    "voiceime config set streaming_model <path from `voiceime models list`>",
+				Fix:    "voiceime config set model <path from `voiceime models list`>",
 			})
-		case !found.StreamingASR():
+		case !found.ASR():
 			report(Check{
-				ID:     "streaming_model",
+				ID:     "model",
 				Status: "fail",
-				Detail: fmt.Sprintf("%s (%s) has no streaming ASR mode; live dictation needs one", found.Path, found.Family),
-				Fix:    "voiceime config set streaming_model <path from `voiceime models list`>",
+				Detail: fmt.Sprintf("%s (%s) is not a transcription model", found.Path, found.Family),
+				Fix:    "voiceime config set model <path from `voiceime models list`>",
 			})
 		default:
 			report(Check{
-				ID:     "streaming_model",
+				ID:     "model",
 				Status: "ok",
 				Detail: fmt.Sprintf("%s (%s)", found.Path, found.Family),
 			})
 		}
 	} else {
-		picked := models.PickStreaming(scanned, cfg.Language)
+		picked := models.Pick(scanned, cfg.Language)
 		if picked == nil {
 			recommendation := models.RecommendedPackages()[0]
 			report(Check{
-				ID:     "streaming_model",
+				ID:     "model",
 				Status: "fail",
-				Detail: "no installed model supports streaming ASR",
+				Detail: "no installed model transcribes speech",
 				Fix:    fmt.Sprintf("voiceime models install %s   # %s", recommendation.ID, recommendation.Reason),
 			})
 		} else {
 			report(Check{
-				ID:     "streaming_model",
+				ID:     "model",
 				Status: "ok",
 				Detail: fmt.Sprintf("%s (%s) - picked automatically", picked.Path, picked.Family),
-				Fix:    "voiceime config set streaming_model " + picked.Path,
+				Fix:    "voiceime config set model " + picked.Path,
 			})
 		}
-	}
-
-	// The repair model is optional and defaults to the streaming model, which is
-	// the interactive choice: measured on the reference machine, re-decoding a
-	// 4.2s segment costs ~0.55s with SenseVoice against ~5.7s with the strongest
-	// accurate model installed there. Doctor states that trade rather than
-	// deciding it.
-	if cfg.RefineModel != "" {
-		found := models.Lookup(scanned, cfg.RefineModel)
-		if found == nil || found.Error != "" {
-			report(Check{
-				ID:     "refine_model",
-				Status: "fail",
-				Detail: cfg.RefineModel + " is configured but not usable",
-				Fix:    "voiceime models list",
-			})
-		} else {
-			// No cost warning: the service holds the weights, so a repair is a decode
-			// (0.5-0.8s measured) whatever the checkpoint. Warning that a bigger model
-			// "would lag" was true of a process per utterance and is the opposite of the
-			// direction this installation is built for.
-			report(Check{
-				ID:     "refine_model",
-				Status: "ok",
-				Detail: fmt.Sprintf("%s (%s)", found.Path, found.Family),
-			})
-		}
-	} else if !cfg.RefineOnSegmentEnd {
-		report(Check{
-			ID:     "refine_model",
-			Status: "warn",
-			Detail: "repair is disabled: window-boundary damage in the stream text will be delivered as-is",
-			Fix:    "voiceime config set refine_on_segment_end true",
-		})
-	} else {
-		report(Check{
-			ID:     "refine_model",
-			Status: "ok",
-			Detail: "reuses the streaming model (one model for both passes)",
-		})
 	}
 
 	// The optional resident server: the one part of a working installation nothing

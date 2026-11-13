@@ -10,12 +10,6 @@ import (
 )
 
 // An installed component has to survive a round trip.
-//
-// `config apply` reads the installed file, changes the engine name the configuration owns,
-// and writes it back. Anything the reader loses is silently dropped from the file IBus
-// reads next - the exec line above all, which would repoint the engine at whatever binary
-// ran apply, and the symbol, which was stored as an XML entity and would have been
-// double-escaped on the way out ("&amp;#x1F3A4;").
 func TestComponentRoundTripsThroughTheInstalledFile(t *testing.T) {
 	cfg := config.Default()
 	component := DefaultComponent(cfg, "/home/u/.local/bin/voiceime ibus-engine --ibus")
@@ -60,11 +54,6 @@ func TestReadComponentRejectsAFileWithoutAnEngine(t *testing.T) {
 }
 
 // A component written by an older version is healed on the way through.
-//
-// <symbol> was stored as the entity and escaped, so the installed file carries the
-// literal text "&#x1F3A4;" and IBus has been drawing that instead of a microphone. Read
-// decodes it, which makes the re-render differ and is what lets `config apply` repair the
-// file rather than calling it unchanged.
 func TestReadComponentHealsAnEscapedSymbol(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "voiceime.xml")
 	body := `<?xml version="1.0" encoding="utf-8"?>

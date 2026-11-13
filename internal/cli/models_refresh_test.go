@@ -43,11 +43,6 @@ func modelsListFixture(t *testing.T) (configPath, cacheDir, modelFile, marker st
 }
 
 // A plain `models list` neither asks audio.cpp nor writes the cache.
-//
-// It says what it cannot tell instead: "1 file has not been inspected", with the command
-// that would classify it. That is the difference this split exists for - before it, the
-// list silently spent six seconds per file, and a read-only cache made the same command
-// fail and tell the user to run `voiceime models refresh`, a command that no longer exists.
 func TestModelsListDoesNotInspectOrWrite(t *testing.T) {
 	configPath, cacheDir, _, marker := modelsListFixture(t)
 
@@ -126,10 +121,6 @@ func TestModelsListRejectsForceWithoutRefresh(t *testing.T) {
 }
 
 // doctor reports an unclassified model without classifying it.
-//
-// It is the command a user runs to find out what is wrong, so it must not spend six seconds
-// per file asking audio.cpp, and it must not fail because a cache could not be written -
-// both of which it did before the cache had a single writer (D35).
 func TestDoctorReportsUninspectedModelsWithoutTouchingTheCache(t *testing.T) {
 	cacheDir := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", cacheDir)

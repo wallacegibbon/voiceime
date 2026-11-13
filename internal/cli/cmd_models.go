@@ -9,14 +9,7 @@ import (
 	"github.com/wallacegibbon/voiceime/internal/models"
 )
 
-// cmdModels is the whole model-management surface the user asked for as a
-// "refresh button in the UI": listing, refreshing, sizing and installing are
-// subcommands, and the refresh cost is bounded by the inspection cache.
 func cmdModels() *Command {
-	// --all is a declared flag for the same reason config's --force is: reading it
-	// out of the positional arguments never worked, so `models list --all` - the
-	// documented way to see the non-ASR GGUF files in a shared models directory -
-	// failed with "flag provided but not defined".
 	var all bool
 	var refresh bool
 	var force bool
@@ -76,9 +69,7 @@ func runModels(ctx *Context, args []string, showAllModels, refreshModels, forceM
 		}
 		sort.Slice(scanned, func(i, j int) bool { return scanned[i].Family < scanned[j].Family })
 
-		// Which checkpoint each role uses: one answer, shared with the server spec and
-		// `config show` (D32).
-		resolved := models.Resolve(scanned, ctx.Config.Language, ctx.Config.StreamingModel, ctx.Config.RefineModel)
+		resolved := models.Resolve(scanned, ctx.Config.Language, ctx.Config.Model)
 
 		for _, model := range scanned {
 			state := model.Family
@@ -107,11 +98,9 @@ func runModels(ctx *Context, args []string, showAllModels, refreshModels, forceM
 		}
 
 		payload := map[string]any{
-			"models":        scanned,
-			"streaming":     resolved.Stream,
-			"refine":        resolved.Repair,
-			"refine_source": refineSource(ctx),
-			"uninspected":   len(pending),
+			"models":      scanned,
+			"model":       resolved.Model,
+			"uninspected": len(pending),
 		}
 		if err := ctx.Emit("models "+action, payload); err != nil {
 			return err
@@ -163,9 +152,6 @@ func runModels(ctx *Context, args []string, showAllModels, refreshModels, forceM
 			return FailureError("%v", err)
 		}
 		// The download did not register the model, and install does not write the cache:
-		// `models list --refresh` is its only writer (D35). Naming the command here is what
-		// keeps the required step from being a surprise two commands later, when `doctor`
-		// reports the model as uninspected.
 		next := "voiceime models list --refresh"
 		ctx.Print("downloaded into %s; run `%s` so voiceime can identify it", manager.ModelsDir, next)
 		return ctx.Emit("models install", map[string]any{
@@ -192,18 +178,6 @@ func runModels(ctx *Context, args []string, showAllModels, refreshModels, forceM
 	}
 
 	return UsageError("unknown models action %q", action)
-}
-
-// refineSource says where the repair model came from, so a caller can tell a
-// deliberate choice from the default.
-func refineSource(ctx *Context) string {
-	if ctx.Config.RefineModel != "" {
-		return "configured"
-	}
-	if ctx.Config.RefineOnSegmentEnd {
-		return "same-as-streaming"
-	}
-	return "disabled"
 }
 
 func describeTasks(model models.Model) string {

@@ -20,10 +20,6 @@ func TestNormalizeTraditionalToSimplified(t *testing.T) {
 	}
 }
 
-// Script conversion is a single pass over OpenCC's t2s data, and that data is
-// not idempotent: it preserves some forms that it would convert if they were
-// the input. This is why the transcript stores raw chunks and normalizes on
-// read instead of normalizing before Place.
 func TestScriptConversionIsSinglePass(t *testing.T) {
 	normalizer := New("zh", Options{})
 	if got := normalizer.Normalize("乾圖"); got != "乾图" {

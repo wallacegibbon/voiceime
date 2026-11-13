@@ -11,10 +11,6 @@ import (
 	"github.com/godbus/dbus/v5"
 )
 
-// The D-Bus surface, established by capturing a live engine (see
-// docs/ibus-protocol.md). IBus serialises its objects with the type name as the
-// first field, then an attachment dictionary, then the object's own fields. The
-// signatures below are not guesses: each was read off the wire.
 const (
 	// IBusText: (type name, attachments, text, attributes variant)
 	signatureText = "(sa{sv}sv)"
@@ -32,10 +28,6 @@ const (
 )
 
 // IBusText is the payload of CommitText and UpdatePreeditText.
-//
-// The field order and types are exactly what the capture showed:
-//
-//	variant struct { string "IBusText"; array []; string "你好"; variant struct {...} }
 type IBusText struct {
 	TypeName    string                  // always "IBusText"
 	Attachments map[string]dbus.Variant // empty in practice
@@ -43,9 +35,6 @@ type IBusText struct {
 	Attributes  dbus.Variant // an IBusAttrList; empty list is fine
 }
 
-// NewText builds a text payload with no attributes, which is what a plain commit
-// needs. Preedit text needs an attribute to be drawn as a composition; see
-// NewPreeditText.
 func NewText(text string) IBusText {
 	return IBusText{
 		TypeName:    "IBusText",
@@ -55,16 +44,6 @@ func NewText(text string) IBusText {
 	}
 }
 
-// NewPreeditText builds the text payload for a preedit: the whole string
-// underlined, which is what marks it as an in-progress composition.
-//
-// Without an attribute the text is still accepted and shown, but the application
-// draws it as ordinary text with no underline - measured on X11, where GTK's IM
-// module renders the preedit itself and takes the underline from these attributes
-// alone. (On Wayland the same text came out underlined without them, which is why
-// the omission went unnoticed: the compositor's text-input path marks the
-// composition by itself.) The empty preedit that ends a composition keeps an empty
-// list, because there is nothing to underline.
 func NewPreeditText(text string) IBusText {
 	payload := NewText(text)
 	length := uint32(utf8.RuneCountInString(text))
@@ -84,17 +63,6 @@ func NewPreeditText(text string) IBusText {
 	return payload
 }
 
-// IBusAttribute is one entry in an attribute list, which is what tells an
-// application how to draw part of a text: the values are IBus's own enum numbers,
-// the indices count characters (not bytes) and end is exclusive.
-//
-// The field order and types are libibus's, not a guess: serialising a single
-// underline over a six-character string with libibus 1.5.29's own
-// `serialize_object` produces
-//
-//	('IBusAttribute', @a{sv} {}, uint32 1, uint32 1, uint32 0, uint32 6)
-//
-// which is this struct, in this order.
 type IBusAttribute struct {
 	TypeName    string
 	Attachments map[string]dbus.Variant
@@ -123,9 +91,6 @@ func newAttrList() ibusAttrList {
 	}
 }
 
-// trace records every call the daemon makes, when VOICEIME_IBUS_TRACE names a
-// file. The engine is spawned detached by ibus-daemon, so its stdout is lost;
-// this is the only way to see where an activation stalls.
 func trace(format string, args ...interface{}) {
 	path := os.Getenv("VOICEIME_IBUS_TRACE")
 	if path == "" {
@@ -160,7 +125,9 @@ type Handler interface {
 	Enable(control Control)
 	// Disable is called when it stops being active.
 	Disable()
-	// KeyEvent is offered every key press. Returning true consumes it.
+	// KeyEvent is offered every key event - press and release, the latter marked by
+	// ReleaseMask in the state. Returning true consumes it, which only the
+	// push-to-talk trigger does: everything else belongs to the application.
 	KeyEvent(keyval, keycode, state uint32) bool
 }
 
@@ -180,10 +147,6 @@ type Service struct {
 	engines      map[dbus.ObjectPath]*engineObject
 	nextEngineID int
 
-	// closed is shut exactly once. Two paths can decide to end the service - a
-	// failed liveness ping, and the daemon asking the component to Destroy - and
-	// D-Bus dispatches each incoming call on its own goroutine, so they can run at
-	// the same time. A check-then-close could therefore close twice and panic.
 	closed    chan struct{}
 	closeOnce sync.Once
 }
@@ -246,16 +209,6 @@ func (s *Service) connect(address string) error {
 	}
 	s.conn = conn
 
-	// Export the objects *before* claiming the well-known name. Claiming the name	// is what makes this process visible to ibus-daemon, and the daemon calls
-	// CreateEngine on the name the moment it appears; if the factory is not
-	// exported yet, that call fails with
-	//   UnknownInterface: Object does not implement the interface
-	//   'org.freedesktop.IBus.Factory'
-	// The daemon does not retry, so the first `ibus engine voiceime` of a session
-	// (or the first F9 tap, which the listener turns into the same call) would do
-	// nothing and the second would work - reproduced deterministically on a
-	// private daemon before this change, gone after it. Exporting first costs
-	// nothing, because godbus registers the handlers locally.
 	if err := conn.Export(&factoryObject{service: s}, FactoryPath, ifaceIBusFactory); err != nil {
 		return fmt.Errorf("export the factory: %w", err)
 	}
@@ -351,10 +304,6 @@ func (s *Service) drop(path dbus.ObjectPath) {
 	}
 }
 
-// --------------------------------------------------------------------------- //
-// D-Bus objects
-// --------------------------------------------------------------------------- //
-
 type factoryObject struct{ service *Service }
 
 // CreateEngine is the only method the daemon needs from a factory.
@@ -384,12 +333,6 @@ type serviceObject struct{ service *Service }
 func (s *serviceObject) Destroy() *dbus.Error { return (&factoryObject{service: s.service}).Destroy() }
 
 // engineControl publishes text for one engine instance.
-//
-// It is deliberately a separate type from engineObject. godbus exports *every*
-// exported method of whatever object it is handed, under the interface name it is
-// given, so an engine object that also implemented Commit/Preedit would expose
-// those as D-Bus methods the daemon could call - harmless today, but it means the
-// wire surface would silently grow with every helper added here.
 type engineControl struct {
 	conn *dbus.Conn
 	path dbus.ObjectPath
@@ -431,11 +374,6 @@ type engineObject struct {
 // keystrokes, so the interesting ones are Enable and Disable.
 
 // Enable is called once per input context this engine becomes active in.
-//
-// The session behind the handler counts contexts to decide when dictation stops, so it
-// must see exactly one Enable per context: IBus can call this again for a context that
-// is already active (a focus change inside it), and counting that twice would make the
-// matching Disable look like one context too few - dictation that never stops.
 func (e *engineObject) Enable() *dbus.Error {
 	trace("Enable()")
 	e.mu.Lock()
@@ -474,8 +412,6 @@ func (e *engineObject) Disable() *dbus.Error {
 	return nil
 }
 
-// ProcessKeyEvent returns false: every key belongs to the application. Consuming
-// keys would make voiceime a keyboard layout, which it is not.
 func (e *engineObject) ProcessKeyEvent(keyval, keycode, state uint32) (bool, *dbus.Error) {
 	trace("ProcessKeyEvent(%d,%d,%d)", keyval, keycode, state)
 	e.mu.Lock()
@@ -534,16 +470,6 @@ func (e *engineObject) shutdown() {
 }
 
 // propertiesObject serves the properties IBus declares on an engine.
-//
-// libibus 1.5.29 declares two read-only ones - `HasFocusId` and `ActiveSurroundingText`,
-// both booleans - and this answered `FocusId`, the name an older release used, so the
-// daemon asked a question it got an error for and logged a failure about a capability the
-// engine actually has. Both names are answered now, with the same value: voiceime has a
-// focus id, and it does not have surrounding text, so answering "no" is not a limitation
-// being hidden but the truth. `ContentType` is written by the daemon and never read by this
-// engine; answering its Get keeps a daemon that asks from logging a failure about a
-// property it set itself, but it is not listed in GetAll because the type this engine would
-// claim for it is a guess.
 type propertiesObject struct{ engine *engineObject }
 
 func (p *propertiesObject) Get(iface, name string) (dbus.Variant, *dbus.Error) {

@@ -6,11 +6,6 @@ import (
 	"testing"
 )
 
-// The t2s tables are copied from OpenCC. A checksum is the cheap regression
-// test for the copy: it does not prove the matcher is right (the behaviour tests
-// do), but it makes an accidental edit or a partial copy fail loudly instead of
-// changing what the binary recognizes. When the data is intentionally updated,
-// update the checksum in the same commit and re-verify against `opencc -c t2s`.
 func TestDictionaryDataIsTheCopiedOpenCCData(t *testing.T) {
 	cases := []struct {
 		name string

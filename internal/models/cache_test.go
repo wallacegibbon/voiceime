@@ -54,12 +54,6 @@ func invocations(t *testing.T, marker string) int {
 const oneInspection = 3
 
 // Cached runs nothing and writes nothing.
-//
-// It is the function every diagnostic uses, so a `doctor` that cannot write its cache - a
-// read-only cache directory, a full disk - has to keep working: measured before this split,
-// a read-only cache made doctor report "models: fail" on a machine where every model was
-// fine. It also has to work without audio.cpp, because a missing CLI is a finding, not a
-// reason to report nothing.
 func TestCachedRunsNothingAndWritesNothing(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	dir, model := modelDir(t)

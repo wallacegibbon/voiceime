@@ -2,10 +2,6 @@ package cli
 
 import "testing"
 
-// The machine-specific advice is only as good as its parsing, and the parsing
-// reads formats that cannot be exercised from the test machine: /proc/cpuinfo
-// from an unknown CPU, a version banner from an unknown build.
-
 const cpuinfoSample = `processor	: 0
 vendor_id	: AuthenticAMD
 cpu family	: 25

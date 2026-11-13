@@ -8,18 +8,14 @@ import (
 	"testing"
 )
 
-// The three install checks exist because a moved checkout breaks voiceime
-// silently. These tests pin the parsing and the classification, which are the
-// parts that can be wrong without anything crashing.
-
 func TestUnitExecStartReadsTheCommand(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "voiceime-hotkey.service")
+	path := filepath.Join(t.TempDir(), "voiceime-asr-server.service")
 	unit := `[Unit]
-Description=voiceime push-to-talk listener
+Description=voiceime recognition server
 
 [Service]
 Type=simple
-ExecStart=/home/u/.local/bin/voiceime hotkey run --keys <F9>
+ExecStart=/home/u/.local/bin/voiceime server run --config /home/u/.config/voiceime/config.toml
 Restart=on-failure
 
 [Install]
@@ -83,9 +79,6 @@ func TestRunningBinaryVerdict(t *testing.T) {
 	}
 }
 
-// The process checks walk a table, and a missing row is a stale process doctor
-// cannot see: the service in particular holds the models, so a stale one serves
-// old inference while every other check passes. The rows are pinned here.
 func TestRunningKindsCoverTheResidentProcesses(t *testing.T) {
 	ids := map[string]string{}
 	for _, kind := range runningKinds {
@@ -94,7 +87,7 @@ func TestRunningKindsCoverTheResidentProcesses(t *testing.T) {
 			t.Errorf("%s needs both a pattern and a fix", kind.id)
 		}
 	}
-	for _, id := range []string{"engine_process", "hotkey_process", "server_process"} {
+	for _, id := range []string{"engine_process", "server_process"} {
 		if ids[id] == "" {
 			t.Errorf("runningKinds lost %s: a stale %s is then invisible to doctor", id, id)
 		}
@@ -121,12 +114,9 @@ func contains(haystack, needle string) bool {
 	return needle == ""
 }
 
-// /proc/<pid>/cmdline is NUL-separated, which is easy to get wrong: matching with
-// spaces made the listener check find nothing while the engine check - a single
-// argument - worked.
 func TestCommandLineNormalizesNulSeparatedArguments(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cmdline")
-	raw := []byte("/home/u/.local/bin/voiceime\x00hotkey\x00run\x00--keys\x00<F9>\x00")
+	raw := []byte("/home/u/.local/bin/voiceime\x00server\x00run\x00--config\x00/home/u/.config/voiceime/config.toml\x00")
 	if err := os.WriteFile(path, raw, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -134,8 +124,8 @@ func TestCommandLineNormalizesNulSeparatedArguments(t *testing.T) {
 	if !ok {
 		t.Fatal("commandLine failed on a readable file")
 	}
-	if !contains(got, "hotkey run") {
-		t.Errorf("commandLine = %q, want it to contain %q", got, "hotkey run")
+	if !contains(got, "server run") {
+		t.Errorf("commandLine = %q, want it to contain %q", got, "server run")
 	}
 	if !strings.HasPrefix(got, "/home/u/.local/bin/voiceime ") {
 		t.Errorf("commandLine = %q, want it to start with the binary path", got)
@@ -146,11 +136,6 @@ func TestCommandLineNormalizesNulSeparatedArguments(t *testing.T) {
 }
 
 // A process that merely mentions the pattern is not an engine.
-//
-// `config apply` used to stop the engine with `pkill -f "voiceime ibus-engine"`, which
-// matches any process whose *command line* contains that string - measured: it killed
-// the shell that ran the command, twice, and would as easily kill an editor with the docs
-// open. Matching is on the executable now, which only this binary can be.
 func TestProcessesRunningIgnoresProcessesThatMerelyMentionThePattern(t *testing.T) {
 	// A shell whose command line contains the pattern: exactly what pkill -f matched.
 	command := exec.Command("/bin/sh", "-c", "sleep 5 # voiceime ibus-engine")

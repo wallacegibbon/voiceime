@@ -25,23 +25,6 @@ func TestSampleRoundTrip(t *testing.T) {
 	}
 }
 
-func TestRMSAndPeak(t *testing.T) {
-	quiet := silence(0.1)
-	if level := RMS(quiet); level != 0 {
-		t.Errorf("RMS(silence) = %v, want 0", level)
-	}
-	tone := SamplesToBytes([]int16{1000, -1000, 1000, -1000})
-	if level := RMS(tone); math.Abs(level-1000) > 0.001 {
-		t.Errorf("RMS(square) = %v, want 1000", level)
-	}
-	if peak := peak(tone); peak != 1000 {
-		t.Errorf("Peak = %d, want 1000", peak)
-	}
-	if got := DurationSeconds(silence(1)); math.Abs(got-1) > 1e-9 {
-		t.Errorf("DurationSeconds(1s of silence) = %v", got)
-	}
-}
-
 func TestResampleHalvesLength(t *testing.T) {
 	// A 1 kHz tone sampled at 32 kHz, downsampled to 16 kHz, must come back with
 	// half the samples at the pipeline rate.
@@ -56,9 +39,17 @@ func TestResampleHalvesLength(t *testing.T) {
 	if got, want := SampleCount(out), count/2; got != want {
 		t.Errorf("resampled sample count = %d, want %d", got, want)
 	}
-	// The result must be a recognisable tone, not garbage: check its RMS is in
-	// the same ballpark as the input's.
-	if in, out := RMS(SamplesToBytes(samples)), RMS(out); math.Abs(in-out)/in > 0.1 {
+	// The result must be a recognisable tone, not garbage: check its level is in the
+	// same ballpark as the input's.
+	level := func(pcm []byte) float64 {
+		values := BytesToSamples(pcm)
+		total := 0.0
+		for _, value := range values {
+			total += math.Abs(float64(value))
+		}
+		return total / float64(len(values))
+	}
+	if in, out := level(SamplesToBytes(samples)), level(out); math.Abs(in-out)/in > 0.1 {
 		t.Errorf("resample changed the level: in %v out %v", in, out)
 	}
 }
@@ -98,10 +89,6 @@ func TestReadWAVRejectsNonPCM(t *testing.T) {
 	}
 }
 
-// silence builds a block of digital silence, and peak measures the loudest
-// sample in one. Both live here rather than in format.go: they are fixtures, and
-// a production package should not carry functions that only its tests call - that
-// is how the adaptive noise floor came to be dead code for months.
 func silence(seconds float64) []byte {
 	return make([]byte, int(seconds*SampleRate)*BytesPerSample)
 }

@@ -1,23 +1,4 @@
 // Package ibus is voiceime's text-delivery layer: an IBus engine.
-//
-// IBus is the input-method framework GNOME already runs, so becoming an engine is
-// the only way to put text into the focused application without privileges. The
-// protocol is not documented for third-party implementers, so it was established
-// empirically against a live daemon and is recorded here in full; see
-// docs/ibus-protocol.md for the transcript of that investigation.
-//
-// Three facts shape this implementation, all verified:
-//
-//  1. ibus-daemon builds its engine registry from component XML under
-//     $IBUS_COMPONENT_PATH (or /usr/share/ibus/component). It does *not* scan
-//     ~/.local/share/ibus/component, and setting IBUS_COMPONENT_PATH *replaces*
-//     the default path, so an install must list both directories.
-//  2. The daemon spawns the component's <exec> when the engine is activated, and
-//     the spawned process must own the bus name from the component <name> and
-//     expose a factory at /org/freedesktop/IBus/Factory.
-//  3. A malformed component passed to RegisterComponent makes the daemon abort
-//     (reproduced in a sandbox). Text delivery therefore uses the file-based
-//     route only and never hand-marshals a component at runtime.
 package ibus
 
 import (
@@ -30,30 +11,14 @@ import (
 )
 
 // DefaultComponentName is the well-known bus name the engine process requests.
-// IBus uses the component <name> as the bus name, which is why this must match
-// the XML.
 const DefaultComponentName = "org.freedesktop.IBus.Voiceime"
 
 // FactoryPath is where the daemon looks for CreateEngine on the engine process.
 const FactoryPath = "/org/freedesktop/IBus/Factory"
 
-// EnginePathPrefix is where an engine instance is exported. The daemon passes the
-// object path it got from CreateEngine, so the exact numbering is ours to choose;
-// this mirrors libibus's /org/freedesktop/IBus/Engine/<n>.
 const EnginePathPrefix = "/org/freedesktop/IBus/Engine"
 
 // ResolveAddress finds the address of the IBus daemon's private bus.
-//
-// Three sources, in order of authority:
-//
-//  1. IBUS_ADDRESS, which libibus itself honours first.
-//  2. The registry file the daemon writes at
-//     $XDG_CONFIG_HOME/ibus/bus/<machine-id>-<display>. Every candidate file is
-//     pinged, because the daemon writes a new one on each restart and stale files
-//     outlive it: connecting to a stale address is the failure mode that made this
-//     function exist.
-//  3. Nothing else: the session-bus GetAddress route is deprecated upstream and
-//     the file route is what the daemon's own clients use.
 func ResolveAddress(probe func(address string) error) (string, error) {
 	if address := strings.TrimSpace(os.Getenv("IBUS_ADDRESS")); address != "" {
 		return address, nil
@@ -120,8 +85,6 @@ func readRegistryAddress(path string) string {
 }
 
 // displayMatches reports whether a registry file name refers to this session.
-// The daemon names them <machine-id>-<display>, and the display half is either the
-// X11 display or WAYLAND_DISPLAY, so either may match.
 func displayMatches(name string) bool {
 	suffix := strings.ToLower(name)
 	for _, display := range []string{os.Getenv("WAYLAND_DISPLAY"), os.Getenv("DISPLAY")} {
@@ -137,13 +100,6 @@ func displayMatches(name string) bool {
 }
 
 // RegistryCachePath is the daemon's cached component registry.
-//
-// It has to be invalidated when the component search path changes: the cache
-// records the directories the daemon watched when it was written, and a daemon
-// that starts with a cache never looks at a new directory. Measured on the
-// reference machine: with IBUS_COMPONENT_PATH already in the daemon's
-// environment, the engine stayed invisible across `ibus restart`, and appeared as
-// soon as this file was removed.
 func RegistryCachePath() string {
 	base := os.Getenv("XDG_CACHE_HOME")
 	if base == "" {

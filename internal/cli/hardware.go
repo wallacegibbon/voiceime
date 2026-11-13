@@ -10,13 +10,6 @@ import (
 )
 
 // This file answers the questions about the *machine* that the reference
-// machine's defaults silently answer wrongly everywhere else: how many cores it
-// has, and whether it has a GPU the local audio.cpp build could use.
-//
-// Nothing here changes a setting. Detection is reported, and the checks in
-// hardware_check.go turn it into advice with a runnable fix, because both numbers
-// are guesses about intent: more threads is not always faster, and a GPU that
-// exists is not necessarily a GPU audio.cpp was built for.
 
 // hardwareFacts is what can be learned without running a benchmark.
 type hardwareFacts struct {
@@ -56,9 +49,6 @@ func (h hardwareFacts) Cores() int {
 }
 
 // parsePhysicalCores counts unique (physical id, core id) pairs in /proc/cpuinfo.
-//
-// A container, a VM or an architecture that does not report those fields yields
-// 0, which the caller treats as "unknown" rather than as "one core".
 func parsePhysicalCores(cpuinfo string) int {
 	type pair struct{ physical, core string }
 	seen := map[pair]bool{}
@@ -90,11 +80,6 @@ func parsePhysicalCores(cpuinfo string) int {
 	return len(seen)
 }
 
-// gpuDrivers lists vendor compute tools on PATH. It is deliberately not "any hint
-// of a GPU": a /dev/dri render node exists on every laptop with integrated
-// graphics, and warning about those would make this check noise. What the local
-// audio.cpp build actually supports is asked of the binary, not inferred from
-// here.
 func gpuDrivers() []string {
 	var drivers []string
 	for _, tool := range []string{"nvidia-smi", "rocm-smi", "rocminfo"} {
@@ -113,9 +98,6 @@ func renderNodes() []string {
 	return nodes
 }
 
-// parseBackends reads the `backends: cpu,cuda` line an audio.cpp CLI prints in its
-// version banner. An absent or empty line yields nothing, which callers treat as
-// "the build did not say" rather than as "no backends".
 func parseBackends(line string) []string {
 	_, value, found := strings.Cut(line, "backends:")
 	if !found {

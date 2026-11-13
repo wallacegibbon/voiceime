@@ -14,13 +14,6 @@ import (
 )
 
 // Manager drives audio.cpp's model manager script.
-//
-// Delegating the download to that script is deliberate: it owns the package
-// registry, the pinned revisions per package and the mirror rules, and it is the
-// code path upstream tests against HuggingFace. A second implementation here
-// would drift from the registry without anyone noticing. voiceime's contribution
-// is the *policy*: which endpoint to use, which packages to recommend, and a
-// machine-readable result an agent can act on.
 type Manager struct {
 	Script    string
 	ModelsDir string
@@ -30,9 +23,6 @@ type Manager struct {
 	Python   string
 }
 
-// ErrBadEndpoint marks a download_mirror that is not a usable endpoint URL, so a
-// caller can offer the fix for that setting rather than for the surrounding
-// tooling.
 var ErrBadEndpoint = errors.New("download_mirror")
 
 // NewManager resolves the script, the interpreter to run it with and the
@@ -58,11 +48,6 @@ func NewManager(cfg *config.Config) (*Manager, error) {
 	}, nil
 }
 
-// environment returns the extra environment the script needs. The endpoint is
-// always set explicitly rather than inherited: HF_ENDPOINT is the variable
-// huggingface_hub reads, so an ambient value would otherwise decide where
-// downloads come from and voiceime's configuration would stop being the single
-// source of truth for it.
 func (m *Manager) environment() []string {
 	return []string{"HF_ENDPOINT=" + m.Endpoint}
 }
@@ -75,9 +60,6 @@ func (m *Manager) command(ctx context.Context, args ...string) *exec.Cmd {
 	return cmd
 }
 
-// Progress is one event from an install: either a parsed progress record or a
-// line of human-readable output. Streaming this rather than buffering means a
-// caller can show a progress bar, and an agent can log a long download.
 type Progress struct {
 	// Phase is filled from AUDIOCPP_PROGRESS records ("download", "verify", ...).
 	Phase string `json:"phase,omitempty"`
@@ -157,9 +139,6 @@ func consume(reader io.Reader, sink io.Writer, progress func(Progress)) {
 	}
 }
 
-// describeExecError adds the failing command's output to the error, because the
-// script explains most failures (404 on a mirror, repo renamed upstream) in its
-// output rather than in its exit status.
 func describeExecError(what string, err error) error {
 	if exit, ok := err.(*exec.ExitError); ok {
 		output := strings.TrimSpace(string(exit.Stderr))
@@ -171,14 +150,6 @@ func describeExecError(what string, err error) error {
 	return fmt.Errorf("%s failed: %w", what, err)
 }
 
-// RecommendedPackages is the short list voiceime suggests to a user who has no
-// model yet, in the order it suggests them. The ids are real registry ids, and
-// the reasons are measured on a CPU-only machine; see docs/measurements.md and
-// DEPLOY.md#4-install-a-model for the CPU/GPU split the first two entries encode.
-//
-// Note what is absent: Audio8-ASR is not offered even though it looks ideal on
-// paper, because its spec declares the download as unsupported (the checkpoint
-// is CC-BY-NC and audio.cpp ships no public GGUF) and it has no streaming mode.
 func RecommendedPackages() []struct {
 	ID     string
 	Reason string
@@ -187,9 +158,9 @@ func RecommendedPackages() []struct {
 		ID     string
 		Reason string
 	}{
-		{"sensevoice_small_q8", "242 MiB; ~21x realtime streaming on CPU and 0.55s to repair a finished sentence - the streaming model on every machine, CPU or GPU"},
-		{"qwen3_asr_0_6b_q8_0", "1.07 GiB; the more accurate offline reader. Add it as refine_model only with a GPU backend: on CPU one repair costs ~5.7s for a 4.2s sentence"},
-		{"kroko_asr_community_q8_0", "160 MiB, native streaming, one language per package (de/en/es/fr/it/he/nl/pt/sv/tr)"},
-		{"moonshine_streaming_tiny_q8_0", "58 MiB, English-only streaming, useful for testing latency"},
+		{"qwen3_asr_0_6b_q8_0", "1.07 GiB; the accurate offline reader, ~0.13x realtime on this CPU - what a dictation uses"},
+		{"sensevoice_small_q8", "242 MiB; the small offline reader, ~0.16x realtime here - a fallback on a slower machine"},
+		{"kroko_asr_community_q8_0", "160 MiB, one language per package (de/en/es/fr/it/he/nl/pt/sv/tr)"},
+		{"moonshine_streaming_tiny_q8_0", "58 MiB, English-only, useful for testing"},
 	}
 }

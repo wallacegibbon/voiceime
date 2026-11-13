@@ -15,17 +15,15 @@ func TestDefaultsAreCoherent(t *testing.T) {
 	}
 }
 
-func TestValidateWarnsAboutShortWindows(t *testing.T) {
+func TestValidateReportsAnUnusablePushToTalkTrigger(t *testing.T) {
 	cfg := Default()
-	cfg.ChunkSeconds = 1
-	found := false
-	for _, issue := range cfg.Validate() {
-		if issue.Key == "chunk_seconds" && issue.Severity == "warning" {
-			found = true
-		}
+	cfg.PushToTalk = ""
+	issues := Errors(cfg.Validate())
+	if len(issues) != 1 || issues[0].Key != "push_to_talk" {
+		t.Fatalf("Validate with no trigger = %+v, want one push_to_talk issue", issues)
 	}
-	if !found {
-		t.Error("a 1s window produced no warning, but it measurably corrupts CJK output")
+	if issues[0].Fix == "" {
+		t.Error("the issue carries no fix, so an agent cannot act on it")
 	}
 }
 
@@ -33,8 +31,7 @@ func TestSetConvertsTypes(t *testing.T) {
 	cfg := Default()
 	cases := map[string]string{
 		"threads":               "8",
-		"chunk_seconds":         "2.5",
-		"refine_on_segment_end": "false",
+		"max_utterance_seconds": "30",
 		"language":              "en",
 	}
 	for key, value := range cases {
@@ -42,7 +39,7 @@ func TestSetConvertsTypes(t *testing.T) {
 			t.Fatalf("Set(%q, %q): %v", key, value, err)
 		}
 	}
-	if cfg.Threads != 8 || cfg.ChunkSeconds != 2.5 || cfg.RefineOnSegmentEnd || cfg.Language != "en" {
+	if cfg.Threads != 8 || cfg.MaxUtteranceSeconds != 30 || cfg.Language != "en" {
 		t.Errorf("Set did not apply: %+v", cfg)
 	}
 	if err := cfg.Set("threads", "many"); err == nil {
@@ -68,7 +65,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if loaded.Threads != 7 || loaded.RequestOptions["audio_chunk_mode"] != "none" {
 		t.Errorf("round trip lost settings: %+v", loaded)
 	}
-	if loaded.ModelsDir != original.ModelsDir || loaded.Hotkey != original.Hotkey {
+	if loaded.ModelsDir != original.ModelsDir || loaded.PushToTalk != original.PushToTalk {
 		t.Errorf("round trip changed defaults: %+v", loaded)
 	}
 }
@@ -85,11 +82,6 @@ func TestLoadRejectsTypos(t *testing.T) {
 	}
 }
 
-// A setting a previous version wrote is ignored rather than rejected. Load rejects
-// unknown keys before any command runs, so refusing this one would make every
-// command fail on a file voiceime itself wrote - including the `config set` that
-// would rewrite it - and hand-editing would be the only way out. The next write
-// drops it, because Save renders the struct rather than the file it read.
 func TestLoadIgnoresARetiredSetting(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	if err := WriteFileForTest(path, "text_numbers = \"arabic\"\nthreads = 6\n"); err != nil {
@@ -146,9 +138,6 @@ func TestDownloadEndpointAcceptsAnyHuggingFaceProtocolHost(t *testing.T) {
 	}
 }
 
-// The former preset names are gone rather than aliased: a value that is not an
-// endpoint URL must fail loudly, because silently reading it as "some host we
-// know" is the ambiguity this setting was simplified to remove.
 func TestDownloadEndpointRejectsTheFormerPresetNames(t *testing.T) {
 	for _, configured := range []string{"hf-mirror", "huggingface", "modelscope", ""} {
 		cfg := Default()
@@ -179,10 +168,6 @@ func TestDownloadEndpointRejectsMalformedEndpoints(t *testing.T) {
 	}
 }
 
-// An existing config file that still holds a preset name must stay loadable, so
-// that the one command that repairs it is runnable. Failing at Load time would
-// leave hand-editing as the only way out, which is the state a key rename would
-// produce.
 func TestLoadToleratesALegacyEndpointValueSoTheFixStaysRunnable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	if err := WriteFileForTest(path, "download_mirror = \"hf-mirror\"\n"); err != nil {
@@ -217,15 +202,13 @@ func TestExpandHome(t *testing.T) {
 }
 
 // A configured model path that is not there is the failure this check exists for:
-// the file is valid TOML, every other check passes, and the recognition service is
-// the first thing to notice - as a crash loop that reads like "apply did nothing".
 func TestValidateReportsAModelPathThatDoesNotExist(t *testing.T) {
 	cfg := Default()
 	missing := filepath.Join(t.TempDir(), "absent.gguf")
-	cfg.RefineModel = missing
+	cfg.Model = missing
 	issues := Errors(cfg.Validate())
-	if len(issues) != 1 || issues[0].Key != "refine_model" || issues[0].Fix == "" {
-		t.Fatalf("Validate with a missing refine_model = %+v, want one blocking issue carrying a fix", issues)
+	if len(issues) != 1 || issues[0].Key != "model" || issues[0].Fix == "" {
+		t.Fatalf("Validate with a missing model = %+v, want one blocking issue carrying a fix", issues)
 	}
 	if !strings.Contains(issues[0].Message, missing) {
 		t.Errorf("message %q does not name the path that is wrong", issues[0].Message)
@@ -240,20 +223,13 @@ func TestValidateAcceptsAnExistingModelPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := Default()
-	cfg.StreamingModel = existing
-	cfg.RefineModel = existing
+	cfg.Model = existing
 	if issues := Errors(cfg.Validate()); len(issues) != 0 {
 		t.Fatalf("existing model paths were rejected: %+v", issues)
 	}
 }
 
 // Writing the configuration must survive concurrent writers.
-//
-// The commands that write it can run at the same time - two agents, or a doctor beside
-// a `config set` - and the temporary file used to be `path + ".tmp"`, a name every
-// writer shared. Measured: 18 of 40 paired `config set` runs failed with "rename ...
-// .tmp: no such file or directory", because the first rename removed the file the
-// second was about to rename.
 func TestSaveIsSafeForConcurrentWriters(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	const writers = 8
@@ -298,10 +274,6 @@ func TestSaveIsSafeForConcurrentWriters(t *testing.T) {
 	}
 }
 
-// request_options is the one map setting, and `config set` is the only way an agent has
-// to write it: the command exists so that nothing has to generate TOML by hand. It
-// answered "cannot be set from the command line (map)" while its own description
-// promised `key=value`.
 func TestSetRequestOptionsAsKeyValue(t *testing.T) {
 	cfg := Default()
 
@@ -357,11 +329,6 @@ func TestSetRequestOptionsAsKeyValue(t *testing.T) {
 }
 
 // The streaming client speaks HTTP over a raw socket, so it cannot do TLS.
-//
-// An https address used to pass validation, pass `doctor` (whose /health probe uses
-// net/http, which does TLS) and then fail every dictation - the repair path working and
-// the live pass not, which is the worst shape a failure can take. It is a blocking
-// finding now, and the message says why.
 func TestValidateRejectsAServerAddressTheStreamCannotUse(t *testing.T) {
 	cfg := Default()
 	cfg.ASRServerURL = "https://example.invalid:18080"
@@ -399,9 +366,6 @@ func TestValidateRejectsAServerAddressTheStreamCannotUse(t *testing.T) {
 	}
 }
 
-// The text cleanup setting is a user preference, but an unknown value is a
-// typo, not a preference: `traditional` reads like a real choice and would
-// otherwise silently do nothing.
 func TestValidateRejectsUnknownTextCleanupValues(t *testing.T) {
 	cfg := Default()
 	cfg.TextScript = "traditional"

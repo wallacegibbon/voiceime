@@ -6,10 +6,6 @@ import (
 	"testing"
 )
 
-// A checkout is only recognised by what voiceime needs from it: the model manager
-// script, or a built CLI. Nothing here walks the filesystem beyond these
-// candidates, because guessing wrong would silently run another checkout's CLI.
-
 func TestIsAudioCPPCheckout(t *testing.T) {
 	managerOnly := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(managerOnly, "tools"), 0o755); err != nil {

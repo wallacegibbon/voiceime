@@ -18,12 +18,6 @@ func indexAt(t *testing.T, entries map[string]indexEntry) string {
 }
 
 // A scan must not erase what another process just learned.
-//
-// Two commands scan at the same time (a doctor and a models list, two agents), and they are
-// separate processes, so the package mutex cannot serialise them. Writing this process's
-// whole snapshot over the file lost the other's work: on this machine one `--inspect` costs
-// 5.95s, so the loss is paid again on the next scan, visibly. The writer therefore takes
-// every entry it did not inspect from disk.
 func TestSaveIndexKeepsAnotherProcessesEntries(t *testing.T) {
 	// What the other process wrote while this one was still inspecting.
 	path := indexAt(t, map[string]indexEntry{

@@ -1,17 +1,4 @@
-// Package server describes the resident audio.cpp server that serves both recognition
-// roles: writing its config, and asking it whether it is there.
-//
-// It exists because the alternative - a process per utterance, and a process per
-// dictation - pays the model load every time. Measured on the reference machine with
-// Qwen3-ASR-0.6B: ~4.4s of CPU per fresh process whatever the audio length, against
-// ~1.4s once, which is the difference between a large refine model being affordable
-// and not.
-//
-// The server is a *service*: a systemd user unit with `lazy_load: false`, so both
-// models are resident when the machine starts the unit and a dictation session only
-// opens a connection. Nothing here starts, stops or supervises it - that is systemd's
-// job, which is why this package is a config document and a probe rather than a
-// process manager.
+// Package server writes the audio.cpp server's config and asks it whether it is there.
 package server
 
 import (
@@ -24,50 +11,32 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 )
 
 const (
-	// DefaultHost is where the unit binds. Loopback: the service is for this machine, and a
-	// client reaches it through the same address it writes into asr_server_url.
+	// DefaultHost is where the unit binds.
 	DefaultHost = "127.0.0.1"
-	// DefaultID is the entry the offline repair decode uses.
-	DefaultID = "refine"
-	// DefaultStreamID is the entry that serves live partials.
-	DefaultStreamID = "stream"
 	// DefaultPort is where the unit listens unless told otherwise.
 	DefaultPort = 18080
 )
 
 // Spec is what has to be decided before a server config can be written.
 type Spec struct {
-	// StreamModel and RepairModel are the GGUFs the two entries serve. They may be
-	// the same file: audio.cpp holds one model per *request*, and a live session
-	// holds its entry for the whole dictation, so the two roles need two entries even
-	// when they want the same weights.
-	StreamModel  string
-	StreamFamily string
-	RepairModel  string
-	RepairFamily string
-	Port         int
-	Backend      string
-	Threads      int
-	// ChunkSeconds is the streaming window: how much audio a draft is decoded from.
-	ChunkSeconds float64
-	// RequestOptions are the options every repair request carries. They cannot ride a
-	// multipart transcription upload - only the JSON route reads an options object -
-	// so they belong in the entry's default_request_options, which is also where the
-	// CLI's old --request-option values map to.
+	// Model is the GGUF the server serves, and Family is what audio.cpp reports for it.
+	Model  string
+	Family string
+	Port   int
+	// Backend and Threads are passed through to audio.cpp.
+	Backend string
+	Threads int
+	// RequestOptions are the options every transcription request carries. Multipart
+	// uploads have no field for them, so they belong to the served entry.
 	RequestOptions map[string]string
 }
 
 // BaseURL is where a client reaches a server with this spec.
-//
-// The host is not a setting: the unit serves the machine it runs on, and it is the same
-// constant the generated config binds to (see WriteConfig). It used to be a Spec field that
-// WriteConfig ignored, so the stated address and the served one could have diverged.
 func (s Spec) BaseURL() string {
 	port := s.Port
 	if port == 0 {
@@ -76,21 +45,22 @@ func (s Spec) BaseURL() string {
 	return fmt.Sprintf("http://%s:%d", DefaultHost, port)
 }
 
+// EntryID is the id the served entry is published under: the model file's own name.
+func EntryID(modelPath string) string {
+	name := strings.TrimSuffix(filepath.Base(modelPath), filepath.Ext(modelPath))
+	if name == "" || name == "." || name == "/" {
+		return "model"
+	}
+	return name
+}
+
 // WriteConfig writes the server's config and returns its path.
-//
-// lazy_load is false, and that is the point of the service: the weights belong to its
-// startup, not to a request. A repair or a dictation that arrives afterwards finds
-// them resident, which is the whole reason the route costs 0.5s instead of 5s.
 func WriteConfig(spec Spec, path string) error {
 	switch {
-	case spec.StreamModel == "":
-		return fmt.Errorf("no streaming model to serve")
-	case spec.StreamFamily == "":
-		return fmt.Errorf("%s: audio.cpp did not report a family", spec.StreamModel)
-	case spec.RepairModel == "":
-		return fmt.Errorf("no repair model to serve")
-	case spec.RepairFamily == "":
-		return fmt.Errorf("%s: audio.cpp did not report a family", spec.RepairModel)
+	case spec.Model == "":
+		return fmt.Errorf("no model to serve")
+	case spec.Family == "":
+		return fmt.Errorf("%s: audio.cpp did not report a family", spec.Model)
 	}
 	backend := spec.Backend
 	if backend == "" {
@@ -100,12 +70,7 @@ func WriteConfig(spec Spec, path string) error {
 	if port == 0 {
 		port = DefaultPort
 	}
-	streamOptions := map[string]string{}
-	if spec.ChunkSeconds > 0 {
-		streamOptions["audio_chunk_mode"] = "fixed"
-		streamOptions["audio_chunk_duration_sec"] = trimFloat(spec.ChunkSeconds)
-	}
-	config := wireConfig{
+	document := wireConfig{
 		Host:            DefaultHost,
 		Port:            port,
 		Backend:         backend,
@@ -114,26 +79,16 @@ func WriteConfig(spec Spec, path string) error {
 		MaxLoadedModels: 0,
 		UI:              false,
 		UIManagement:    false,
-		Models: []wireModel{
-			{
-				ID:                    DefaultStreamID,
-				Family:                spec.StreamFamily,
-				Path:                  spec.StreamModel,
-				Task:                  "asr",
-				Mode:                  "streaming",
-				DefaultRequestOptions: streamOptions,
-			},
-			{
-				ID:                    DefaultID,
-				Family:                spec.RepairFamily,
-				Path:                  spec.RepairModel,
-				Task:                  "asr",
-				Mode:                  "offline",
-				DefaultRequestOptions: spec.RequestOptions,
-			},
-		},
+		Models: []wireModel{{
+			ID:                    EntryID(spec.Model),
+			Family:                spec.Family,
+			Path:                  spec.Model,
+			Task:                  "asr",
+			Mode:                  "offline",
+			DefaultRequestOptions: spec.RequestOptions,
+		}},
 	}
-	encoded, err := json.MarshalIndent(config, "", "  ")
+	encoded, err := json.MarshalIndent(document, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -175,11 +130,6 @@ type Entry struct {
 }
 
 // Entries asks the server what it serves.
-//
-// It exists so a mismatch between what was configured and what is running can be
-// seen: the entry ids never change when a user points one at another checkpoint, so
-// nothing else in the installation would notice that the service is still serving the
-// old weights.
 func Entries(ctx context.Context, base string) ([]Entry, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -234,8 +184,7 @@ func ParseURL(raw string) (host string, port int, err error) {
 	return host, port, nil
 }
 
-// IsLocalHost reports whether an address is this machine, which decides whether
-// voiceime may offer to run the server for it.
+// IsLocalHost reports whether an address is this machine.
 func IsLocalHost(host string) bool {
 	switch host {
 	case "localhost", "127.0.0.1", "::1", "[::1]":
@@ -245,11 +194,6 @@ func IsLocalHost(host string) bool {
 		return parsed.IsLoopback()
 	}
 	return false
-}
-
-func trimFloat(value float64) string {
-	text := strconv.FormatFloat(value, 'f', 3, 64)
-	return strings.TrimRight(strings.TrimRight(text, "0"), ".")
 }
 
 // wireConfig is the server's config document.

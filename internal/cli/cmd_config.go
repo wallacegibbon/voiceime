@@ -17,15 +17,7 @@ import (
 	"github.com/wallacegibbon/voiceime/internal/server"
 )
 
-// cmdConfig is the only supported way to edit settings from a script. It exists
-// so an agent never has to generate TOML by hand: `config set` validates the
-// type, writes atomically, and reports what the new config validates to.
 func cmdConfig() *Command {
-	// --force and --yes are declared here rather than read out of the positional
-	// arguments, which is what the rest of this file used to do: the flag parser
-	// rejects an undeclared flag before the command ever runs, so
-	// `config init --force` - the documented way to overwrite a config - failed
-	// with "flag provided but not defined" and could never work.
 	var force, yes bool
 	return &Command{
 		Name:    "config",
@@ -41,33 +33,25 @@ func cmdConfig() *Command {
 	}
 }
 
-// resolvedModels says what the two model settings resolve to, for the ones the
-// configuration leaves empty. It is what makes `config show` answer "which model is
-// streaming", a question an empty value cannot answer on its own.
+// resolvedModels says which checkpoint an empty `model` resolves to, so `config show`
+// can answer "which model is in use" for a value that is empty on purpose.
 func resolvedModels(ctx *Context) map[string]string {
 	resolved := map[string]string{}
 	scanned, err := models.Cached(ctx.Config)
 	if err != nil {
 		return resolved
 	}
-	// The same resolution the service is configured from (D32), so "which model is in
-	// use" has one answer rather than one per command.
-	choice := models.Resolve(scanned, ctx.Config.Language, ctx.Config.StreamingModel, ctx.Config.RefineModel)
-	if strings.TrimSpace(ctx.Config.StreamingModel) == "" {
-		if choice.Stream == "" {
-			resolved["streaming_model"] = "empty means pick one, and no streaming model is installed"
-		} else {
-			resolved["streaming_model"] = "empty means pick one: " + describeModel(scanned, choice.Stream)
+	choice := models.Resolve(scanned, ctx.Config.Language, ctx.Config.Model)
+	if strings.TrimSpace(ctx.Config.Model) != "" {
+		if found := models.Lookup(scanned, ctx.Config.Model); found != nil {
+			resolved["model"] = "in use: " + describeModel(scanned, found.Path)
 		}
+		return resolved
 	}
-	if strings.TrimSpace(ctx.Config.RefineModel) == "" {
-		if choice.Repair == "" {
-			resolved["refine_model"] = "empty means reuse the streaming model, which is not installed"
-		} else {
-			resolved["refine_model"] = "empty means reuse the streaming model: " + describeModel(scanned, choice.Repair)
-		}
-	} else if found := models.Lookup(scanned, ctx.Config.RefineModel); found != nil {
-		resolved["refine_model"] = "in use: " + describeModel(scanned, found.Path)
+	if choice.Model == "" {
+		resolved["model"] = "empty means pick one, and no transcription model is installed"
+	} else {
+		resolved["model"] = "empty means pick one: " + describeModel(scanned, choice.Model)
 	}
 	return resolved
 }
@@ -83,26 +67,18 @@ func describeModel(scanned []models.Model, path string) string {
 }
 
 // applyReport is what `config apply` did, one line per thing that reads the configuration.
-//
-// A struct rather than a map: every step fills one field, the JSON keeps the same keys, and
-// nothing has to assert the type of a value it just put in.
 type applyReport struct {
 	Service   string   `json:"service"`
 	Served    []string `json:"served,omitempty"`
-	Listener  string   `json:"listener"`
 	Component string   `json:"component"`
-	Engine    string   `json:"engine"`
+	// Desktop is the input-source list the desktop's own switcher reads: the entry the
+	// engine needs there is a property of the *name*, so a changed ibus_engine_name has
+	// to converge it as well.
+	Desktop string `json:"desktop"`
+	Engine  string `json:"engine"`
 }
 
-// applyConfig makes the running installation match the file, and reports what actually
-// happened rather than what was attempted: the service and the listener are restarted, the
-// installed IBus component is rewritten when the settings it owns have changed, and the
-// engine is dropped so the next activation runs the new binary.
 func applyConfig(ctx *Context) error {
-	// Refuse an unusable file before touching any of the processes. This is the failure that
-	// used to be reported as success: a setting naming a model that is not there is valid
-	// TOML and passes every syntactic check, so it only showed up as a crash-looping service
-	// while `config apply` printed "service: restarted" and exited 0.
 	if issues := config.Errors(ctx.Config.Validate()); len(issues) > 0 {
 		issue := issues[0]
 		return PreconditionError(issue.Fix, "cannot apply the configuration: %s: %s", issue.Key, issue.Message)
@@ -113,10 +89,12 @@ func applyConfig(ctx *Context) error {
 	if report.Service, report.Served, err = applyService(ctx); err != nil {
 		return err
 	}
-	report.Listener = applyListener(ctx)
 	if report.Component, err = applyComponent(ctx.Config); err != nil {
 		return FailureError("%v", err)
 	}
+	// Not fatal on its own: an engine missing from this list still receives keystrokes,
+	// it just cannot be shown by the desktop or switched to from its menu.
+	report.Desktop, _ = addInputSource(ctx.Config.IBusEngineName)
 	report.Engine = dropEngines()
 
 	if !ctx.JSON {
@@ -124,18 +102,13 @@ func applyConfig(ctx *Context) error {
 		if len(report.Served) > 0 {
 			ctx.Print("serving:  %s", strings.Join(report.Served, " and "))
 		}
-		ctx.Print("listener: %v", report.Listener)
 		ctx.Print("component: %v", report.Component)
+		ctx.Print("desktop:  %v", report.Desktop)
 		ctx.Print("engine:   %v", report.Engine)
 	}
 	return ctx.Emit("config apply", report)
 }
 
-// applyService restarts the recognition service, and waits until it serves what the
-// configuration now names.
-//
-// It builds the spec it expects *before* restarting: a configuration that cannot be served
-// is refused instead of applied and then left unverified.
 func applyService(ctx *Context) (status string, served []string, err error) {
 	if _, lookupErr := exec.LookPath("systemctl"); lookupErr != nil || !fileExists(serverUnitPath()) {
 		return "not installed", nil, nil
@@ -152,7 +125,7 @@ func applyService(ctx *Context) (status string, served []string, err error) {
 		}
 		local, port = server.IsLocalHost(host), parsedPort
 	}
-	spec, specErr := buildServerSpec(ctx.Config, scanned, port, "", "")
+	spec, specErr := buildServerSpec(ctx.Config, scanned, port, "")
 	if specErr != nil {
 		return "", nil, specErr
 	}
@@ -161,34 +134,17 @@ func applyService(ctx *Context) (status string, served []string, err error) {
 	}
 	if local {
 		probeCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-		waitErr := waitForEntries(probeCtx, ctx.Config.ASRServerURL, spec)
+		waitErr := waitForModel(probeCtx, ctx.Config.ASRServerURL, spec)
 		cancel()
 		if waitErr != nil {
 			return "", nil, FailureError("the service restarted but is not serving the configured models: %v", waitErr)
 		}
-		served = []string{filepath.Base(spec.StreamModel), filepath.Base(spec.RepairModel)}
+		served = []string{filepath.Base(spec.Model)}
 	}
 	return "restarted", served, nil
 }
 
-// applyListener restarts the shortcut listener, which reads the key once at its start.
-func applyListener(ctx *Context) string {
-	if _, err := exec.LookPath("systemctl"); err != nil || !fileExists(servicePath()) {
-		return "not installed"
-	}
-	if err := runCommand("systemctl --user restart voiceime-hotkey"); err != nil {
-		return "restart failed"
-	}
-	return "restarted"
-}
-
 // dropEngines names what happened to the engine processes, for the report.
-//
-// By pid, never by a pkill pattern: `pkill -f "voiceime ibus-engine"` matches any process
-// whose command line merely mentions that string - a shell running a command that contains
-// it, an editor with the docs open - and measured here, it killed the shell that ran this
-// command twice. SIGTERM first, because the engine's shutdown path commits the sentence in
-// progress (D25).
 func dropEngines() string {
 	stopped, forced := stopEngines()
 	switch {
@@ -201,38 +157,17 @@ func dropEngines() string {
 	}
 }
 
-// withConfiguredEngine returns the installed component with the fields the configuration
-// owns changed, and whether anything changed at all.
-//
-// Everything else - the exec line above all - is left as it is: `config apply` may be run
-// from a checkout while the component names an installed binary, and repointing it would
-// replace a working delivery path with a path that disappears when the checkout moves
-// (install_check reports that case as its own finding).
 func withConfiguredEngine(installed ibus.Component, cfg *config.Config) ibus.Component {
 	updated := installed
 	updated.EngineName = cfg.IBusEngineName
-	updated.Language = cfg.Language
 	return updated
 }
 
 // componentNeedsRewrite compares the file on disk with what this version would write.
-//
-// Comparing the parsed component with the updated one is not enough, and that is how the
-// escaped symbol survived a rewrite: the reader decodes the reference, so both sides render
-// the same character and the file - which still holds the escaped text - was reported as
-// unchanged. Comparing bytes also picks up a file written by an older version, which is
-// exactly the upgrade case this has to heal.
 func componentNeedsRewrite(raw []byte, updated ibus.Component) bool {
 	return string(raw) != updated.XML()
 }
 
-// applyComponent rewrites the installed IBus component when the configuration disagrees
-// with it, and restarts IBus so the daemon reads the new file.
-//
-// Before this, `ibus_engine_name` was the one setting `config apply` silently ignored: the
-// engine name is baked into the component at `engine install` time, so changing it made
-// the selector point at an engine IBus had never heard of while every other setting
-// applied - and `doctor` reported it as "not registered" without saying why.
 func applyComponent(cfg *config.Config) (string, error) {
 	if !ibus.Installed() {
 		return "not installed", nil
@@ -264,11 +199,6 @@ func applyComponent(cfg *config.Config) (string, error) {
 	return "rewritten; IBus restarted", nil
 }
 
-// stopEngines asks every running engine process to exit, and reports how many there were
-// and whether any had to be killed.
-//
-// A process matches on its executable, not on a substring of its command line: only a
-// process started from this binary can be an engine (see processesRunning).
 func stopEngines() (stopped int, forced bool) {
 	engines := processesRunning("ibus-engine")
 	for _, engine := range engines {
@@ -337,10 +267,6 @@ func runConfig(ctx *Context, args []string, force bool) error {
 		}
 		existed := fileExists(ctx.ConfigPath)
 		if existed && !force {
-			// A refusal that prints nothing is indistinguishable from success in
-			// human mode (exit 0, empty stdout), and the step is documented without
-			// --json: it has to say it did nothing. JSON mode carries the same fact
-			// in the note, and Print stays out of the single JSON document.
 			ctx.Print("config already exists at %s; not written (pass --force to overwrite)", ctx.ConfigPath)
 			return ctx.Emit("config init", map[string]any{
 				"path":    ctx.ConfigPath,
@@ -416,16 +342,6 @@ func runConfig(ctx *Context, args []string, force bool) error {
 		}
 		issues := ctx.Config.Validate()
 		if blocking := config.Errors(issues); len(blocking) > 0 {
-			// The value is written - staging a setting before the thing it names
-			// exists (a model path, a server that is not running yet) is how a
-			// deployment is scripted - but the file is now unusable, and saying so
-			// only on stderr was not enough: an agent that branches on exit codes saw
-			// success, and the next command failed somewhere else. The report is
-			// emitted first so a JSON caller still gets `written: true`, and then the
-			// command fails with the fix for the value that broke the file.
-			//
-			// In JSON mode the findings travel in that object, so nothing else is
-			// written to stderr: a caller parses it as one document.
 			if !ctx.JSON {
 				for _, issue := range blocking {
 					ctx.Print("%-7s %-22s %s", issue.Severity, issue.Key, issue.Message)
@@ -441,14 +357,6 @@ func runConfig(ctx *Context, args []string, force bool) error {
 			return PreconditionError(issue.Fix, "%s = %v is written, but the configuration is unusable: %s",
 				key, value, issue.Message)
 		}
-		// A setting that is written is not yet a setting that is in force: every
-		// resident process (the recognition service, the engine, the shortcut
-		// listener) reads the configuration when it starts. Naming the one command
-		// that restarts them is what turns "applied" into something an agent can
-		// verify, and answering it the same way for every key is what keeps this from
-		// becoming a second schema: the previous list of "settings the service reads"
-		// had already gone stale, naming two settings that no longer existed and
-		// calling `language` a service setting when it is sent per request.
 		applies := "voiceime config apply"
 		ctx.Print("%s = %v", key, value)
 		ctx.Print("this takes effect when the processes that read it restart: run `%s`", applies)
@@ -458,11 +366,6 @@ func runConfig(ctx *Context, args []string, force bool) error {
 		})
 
 	case "apply":
-		// Editing the file by hand is legitimate - it is the documented single source of
-		// truth - but three processes read it at their own start: the recognition service
-		// (models, window, threads), the engine (endpoints, language, server address) and
-		// the shortcut listener (the key). One verb for "make the running system match the
-		// file" is simpler than expecting a user to know which of the three to restart.
 		return applyConfig(ctx)
 
 	case "validate":
@@ -501,9 +404,6 @@ func fileExists(path string) bool {
 	return err == nil && !info.IsDir()
 }
 
-// cmdCapabilities exists so an agent can ask the binary what it can do instead
-// of parsing this repository. The command list and the config key list are both
-// derived from live code, so the answer cannot be stale.
 func cmdCapabilities() *Command {
 	return &Command{
 		Name:    "capabilities",
@@ -565,7 +465,9 @@ func runCapabilities(ctx *Context, args []string) error {
 		"environment": environment(ctx),
 		"docs": []string{
 			"docs/AGENT.md",
-			"docs/decisions.md",
+			"docs/DEPLOY.md",
+			"docs/asr.md",
+			"docs/ibus-protocol.md",
 			"docs/measurements.md",
 		},
 	}
@@ -654,8 +556,6 @@ func lastLineMatching(text, prefix string) string {
 }
 
 // ibusState reports whether IBus is running and whether our engine is installed.
-// This is the single most common reason text delivery fails, so it is part of
-// the environment report rather than only of doctor.
 func ibusState(ctx *Context) map[string]any {
 	state := map[string]any{}
 	if config.FindExecutable("ibus") == "" {

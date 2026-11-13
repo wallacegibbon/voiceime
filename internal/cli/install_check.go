@@ -9,24 +9,8 @@ import (
 	"github.com/wallacegibbon/voiceime/internal/ibus"
 )
 
-// installChecks reports the failures that look like "voiceime is broken" but are
-// really "an installed artifact points at something that is gone".
-//
-// All three have happened on the reference machine, and none of them was
-// detectable before this check existed:
-//
-//   - the component file ibus-daemon reads named a binary from a checkout that
-//     had been renamed, so a restart of the engine would have failed while the
-//     already-running process kept working;
-//   - the same rename left the systemd unit with an ExecStart that no longer
-//     existed, which systemd reports as a restart loop with status=203/EXEC;
-//   - after every rebuild, the running engine keeps running the binary it was
-//     started from, so fixed code appears not to have taken effect.
-//
-// Each is offline and cheap: a stat, a readlink, and one small file read.
 func installChecks(ctx *Context, report func(Check)) {
 	componentExecCheck(ctx, report)
-	hotkeyUnitCheck(ctx, report)
 	runningBinaryChecks(ctx, report)
 }
 
@@ -63,40 +47,7 @@ func componentExecCheck(ctx *Context, report func(Check)) {
 	report(Check{ID: "component_exec", Status: "ok", Detail: exec})
 }
 
-func hotkeyUnitCheck(ctx *Context, report func(Check)) {
-	path := servicePath()
-	if path == "" || !fileExists(path) {
-		report(Check{
-			ID:     "hotkey_unit",
-			Status: "warn",
-			Detail: "no shortcut listener installed; switching the input method by hand still works",
-			Fix:    "voiceime hotkey install",
-		})
-		return
-	}
-	exec, err := unitExecStart(path)
-	if err != nil {
-		report(Check{ID: "hotkey_unit", Status: "fail", Detail: err.Error(), Fix: "voiceime hotkey install"})
-		return
-	}
-	if !isExecutable(exec) {
-		report(Check{
-			ID:     "hotkey_unit",
-			Status: "fail",
-			Detail: fmt.Sprintf("%s runs %s, which does not exist; systemd will restart it forever with status=203/EXEC", path, exec),
-			Fix:    "voiceime hotkey install",
-		})
-		return
-	}
-	report(Check{ID: "hotkey_unit", Status: "ok", Detail: exec})
-}
-
 // unitExecStart extracts the executable a systemd unit starts.
-//
-// It reads only the first ExecStart line's first field: enough to answer "does
-// the binary exist", which is the failure that produces 203/EXEC. Parsing systemd
-// syntax properly is not worth it for one field, and a wrong answer here is a
-// false alarm rather than a missed one.
 func unitExecStart(path string) (string, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -116,27 +67,12 @@ func unitExecStart(path string) (string, error) {
 	return "", fmt.Errorf("%s: no ExecStart line", path)
 }
 
-// runningBinaryChecks compares the binary the running processes came from with
-// the one running this command.
-//
-// A process keeps the binary it was started from, so a rebuild does not take
-// effect until it is restarted, and a deleted binary keeps working until then
-// too. Both are invisible from the outside, which is what made them expensive.
-// runningKinds is the table the running-binary checks walk: one row per
-// voiceime process a deployment can leave stale. The rows are pinned by test,
-// because a missing row is a stale process doctor cannot see - the checks are
-// only as broad as this table.
-//
-// `config apply` stops the engine by pid (its SIGTERM path commits the sentence in
-// progress) and restarts the listener; a pkill pattern here would also match the
-// shell of anyone who pasted the suggestion.
 var runningKinds = []struct {
 	id      string
 	pattern string
 	fix     string
 }{
 	{"engine_process", "ibus-engine", "voiceime config apply"},
-	{"hotkey_process", "hotkey run", "systemctl --user restart voiceime-hotkey"},
 	// The service holds the models, so a stale one serves old inference while every
 	// other check passes: server_unit verifies the unit's path, asr_server the answers.
 	{"server_process", "server run", "voiceime config apply"},
@@ -168,16 +104,6 @@ func runningBinaryChecks(ctx *Context, report func(Check)) {
 }
 
 // runningBinaryVerdict classifies the binary a running process came from.
-//
-// Three cases, and the difference between them matters:
-//
-//   - the same file as this command: nothing to say (ok);
-//   - a file that no longer exists: the checkout was moved or renamed, and the
-//     process will fail the moment it is restarted (fail);
-//   - a file that exists but is not this one: either a rebuild replaced the
-//     binary under a running process (/proc/<pid>/exe then reads "path
-//     (deleted)") or the two are genuinely different installs. Both mean the
-//     process is running other code than this command (warn).
 func runningBinaryVerdict(running process, ourselves string) (status, detail string, ok bool) {
 	binary := running.Binary
 	if binary == ourselves {
@@ -206,13 +132,6 @@ type process struct {
 	Binary string
 }
 
-// processesRunning finds this user's voiceime processes whose command line
-// contains pattern.
-//
-// Reading /proc directly keeps this cgo-free, which the whole project depends on.
-// A process that cannot be inspected (it exited, or belongs to another user) is
-// skipped rather than reported: the answer is only interesting when it is a
-// voiceime process.
 func processesRunning(pattern string) []process {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
@@ -244,11 +163,6 @@ func processesRunning(pattern string) []process {
 }
 
 // commandLine reads a process's arguments as one space-separated string.
-//
-// /proc/<pid>/cmdline separates arguments with NUL bytes, so a pattern that spans
-// two of them ("hotkey run") matches nothing without this - which is how the
-// listener check silently reported nothing at all while the engine check, whose
-// pattern is a single argument, worked.
 func commandLine(path string) (string, bool) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -280,10 +194,6 @@ func isExecutable(path string) bool {
 	return err == nil && !info.IsDir() && info.Mode()&0o111 != 0
 }
 
-// serverUnitCheck verifies the recognition server's unit, which has the same failure mode
-// as the listener's - a path baked in at install time that later stops existing - plus one
-// of its own: a unit written from a checkout runs the *checkout* build, so an installed
-// copy and the running service can be different code while every other check passes.
 func serverUnitCheck(ctx *Context, report func(Check)) {
 	path := serverUnitPath()
 	if path == "" || !fileExists(path) {

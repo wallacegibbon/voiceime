@@ -1,319 +1,100 @@
-# Measurements
+# Measured numbers
 
-Every number in this project's documentation is recorded here, and each one has the
-command that produced it. Nothing is estimated unless the row says so explicitly;
-the inferences are marked `(inferred)` and say what they are inferred from. Other
-documents cite this file rather than restate a number.
+Every figure below was measured on the reference machine (8 physical cores, CPU backend,
+`threads = 8`): AMD Ryzen 7 5800U, Qwen3-ASR-0.6B q8 for the decode.
 
-Machine: AMD Ryzen 7 5800U (8 cores / 16 threads), 14 GiB RAM, Ubuntu 24.04,
-Wayland session, CPU-only inference (no GPU used). audio.cpp built from source as
-`RelWithDebInfo` with the CPU backend. Threads = 4 unless stated.
+## Decode speed
 
-Reproduce with `voiceime stream --file <wav> --realtime --events`, which prints the
-numbers below. The streaming window lives in the server configuration now
-(`chunk_seconds`, applied with `voiceime config apply`), not on the command line.
+The offline entry reads the whole recording and answers once. Wall time from
+`voiceime transcribe` and from the server's own `wall_ms`:
 
-## Models on this machine
-
-| Model | Package id | Bytes on disk | Availability note |
-|---|---|---:|---|
-| SenseVoice-Small Q8 GGUF | `sensevoice_small_q8` | 254,211,200 (242 MiB) | its repo `FunAudioLLM/SenseVoiceSmall-GGUF-audiocpp` is served over the Hugging Face protocol and does **not** exist on ModelScope |
-| Qwen3-ASR-0.6B Q8 GGUF | `qwen3_asr_0_6b_q8_0` | 1,151,272,416 (1.07 GiB) | published in the aggregate repo `audio-cpp/audio.cpp-gguf`, which is mirrored on both |
-
-Both entries loaded and resident in the service (SenseVoice Q8 + Qwen3-ASR Q8):
-1403 MB RSS at service startup, 1907 MB after both have run (the service process's
-RSS; the measurement context is recorded in [decisions.md, D22](decisions.md)).
-
-Two models were deliberately not installed, and the reasons matter:
-
-* `audio8_asr_0_1b_q8_0` — the spec declares `download.kind = unsupported` (the
-  checkpoint is CC-BY-NC-4.0 and audio.cpp ships no public GGUF), and the family
-  has **no streaming mode** (`modes: ["offline"]`). It cannot be the default for a
-  live input method even though it is the right size for CPU.
-* `confucius4_r2t2_q8_0` — 2,477,512,064 bytes (2.31 GiB) for a 1.7B model.
-  Extrapolating the measured 0.28 RTF of the 0.6B model of the same family gives
-  roughly 0.8 RTF, i.e. slower than real time on this CPU `(inferred)`.
-
-## Offline decode speed
-
-| Model | Audio | wall_ms (framework) | Process + load | RTF | x realtime | Peak RSS |
-|---|---|---:|---:|---:|---:|---:|
-| SenseVoice-Small | 14.07 s (English) | 751 ms | 0.24 s for a 1 s clip | 0.053 | 18.7x | 428 MiB |
-| SenseVoice-Small | 5.55 s (Chinese) | 259 ms | — | 0.047 | 21.4x | — |
-| Qwen3-ASR-0.6B | 14.07 s (English) | 3,934 ms | 5.02 s | 0.280 | 3.6x | 2,110 MiB |
-| Qwen3-ASR-0.6B | 5.55 s (Chinese) | 1,574 ms | — | 0.284 | 3.5x | — |
-
-The "process + load" column is `time` around a whole `audiocpp_cli` invocation, so
-it includes process start and weight loading. Three consecutive runs of a 1 s clip
-took 0.24 s / 0.22 s / 0.22 s, which is where the ~150 ms model-load figure for
-SenseVoice comes from. That was the whole cost of a dictation when voiceime spawned a
-CLI per session; it is now paid once, by the service, and no dictation pays it at all
-(docs/decisions.md D22).
-
-## Streaming latency and quality
-
-Feeding a Chinese sample (5.55 s, `asr_example_zh.wav` from the FunASR test set)
-at real time through `--mode streaming`. Reference offline transcript:
-`欢迎大家来体验达摩院推出的语音识别模型。`
-
-| Window | Text as it appeared | First text at | Note |
-|---:|---|---:|---|
-| 3.0 s | `欢迎大家来体验达摩院。` then `推出的语音识别模型。` | 3.14 s of audio | sentence split in the middle; content right |
-| 2.0 s | `欢迎大家来。` `体验达摩院推出的。` `识别模型。` | 2.04 s | more splits, content still right |
-| 1.0 s | `こ。欢迎大家来。` `体验达摩院。` `推出的。` `音识别模型。` `行。` | 1.04 s | **corrupted**: hallucinated characters, a dropped character, spurious punctuation |
-
-The pattern is the important result: this family decodes each window
-independently, with no context carried across the boundary, so shrinking the
-window buys latency and pays for it in accuracy. Below about 1.5 s the output is
-no longer usable for Chinese, which is why `voiceime config validate` warns there
-and why the default is 3 s.
-
-English behaves the same way (1 s windows produced `Some.Call me nature..` with
-doubled punctuation where 3 s windows produced `Some call me nature.`).
-
-## What the repair pass is worth
-
-The repair pass re-decodes a finished segment offline, with the whole segment as
-context. Same 3 s-window session as above:
-
-| Repair model | Repair time for a 4.24 s segment | Result |
-|---|---:|---|
-| streaming model (SenseVoice) | **0.55 s** | `欢迎大家来体验打摩院推出的语音识别模型。` — split repaired, one character wrong |
-| Qwen3-ASR-0.6B | **5.66 s** | `欢迎大家来体验达摩院推出的语音识别模型。` — matches the offline reference exactly |
-
-So: repair reliably removes the window-boundary damage (the spurious `。` and the
-sentence split) for a tenth of the utterance's length with the streaming model.
-Buying the last character costs ten times more than real time on CPU, which is
-slower than the speaker — which is why repair defaults to the streaming model and
-`doctor` reports the alternative as advice rather than switching to it.
-
-Neither layer is strictly better on this sample: the *streaming* window happened
-to transcribe `达摩院` correctly while the offline path of the same model produced
-`打摩院`. Model accuracy and boundary handling are different problems.
-
-## Model download
-
-Downloads go to the single endpoint in `download_mirror`. Measured on the
-reference machine:
-
-| Endpoint | Package | Result |
+| Audio | Decode | RTF |
 |---|---|---|
-| `https://hf-mirror.com` | `sensevoice_small_q8` | 254 MiB in 37 s |
-| `https://hf-mirror.com` | `audio-cpp/audio.cpp-gguf` (`qwen3_asr_0_6b_q8_0`) | reachable: a ranged request returns `206` |
+| 3.36 s | 0.66 s | 0.20 |
+| 4.0 s | 0.65 s | 0.16 |
+| 10.5 s | 1.35 s | 0.13 |
+| 34.5 s | 4.42 s | 0.13 |
 
-Two properties of the reference network are recorded because the default endpoint
-is chosen for them:
+RTF falls as the recording grows (fixed overhead amortises), so the wait after a release is
+roughly `0.13 × the length of what you said`. `asr_server_timeout_ms` (30 s) is the ceiling
+on one decode.
 
-* **`huggingface.co` is unreachable there without the local proxy**: a direct
-  `curl` fails with `Connection timed out after 20002 ms`, while `hf-mirror.com`
-  serves the same object. This is why the default is a mirror rather than the
-  upstream host, and why `download_mirror` is a URL: the usable host is a property
-  of the network, not of voiceime.
-* **`hf-mirror.com` is a real mirror**: it answers
-  `302 → https://cas-bridge.xethub.hf.co/...` - its own CDN bridge - and returns
-  bytes. An earlier reading of `308 → huggingface.co` was an artefact of the local
-  HTTP proxy (`https_proxy=http://127.0.0.1:7890`) and does not reproduce with
-  `--noproxy '*'`.
+## What the model does with non-speech
 
-A package's availability is a property of the endpoint *and* the package, so
-voiceime reports the failing package id and the error text instead of silently
-falling back, and `models install` reports the failing package without leaving a
-half-installed one behind.
+Two seconds of digital silence and two seconds of this room (peak 23966, RMS 4940) were sent
+to the offline entry:
 
-## Endpointing in a real room
+```
+{"text":"","timing":{"wall_ms":301.12}}    ← 2 s of digital silence
+{"text":"","timing":{"wall_ms":275.80}}    ← 2 s of room
+```
 
-The detector decides when text becomes committable, so its behaviour was measured
-against the reference machine's own microphone rather than only against synthetic
-audio. All figures are 20 ms frame RMS, the same frame the detector uses.
+An empty answer commits nothing, which is what makes "send the whole recording, no gate"
+safe: a mis-press costs one request, not inserted words. This is one model on one machine at
+one moment, not a property of every checkpoint.
 
-| Audio | p10 | p50 | p90 | p99 | max |
-|---|---:|---:|---:|---:|---:|
-| 20s of the idle room (nobody speaking) | 231 | 309 | 436 | 7992 | 23873 |
-| 8s of continuous speech (16 kHz reference clip) | 180 | 3883 | 7495 | 9625 | 10716 |
+## Streaming is not available from this entry
 
-Two things follow, and both were bugs:
+The multipart route accepts `stream=true`, but only for a model served in streaming mode:
 
-* **The room is not quiet, it is *spiky*.** Its median is 309 while 1% of frames
-  reach 7992 and the peak is 23873 - keystrokes and chair noise. The configured
-  threshold was 350, which sits inside the room's own distribution, and *any*
-  single frame above the threshold reset the silence hangover, so the 800 ms of
-  continuous silence required to end an utterance almost never accumulated. A
-  silent room produced "utterances" of 4.28 s, 9.90 s and 1.30 s.
-* **The adaptive noise floor was dead code.** `session.go` passed
-  `Adaptive: true`, but `Threshold()` only used the measured floor when
-  `Calibrate()` had been called, and nothing in the pipeline calls it. The
-  detector therefore ran on the static 350 the whole time.
+```
+$ curl -F model=refine -F stream=true -F file=@clip.wav …/v1/audio/transcriptions
+{"error":{"message":"transcription stream=true requires a model configured with mode=streaming"}}
+```
 
-Replaying the *same* 20s recording is what makes these numbers comparable - it
-removes the room's run-to-run variation:
+and with a streaming-mode entry the deltas arrive per streaming window, not per token
+(`ttft_ms` 121 for the first). voiceime does not use that path: the text of a dictation is
+decided by one offline read of the whole recording.
 
-| Build | threshold | phantom segments | committed text |
-|---|---|---:|---|
-| before the fixes | 350 | 3 (0-4.28, 7.82-17.72, 18.68-19.98s) | `被。`, `。。`, `嗯。` |
-| after the fixes, at the 350 that was the default then | 350 | 3 (0.38, 1.10, 2.30s) | `被。。。。`, `嗯。`, `。嗯。` |
-| after the fixes, tuned for this room | 800 -> 600 | 0 | nothing (`skipped: no speech detected`) |
+## Hold-to-talk, end to end
 
-The same recording through the tuned settings still recognises speech: the
-reference clip is segmented once (0.04-8.00 s) and repaired normally. The tunings
-applied to the reference machine are `silence_rms_threshold = 800` (above the
-room's p90 of 436, and well below speech's p50 of 3883) and
-`endpoint_min_speech_ms = 500` (longer than the 340 ms transient that survived the
-threshold change). Sweeping the threshold over the same recording settled the
-default: 450, 500, 600, 700 and 800 all produced zero phantom segments on it (the
-min-speech rule rejects the transients), and all produced the same single repaired
-segment for the speech clip. Since the three values are indistinguishable on noise
-but not on quiet speech, the default is the lowest that keeps real margin above the
-room: **600**, not the 800 first tried, and not the 350 that the third row above
-shows sitting inside the room's own noise. A speaker quiet enough to be missed at
-600 should lower it further and re-run the check above.
+The deployed engine, driven over D-Bus on a sandbox `ibus-daemon`, with audio played into a
+null sink's monitor so it reached the engine through `parec` as a microphone's would:
 
-To measure a different room, the same way: the procedure - a 20 s capture plus the
-percentile script - is in [DEPLOY.md, step 6](DEPLOY.md#6-verify-the-microphone-path).
-Set `silence_rms_threshold` above the idle p90, then confirm the other direction
-with the same command while speaking: the empty room must produce no `segment`
-event, and a sentence must produce one.
+| Assertion | Result |
+|---|---|
+| selecting the engine starts no capture | `pgrep -c par[e]c` = 0 |
+| the trigger press opens it | 1 |
+| the release closes it | 0 |
+| the recording, sent whole | 3.36 s |
+| decoded once | 700 ms |
+| text delivered | `committed 2 character(s): 嗯。` |
 
-**The detector was opening at twice the configured threshold.** Found after the
-tuning above, by replaying audio rather than the room: `NewSegmenter` seeds the
-noise floor with `silence_rms_threshold`, and the threshold is *twice* the floor,
-so before any quiet frame was measured the detector compared every frame against
-`2 * silence_rms_threshold` - 1200, not the configured 600. A user who starts
-speaking the moment dictation is activated, with no room tone in front, had their
-own voice fall below that inflated value, get adopted as the noise floor, and push
-the threshold *up* again - deaf for as long as they kept talking, which produces
-preedit text that never commits and is discarded when the session stops.
+`ProcessKeyEvent(96, 0, 4)` and `ProcessKeyEvent(96, 0, 1<<30 | 4)` — a press and a release
+of `` Ctrl+` `` (96 = `XK_grave`) — both returned `true`.
 
-It is invisible on the reference machine because its speech sits at p50 3883, well
-above either value, and because any quiet frame at the start resets the floor to
-the room. It is reproducible in one command's worth of synthetic audio (a 1000
-amplitude tone, RMS ~707, as the *first* frames), which is where the regression
-test now lives. Two rules fix it: the configured threshold is in force until a
-quiet frame has been measured, and a frame at or above the configured threshold is
-never adopted as the floor.
+**A real client sends both edges.** A live session's engine receives the user's own
+keystrokes, and they include releases with the mask set:
 
-**The repair only re-decoded the endpointer's range.** The other half of "only
-part of what I said was recorded", and it needs no room at all: the endpointer's
-range is narrower than the streaming chunks that overlap it (a quiet onset is
-missed; the end is the last frame above the threshold), and the repair drops those
-chunks whole while decoding only the range, so their text for the overhang was
-deleted. The repair now re-decodes the union of the range and every chunk it will
-replace; see [`decisions.md` D7](decisions.md).
+```
+ProcessKeyEvent(105,23,1073741824)     ← 'i' released
+ProcessKeyEvent(32,57,1073741824)      ← space released
+ProcessKeyEvent(65288,14,1073741824)   ← BackSpace released
+ProcessKeyEvent(65507,29,0)            ← Ctrl pressed
+```
 
-**Only a boundary commits.** On the sandbox bus with `dbus-monitor`, activating
-the engine over an 8 s clip of unbroken speech emitted 6 `UpdatePreeditText` and
-**one** `CommitText` - at the end, because no boundary was ever found. The same
-clip with two seconds of silence in the middle emitted **two** `CommitText`, one
-per utterance. So text stays underlined (preedit) for exactly as long as the
-detector considers the utterance open, and "it never commits" and "it never ends"
-are the same sentence.
+`1073741824` is `1 << 30` (`IBUS_RELEASE_MASK`). Not measured: a human holding the trigger —
+the presses above are a client's typing, not a test of the chord.
 
-The other half of that experiment is what a *late* window does. Replaying 4.5 s of
-speech followed by 2 s of silence: the segment commits at 4.50 s, and the next
-window - which covers [3.14 s, 6.16 s] and therefore starts inside audio the
-application already has - arrived after the commit. Before the fix the transcript
-read `... we meet at a time when it.` + `We meet at a time when it is.` + `Is easy
-...`, i.e. the delivered sentence came back as preedit and was committed twice; the
-fix drops that window and the transcript reads `... we meet at a time when.` +
-`Is easy to confuse noise with strength and speed with.`, with the drop reported as
-`skipped: a window overlapping already-delivered text was dropped`. The missing
-few words are the ones the dropped window held *after* the delivered boundary; the
-next segment's repair re-decodes that audio, which is why the second sentence still
-appears.
+## The desktop's input-source list
 
-## Integration constraints found by measurement
+After an install that used `ibus engine` only:
 
-These are the findings that changed the implementation, so they are recorded
-rather than left in commit history:
+```
+$ ibus list-engine | grep voiceime
+  voiceime - Voice
+$ ibus engine voiceime && ibus engine
+  voiceime                                   ← the switch worked
+$ gsettings get org.gnome.desktop.input-sources sources
+  [('xkb', 'us'), ('ibus', 'pinyin')]        ← and the desktop never heard of it
+```
 
-1. **Input must be 16 kHz mono.** Feeding 24 kHz makes offline decoding abort:
-   `Silero VAD 16k model only supports sample_rate=16000 (VAD audio chunking
-   failed)`. Capture therefore converts up front (PipeWire does it server-side),
-   and the rate is a constant rather than a setting - a configurable one could only
-   ever break this.
+That is the "I cannot see whether the switch happened" report: the engine received every
+keystroke while the top-right menu kept showing the previous input method. `engine install`
+now adds `('ibus', 'voiceime')`, and the menu lists it.
 
-2. **Bundled assets resolve relative to the working directory.** Running the CLI
-   from `/tmp` failed with `Silero VAD model path does not exist:
-   assets/framework/models/silero_vad`, while the same command from the audio.cpp
-   checkout worked. voiceime runs both the streaming engine and the repair pass
-   with the working directory set to the checkout.
+## Not measured
 
-3. **The repair pass does not need the model's VAD at all.** Segments handed to
-   repair are single utterances that voiceime has already endpointed, so
-   `--request-option audio_chunk_mode=none` is both faster and immune to (2). On
-   the reference sample it also transcribed one character more accurately than the
-   VAD path did (`达摩院` versus `打摩院`).
-
-4. **`text_output` is available on stdout even in streaming mode**, along with
-   `metrics.*`, which is why the adapter can report the framework's own RTF next
-   to its own timings.
-
-5. **`ibus` has no command to commit text.** Its subcommands are engine,
-   list-engine, restart, read-config and so on — nothing that injects text into
-   the focused application. Text delivery therefore requires being an IBus engine
-   (see decisions D6).
-
-6. **The models directory is shared with unrelated models.** On the reference
-   machine `~/models` also holds 27B text LLMs, embedding models and vision
-   projectors, so 13 of 15 GGUFs there are not audio models at all. Discovery
-   filters to models that declare an ASR task and reports the rest as a count.
-
-7. **`cmd.Wait` closes the pipes `StdoutPipe`/`StderrPipe` made, so it must not run
-   while a reader is still draining them.** The engine reaped the process in a
-   goroutine while `readStdout` was still reading, and `Wait` closed the read end as
-   soon as the process exited, discarding whatever was still buffered - the last
-   partial and the joined transcript. It was intermittent (about one run in ten of
-   `TestCloseDoesNotSwallowEventsTheReaderNeeds`), which is why it survived: a fast
-   reader never saw it. The fix drains both pipes to EOF before calling `Wait`;
-   EOF on a pipe *is* the process closing it at exit, the same event `Wait` waits
-   for.
-
-## The shortcut trigger on X11
-
-The trigger is one key and two mechanisms, and only one of them fires per session
-(DEPLOY.md step 8). What the X11 mechanism costs was measured by injecting the key
-with `xdotool`, because it is the half that no listener is watching:
-
-| How the key is pressed | `voiceime hotkey toggle` runs | effect |
-|---|---|---|
-| a tap shorter than the repeat delay | once | the engine switches, once |
-| held 0.6 s | 5 times | switches on and off, ending where it started |
-| held 1.0 s | 19 times | ditto, with the capture process starting and stopping |
-| held 2.0 s | 52 times | ditto |
-
-`xset q` on the reference machine: auto repeat delay 500 ms, rate 33/s. The trigger
-on X11 is a GNOME custom keybinding, and `gsd-media-keys` runs it once per key
-event - every auto-repeat tick included - whereas the Wayland path hands the event
-to the listener, which collapses a hold with its own guard. An even number of runs
-leaves the engine where it began, so a held key reads as "the shortcut does
-nothing": the key is delivered and the command runs, and the net effect is nothing.
-The guard that fixes it is [decisions.md D19](decisions.md); the boundary it draws
-(700 ms) is set by the repeat delay in that table, not by taste.
-
-## Not measured yet
-
-Stated plainly so nobody mistakes an assumption for a result:
-
-* **GPU backends.** Nothing here has been measured on a GPU: `backend` accepts
-  cuda/vulkan/hip/metal and passes it through to audio.cpp, but every figure in
-  this document is from the CPU backend. The model recommendation for a GPU
-  machine in [DEPLOY.md, step 4](DEPLOY.md#4-install-a-model-and-start-the-server) is an
-  inference from the CPU measurement (the repair cost is dominated by weight
-  loading), not a result.
-* **Confucius4-R2T2**, i.e. the append-only long-context streaming family. Its
-  viability on this CPU is an inference from a sibling model, not a result.
-* **Endpointing against a human voice in this room.** The detector is covered by
-  synthetic tests (speech between silence, short bursts, sub-hangover pauses, a
-  noisy room) and its thresholds are now tuned against a 20 s recording of this
-  room plus a 16 kHz speech clip - but not against a person speaking into this
-  microphone. The reference clip's speech sits at p50 RMS 3883 against a room p90
-  of 436, so the current threshold of 800 has margin on both sides; a quiet
-  speaker at a distance is the case that would need it lowered - as one did at
-  800 on the reference machine, which is why the default is 600.
-* **Concurrency between streaming and repair.** They compete for the same four
-  threads; the figures above were taken with both active, but the split has not
-  been studied. A GPU backend would remove the contention entirely.
-* **Thread count and backend choice.** `doctor` compares `threads` with the
-  machine's physical core count and `backend` with the list the local binary
-  reports, and says so - but neither comparison has been benchmarked: every figure
-  above was taken at `threads = 4` on CPU, and the advice that "more threads than
-  cores contend" is reasoning about the workload, not a measurement.
+* GPU backends: every figure is CPU.
+* Capture latency and drop behaviour under load.
+* Anything about a model other than the one named above.

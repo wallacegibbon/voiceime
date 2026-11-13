@@ -6,15 +6,8 @@ import (
 	"strings"
 )
 
-// The two dictionaries are OpenCC's Traditional-to-Simplified data, copied
-// verbatim (see data/NOTICE). They are plain tab-separated tables: traditional
-// text, a tab, then one or more simplified candidates separated by spaces. The
-// first candidate is the one OpenCC itself chooses.
-//
-// They are embedded rather than read from disk because the binary has to work on
-// a machine with no OpenCC installed, and because loading them from a path that
-// happened to exist on the build machine is the kind of dependency that only
-// fails after a deploy.
+// The two dictionaries are OpenCC's Traditional-to-Simplified data, copied in so that a
+// machine with only the binary can still normalize.
 //
 //go:embed data/TSCharacters.txt
 var tsCharactersData string
@@ -22,12 +15,6 @@ var tsCharactersData string
 //go:embed data/TSPhrases.txt
 var tsPhrasesData string
 
-// converter performs OpenCC's t2s conversion: a greedy longest-phrase match over
-// TSPhrases, falling back to the character table.
-//
-// It is a reimplementation rather than a dependency on the Go OpenCC port because
-// the port embeds every conversion (1.4 MB) to use one of them. These two tables
-// are 39 KB and the matcher is the loop below.
 type converter struct {
 	characters map[rune]string
 	phrases    map[string]string
@@ -92,12 +79,6 @@ func splitDictionaryLine(line string) (source, target string, ok bool) {
 	return source, candidates[0], true
 }
 
-// convert rewrites Traditional characters and phrases as Simplified. It is a
-// single pass over the input, in OpenCC's longest-phrase-first order. It is not
-// idempotent: the t2s data deliberately preserves some forms that it would
-// convert if they were the input (乾圖 becomes 乾图, and converting 乾图 again
-// gives 干图). Callers must therefore normalize raw recognizer text, not text
-// that has already been stored in normalized form.
 func (c *converter) convert(text string) string {
 	if text == "" {
 		return text

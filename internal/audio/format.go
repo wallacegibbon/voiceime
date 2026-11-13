@@ -1,22 +1,10 @@
 // Package audio owns microphone capture, PCM arithmetic and endpointing.
-//
-// The pipeline speaks exactly one format end to end: 16 kHz, mono, signed 16-bit
-// little-endian. That is what audio.cpp's streaming stdin path expects, and it is
-// also what the Silero VAD bundled inside the ASR models accepts - feeding 24 kHz
-// makes the model abort rather than resample. Resampling therefore happens on the
-// way in (PipeWire does it server-side), and the helpers here only handle the
-// byte-level work that remains.
-//
-// There is no cgo and no audio library: capture is a subprocess talking to
-// PipeWire. That choice buys server-side resampling, the user's own device
-// routing and echo cancellation, and a build that needs nothing but Go.
 package audio
 
 import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"math"
 	"os"
 	"strings"
 )
@@ -40,9 +28,6 @@ func SamplesToBytes(samples []int16) []byte {
 	return out
 }
 
-// BytesToSamples converts little-endian bytes to 16-bit samples. A trailing odd
-// byte is ignored rather than reported: a partial sample can only come from a
-// truncated read, and dropping it is strictly better than failing a stream.
 func BytesToSamples(data []byte) []int16 {
 	count := len(data) / BytesPerSample
 	out := make([]int16, count)
@@ -61,22 +46,6 @@ func DurationSeconds(data []byte) float64 {
 }
 
 // RMS returns the root-mean-square amplitude of a block.
-func RMS(data []byte) float64 {
-	samples := BytesToSamples(data)
-	if len(samples) == 0 {
-		return 0
-	}
-	total := 0.0
-	for _, sample := range samples {
-		value := float64(sample)
-		total += value * value
-	}
-	return math.Sqrt(total / float64(len(samples)))
-}
-
-// Resample linearly resamples 16-bit PCM. It exists for files that are not
-// already at 16 kHz (a user's recording, a test fixture); live capture uses
-// PipeWire's converter instead, which is both better and cheaper.
 func Resample(data []byte, fromRate, toRate int) []byte {
 	if fromRate == toRate || len(data) == 0 {
 		return data
@@ -109,10 +78,6 @@ type WAV struct {
 	Channels int
 }
 
-// EncodeWAV renders canonical 16-bit PCM WAV bytes. The offline paths take a
-// real container (raw PCM is only accepted on the streaming stdin route), so both
-// repair routes need one: the CLI writes it to a file, and a resident server
-// uploads the same bytes as a request body.
 func EncodeWAV(data []byte, rate, channels int) []byte {
 	if channels < 1 {
 		channels = 1
@@ -152,8 +117,6 @@ func writeUint16(buffer *strings.Builder, value uint16) {
 }
 
 // ReadWAV decodes a 16-bit PCM WAV file, converting to mono 16 kHz as needed.
-// Only the subset voiceime produces and consumes is supported; anything else is
-// a caller error rather than a case to paper over.
 func ReadWAV(path string) (WAV, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {

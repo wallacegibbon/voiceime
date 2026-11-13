@@ -14,6 +14,7 @@ import (
 
 	"github.com/wallacegibbon/voiceime/internal/config"
 	"github.com/wallacegibbon/voiceime/internal/daemon"
+	"github.com/wallacegibbon/voiceime/internal/gnome"
 	"github.com/wallacegibbon/voiceime/internal/ibus"
 )
 
@@ -75,12 +76,19 @@ func runEngineInstall(ctx *Context, system, apply, quiet bool) error {
 			ctx.Print("install it system-wide with:")
 			ctx.Print("  %s", command)
 		}
+		// The component is system-wide; the list the desktop's own switcher reads is
+		// per user, so it is written here either way.
+		desktop, desktopReport := addInputSource(ctx.Config.IBusEngineName)
+		if !quiet {
+			ctx.Print("desktop: %s", desktop)
+		}
 		return ctx.Emit("engine install", map[string]any{
-			"mode":      "system",
-			"component": path,
-			"target":    target,
-			"run":       command,
-			"installed": false,
+			"mode":               "system",
+			"component":          path,
+			"target":             target,
+			"run":                command,
+			"installed":          false,
+			"gnome_input_source": desktopReport,
 		})
 	}
 
@@ -115,12 +123,6 @@ func runEngineInstall(ctx *Context, system, apply, quiet bool) error {
 		if err := runCommand(setEnv); err != nil {
 			return FailureError("%v", err)
 		}
-		// `ibus restart` alone is not enough. The daemon caches the component
-		// registry together with the directories it watched when the cache was
-		// written, so a newly added search path stays invisible until that cache
-		// is gone. This was measured: with IBUS_COMPONENT_PATH already in the
-		// daemon's environment, the engine did not appear until the cache was
-		// removed and the daemon restarted.
 		if cache := ibus.RegistryCachePath(); cache != "" {
 			if err := os.Remove(cache); err != nil && !os.IsNotExist(err) {
 				ctx.Print("warning: could not remove %s: %v", cache, err)
@@ -136,15 +138,23 @@ func runEngineInstall(ctx *Context, system, apply, quiet bool) error {
 		}
 	}
 
+	// The desktop's own switcher is built from its input-source list, not from the engines
+	// ibus-daemon knows: without this entry the menu cannot show the engine at all.
+	desktop, desktopReport := addInputSource(ctx.Config.IBusEngineName)
+	if !quiet {
+		ctx.Print("desktop: %s", desktop)
+	}
+
 	registered, detail := engineRegistered(ctx)
 	return ctx.Emit("engine install", map[string]any{
-		"mode":              "user",
-		"component":         path,
-		"component_paths":   paths,
-		"run":               []string{setEnv, "ibus restart"},
-		"applied":           apply,
-		"engine_registered": registered,
-		"registration_note": detail,
+		"mode":               "user",
+		"component":          path,
+		"component_paths":    paths,
+		"run":                []string{setEnv, "ibus restart"},
+		"applied":            apply,
+		"engine_registered":  registered,
+		"registration_note":  detail,
+		"gnome_input_source": desktopReport,
 	})
 }
 
@@ -152,12 +162,64 @@ func runEngineUninstall(ctx *Context) error {
 	if err := ibus.Uninstall(); err != nil {
 		return FailureError("cannot remove the component: %v", err)
 	}
+	removed, sourceReport := removeInputSource(ctx.Config.IBusEngineName)
 	ctx.Print("component removed from %s", ibus.ComponentDir())
+	if removed {
+		ctx.Print("removed it from the GNOME input sources as well")
+	}
 	ctx.Print("IBUS_COMPONENT_PATH may still name that directory; unset it and run `ibus restart` to finish.")
 	return ctx.Emit("engine uninstall", map[string]any{
-		"component_dir": ibus.ComponentDir(),
-		"installed":     false,
+		"component_dir":      ibus.ComponentDir(),
+		"installed":          false,
+		"gnome_input_source": sourceReport,
 	})
+}
+
+// engineInputSource is the desktop-level half of an install: the pair GNOME's own switcher
+// and its indicator are built from.
+func engineInputSource(name string) gnome.InputSource {
+	return gnome.InputSource{Type: "ibus", ID: name}
+}
+
+// addInputSource makes the engine appear in the desktop's input-source list.
+func addInputSource(name string) (string, map[string]any) {
+	source := engineInputSource(name)
+	report := map[string]any{"source": source.String()}
+	if !gnome.InputSourcesAvailable() {
+		report["supported"] = false
+		return "no GNOME input-source list on this desktop", report
+	}
+	report["supported"] = true
+	added, err := gnome.AddInputSource(source)
+	if err != nil {
+		report["added"] = false
+		report["error"] = err.Error()
+		return "could not add " + source.String() + " to the GNOME input sources: " + err.Error(), report
+	}
+	report["added"] = added
+	report["listed"] = true
+	if added {
+		return "added " + source.String() + " to the GNOME input sources (the top-right menu lists it now)", report
+	}
+	return "already in the GNOME input sources", report
+}
+
+// removeInputSource takes the engine back out of that list.
+func removeInputSource(name string) (bool, map[string]any) {
+	source := engineInputSource(name)
+	report := map[string]any{"source": source.String()}
+	if !gnome.InputSourcesAvailable() {
+		report["supported"] = false
+		return false, report
+	}
+	report["supported"] = true
+	removed, err := gnome.RemoveInputSource(source)
+	if err != nil {
+		report["error"] = err.Error()
+		return false, report
+	}
+	report["removed"] = removed
+	return removed, report
 }
 
 func runEngineStatus(ctx *Context) error {
@@ -181,8 +243,23 @@ func runEngineStatus(ctx *Context) error {
 	if current, err := probe("ibus", "engine"); err == nil {
 		state["current_engine"] = firstLine(current)
 	}
+	listed, listErr := gnome.HasInputSource(engineInputSource(ctx.Config.IBusEngineName))
+	switch {
+	case listErr != nil:
+		state["gnome_input_source"] = map[string]any{"supported": false, "error": listErr.Error()}
+	case listed:
+		state["gnome_input_source"] = map[string]any{"supported": true, "listed": true}
+	default:
+		state["gnome_input_source"] = map[string]any{"supported": true, "listed": false}
+	}
 	ctx.Print("component: %s (installed: %v)", ibus.ComponentPath(), ibus.Installed())
 	ctx.Print("engine %s registered: %v", ctx.Config.IBusEngineName, registered)
+	if listErr == nil && !listed {
+		// Not fatal - the engine still works, and the toggle says so - but it is why the
+		// desktop's own menu and indicator cannot show it.
+		ctx.Print("desktop: not in the GNOME input sources, so the top-right menu cannot show it")
+		ctx.Print("         fix: voiceime engine install --apply")
+	}
 	// The engine is spawned by ibus-daemon, which discards what it prints. This file is
 	// the only place a session's own account of a dictation survives, so it is named
 	// where a user looks after "I pressed the key and nothing happened".
@@ -217,9 +294,6 @@ func runCommand(line string) error {
 	return nil
 }
 
-// cmdIBusEngine is the process ibus-daemon spawns. It is deliberately its own
-// subcommand: the daemon runs the component's <exec> verbatim, so the engine must
-// be reachable as a plain command line.
 func cmdIBusEngine() *Command {
 	var (
 		commitOnEnable string
@@ -239,7 +313,7 @@ func cmdIBusEngine() *Command {
 			set.StringVar(&address, "address", "", "IBus bus address (default: IBUS_ADDRESS or the registry file)")
 			set.StringVar(&tracePath, "trace", "", "append incoming D-Bus calls and the session log to this file")
 			set.StringVar(&audioFile, "audio-file", "",
-				"diagnostic: dictate from a WAV instead of the microphone")
+				"diagnostic: dictate this WAV when the engine is activated, instead of waiting for the key")
 			set.StringVar(&componentName, "name", ibus.DefaultComponentName,
 				"bus name to own; must equal the component XML <name> of the file that spawned this process")
 		},
@@ -281,11 +355,6 @@ func runIBusEngine(ctx *Context, options engineRunOptions) error {
 		address = resolved
 	}
 	component := ibus.DefaultComponent(ctx.Config, "voiceime ibus-engine --ibus")
-	// The daemon finds the engine process under the component name, so a mismatch
-	// here is silent from our side and a timeout on the daemon's: it spawns the
-	// process, then waits for a name nobody ever claims. Keeping the name
-	// configurable is what makes a probe component (a second XML with its own
-	// engine name) testable at all.
 	if componentName != "" {
 		component.Name = componentName
 	}
@@ -293,11 +362,6 @@ func runIBusEngine(ctx *Context, options engineRunOptions) error {
 	runCtx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	// Session logs must go somewhere: ibus-daemon spawns this process detached with its
-	// stdout and stderr on pipes the daemon discards, so a session's own account of what
-	// it heard and delivered is lost unless it is written down. That is why the default
-	// is a log file rather than stderr - `--trace` still names its own file, which is
-	// also where the incoming D-Bus calls go.
 	logPath := tracePath
 	if logPath == "" {
 		logPath = engineLogPath()
@@ -312,10 +376,6 @@ func runIBusEngine(ctx *Context, options engineRunOptions) error {
 		if logPath != "" {
 			appendLogLine(logPath, "session: "+line)
 		}
-		// Stderr is for a human running the engine by hand, and only when it is a
-		// terminal: ibus-daemon hands the engine pipes, and a write to a pipe nobody
-		// drains blocks once it fills - a dictation stopping mid-sentence days into an
-		// installation is not a failure anyone could attribute to a log line.
 		if file, ok := ctx.Stderr.(*os.File); ok && isTerminalFile(file) {
 			fmt.Fprintf(ctx.Stderr, "voiceime: %s\n", line)
 		}
@@ -328,11 +388,11 @@ func runIBusEngine(ctx *Context, options engineRunOptions) error {
 		ctx.Print("engine started on %s (diagnostic commit only)", address)
 		handler = &diagnosticHandler{text: commitOnEnable, out: ctx.Stdout}
 	default:
-		pipeline, err := newPipelineHandler(runCtx, ctx, logf, audioFile)
+		pipeline, err := newPushToTalk(ctx, logf, audioFile)
 		if err != nil {
 			return err
 		}
-		ctx.Print("engine started on %s; dictation begins when the engine is activated", address)
+		ctx.Print("engine started on %s; hold %s to dictate", address, pipeline.TriggerSpec())
 		handler = pipeline
 	}
 	engineErr := ibus.Run(runCtx, component, handler, address)
@@ -342,22 +402,14 @@ func runIBusEngine(ctx *Context, options engineRunOptions) error {
 	return ctx.Emit("ibus-engine", map[string]any{"address": address, "stopped": true})
 }
 
-// newPipelineHandler assembles the dictation pipeline the engine runs: the resident
-// server it talks to, the two entries a session uses, and either the microphone or a
-// file as the audio source.
-//
-// There is no process to start and no model to load here any more. Both roles are
-// served by the unit `voiceime server install` writes, which loads its models at
-// startup, so activating the engine opens a connection and nothing else.
-func newPipelineHandler(runCtx context.Context, ctx *Context, logf func(string, ...any), audioFile string) (*daemon.EngineHandler, error) {
-	serverURL := strings.TrimSpace(ctx.Config.ASRServerURL)
-	if serverURL == "" {
+func newPushToTalk(ctx *Context, logf func(string, ...any), audioFile string) (*daemon.PushToTalk, error) {
+	if strings.TrimSpace(ctx.Config.ASRServerURL) == "" {
 		return nil, PreconditionError("voiceime server install",
-			"dictation needs the repair server: nothing is configured to decode audio")
+			"dictation needs the recognition server: nothing is configured to decode audio")
 	}
-	handler := &daemon.EngineHandler{
-		Config: ctx.Config,
-		Log:    logf,
+	handler, err := daemon.NewPushToTalk(ctx.Config, logf)
+	if err != nil {
+		return nil, PreconditionError(`voiceime config set push_to_talk "<Control>apostrophe"`, "%v", err)
 	}
 	logf("%s", serverDescription(ctx.Config))
 	if audioFile != "" {
@@ -391,19 +443,12 @@ func isTerminalFile(file *os.File) bool {
 	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
-// engineLogPath is where a dictation session writes its account of itself when no
-// --trace was given. In the cache directory because it is disposable, and separate from
-// the trace file so that turning tracing on does not move it somewhere else.
 func engineLogPath() string { return filepath.Join(config.CacheDir(), "engine.log") }
 
 // maxEngineLogBytes bounds that file. 1 MiB is thousands of dictations; the cap is there
 // so a long-lived install cannot fill a disk with the record of what it said.
 const maxEngineLogBytes = 1 << 20
 
-// rotateLog drops a log that has outgrown its bound, keeping the most recent behaviour
-// rather than none: the alternative (append forever) is the failure this exists to
-// prevent, and the alternative (delete every session) loses the history that makes the
-// file worth reading.
 func rotateLog(path string, limit int64) {
 	info, err := os.Stat(path)
 	if err != nil || info.Size() <= limit {

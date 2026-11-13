@@ -9,11 +9,6 @@ import (
 	"github.com/wallacegibbon/voiceime/internal/config"
 )
 
-// The engine is spawned by ibus-daemon, which puts its stdout and stderr on pipes it
-// discards - measured: the process's fds are pipes, and the journal holds no line from
-// it. Without a file, a dictation has no record of itself, which is why a user reporting
-// "I pressed the key and nothing happened" could not be helped: the session that would
-// have said what it heard was gone.
 func TestEngineLogPathIsInTheCacheDir(t *testing.T) {
 	if got, want := engineLogPath(), filepath.Join(config.CacheDir(), "engine.log"); got != want {
 		t.Errorf("engineLogPath() = %q, want %q", got, want)
@@ -43,7 +38,6 @@ func TestAppendLogLineTimestampsAndRestricts(t *testing.T) {
 		t.Fatalf("wrote %d lines, want 2:\n%s", len(lines), body)
 	}
 	for _, line := range lines {
-		// RFC3339 prefix, then the message: "2026-10-20T00:40:00+08:00 session: ..."
 		if len(line) < 21 || line[4] != '-' || line[10] != 'T' || !strings.Contains(line, " session: ") {
 			t.Errorf("line %q is not timestamped", line)
 		}
@@ -80,11 +74,6 @@ func TestRotateLogOnlyDropsWhatIsTooBig(t *testing.T) {
 }
 
 // Stderr is written only when a human is looking at it.
-//
-// ibus-daemon spawns the engine with its stdout and stderr on pipes (measured), and a
-// write to a pipe whose reader never drains it blocks once the buffer fills - so a
-// long-lived install could freeze a dictation mid-sentence on a log line. A terminal (or
-// /dev/null) is a character device; a pipe and a regular file are not.
 func TestIsTerminalFileDistinguishesPipesAndFiles(t *testing.T) {
 	read, write, err := os.Pipe()
 	if err != nil {

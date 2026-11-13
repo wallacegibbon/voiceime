@@ -5,13 +5,6 @@ import (
 	"strings"
 )
 
-// hardwareChecks reports the two settings whose right value is a property of the
-// machine rather than of voiceime: how many threads to use, and which backend to
-// run on.
-//
-// Both defaults are the reference machine's (threads = 4 on an 8-core CPU,
-// backend = cpu). Neither is wrong anywhere - they are simply not tuned anywhere
-// else, and before this check nothing said so.
 func hardwareChecks(ctx *Context, report func(Check)) {
 	facts := detectHardware()
 
@@ -29,13 +22,6 @@ func hardwareChecks(ctx *Context, report func(Check)) {
 }
 
 // threadsVerdict compares the configured thread count with the CPU.
-//
-// Only one direction is a finding: asking for more threads than there are
-// physical cores cannot help, because the streaming decoder and the repair pass
-// already compete for the same cores and both are compute-bound. Fewer threads is
-// a legitimate choice - it leaves the machine responsive and the measured
-// latency headroom is large (docs/measurements.md) - so it is reported as
-// information, not as a problem.
 func threadsVerdict(threads int, facts hardwareFacts) (status, detail, fix string) {
 	cores := facts.Cores()
 	if cores <= 0 || threads <= 0 {
@@ -54,12 +40,6 @@ func threadsVerdict(threads int, facts hardwareFacts) (status, detail, fix strin
 	return "ok", fmt.Sprintf("threads = %d on %s", threads, shape), ""
 }
 
-// backendVerdict checks the configured backend against what the local binary was
-// built with, and reports a GPU it is not being asked to use.
-//
-// Only a vendor compute tool on PATH is treated as a finding. A DRM render node
-// exists on any machine with integrated graphics, and a check that warns on every
-// laptop is a check that gets ignored.
 func backendVerdict(configured string, supported []string, facts hardwareFacts) (status, detail, fix string) {
 	if configured == "" {
 		return "", "", ""

@@ -6,17 +6,6 @@ import (
 	"github.com/godbus/dbus/v5"
 )
 
-// The preedit is underlined, because an application only draws a composition
-// underline when the text it receives says so.
-//
-// Measured on X11: the engine emitted UpdatePreeditText with an empty attribute
-// list, GTK's IM module drew the provisional text as plain text, and a user saw no
-// underline where libpinyin shows one. On Wayland the same signal was underlined,
-// because the compositor's text-input path marks a composition by itself - which is
-// exactly why the omission survived so long. The shape asserted here is the one
-// libibus 1.5.29 itself serialises (`IBus.Attribute.serialize_object`):
-//
-//	('IBusAttribute', @a{sv} {}, uint32 1, uint32 1, uint32 0, uint32 6)
 func TestPreeditTextUnderlinesTheWholeString(t *testing.T) {
 	payload := NewPreeditText("中文输入法。")
 
@@ -63,12 +52,6 @@ func TestCommittedTextHasNoAttributes(t *testing.T) {
 }
 
 // The engine answers the property names libibus actually declares.
-//
-// libibus 1.5.29 declares HasFocusId and ActiveSurroundingText on IBusEngine (checked
-// against the typelib: `IBus.Engine.list_properties()`), while this answered FocusId -
-// the name an older release used. The daemon then asked for a property it got an error
-// for, which reads as a capability the engine lacks rather than a name it does not know.
-// Both spellings answer now, so neither generation of daemon can miss it.
 func TestEnginePropertiesAnswerTheDeclaredNames(t *testing.T) {
 	properties := &propertiesObject{engine: &engineObject{}}
 
@@ -112,9 +95,6 @@ func TestEngineGetAllListsBothSpellings(t *testing.T) {
 	}
 }
 
-// The daemon writes ContentType and voiceime does not vary its behaviour by input purpose,
-// so accepting and ignoring the write is correct - and a Set must not fail, or the daemon
-// logs a warning on every focus change.
 func TestEngineAcceptsContentType(t *testing.T) {
 	properties := &propertiesObject{engine: &engineObject{}}
 	if err := properties.Set(ifaceIBusEngine, "ContentType", dbus.MakeVariant(uint32(0))); err != nil {

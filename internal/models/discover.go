@@ -1,16 +1,4 @@
 // Package models discovers the model packages installed on this machine and
-// downloads new ones through audio.cpp's own model manager.
-//
-// Discovery works by asking audio.cpp, never by guessing from file names: the CLI's
-// `--inspect` identifies a model from its contents and prints its family, tasks, modes and
-// languages. That answer is cached against the file's size and mtime, so a rescan costs one
-// stat per file.
-//
-// The cache has exactly one writer, `voiceime models list --refresh` (models.Refresh).
-// Every other command reads (models.Cached) and, when the cache has no answer for a file,
-// says so instead of asking: an inspection costs about six seconds per checkpoint, and a
-// command that quietly pays it - or quietly fails because it could not record the answer -
-// is worse than one that tells the user which command to run.
 package models
 
 import (
@@ -37,11 +25,7 @@ type Task struct {
 
 // Model is what audio.cpp reports about one model directory or GGUF file.
 type Model struct {
-	Path string `json:"path"`
-	// Inspected is false when the cache has no answer for this file: Cached reports what
-	// is recorded and never asks, so Family and Tasks are empty for a file nobody has
-	// refreshed yet. Saying so is the difference between "this is not a speech model" and
-	// "this has not been looked at", which are different fixes.
+	Path               string   `json:"path"`
 	Inspected          bool     `json:"inspected"`
 	Family             string   `json:"family"`
 	Variant            string   `json:"variant"`
@@ -72,7 +56,11 @@ func (m Model) Supports(task, mode string) bool {
 }
 
 // StreamingASR reports whether the model can drive live dictation.
-func (m Model) StreamingASR() bool { return m.Supports("asr", "streaming") }
+// ASR reports whether the model transcribes speech, in either mode.
+func (m Model) ASR() bool { return m.Supports("asr", "offline") || m.Supports("asr", "streaming") }
+
+// OfflineASR reports whether the model can read a whole recording in one pass.
+func (m Model) OfflineASR() bool { return m.Supports("asr", "offline") }
 
 // SupportsLanguage reports whether the model lists a language, treating an empty
 // list as "unknown" rather than "no".
@@ -108,12 +96,6 @@ type index struct {
 
 const indexVersion = 1
 
-// indexMu serialises the read-modify-write of the inspection cache inside this
-// process, so two goroutines cannot each load the index, modify their own copy and
-// save, losing the other's work. It does not reach across processes - two commands
-// running at once are separate processes - so the cross-process half is done by the
-// writer: config.WriteFile makes the file appear whole or not at all, and saveIndex
-// merges instead of overwriting (see its comment).
 var indexMu sync.Mutex
 
 func loadIndex(path string) index {
@@ -128,21 +110,6 @@ func loadIndex(path string) index {
 	return loaded
 }
 
-// saveIndex writes what this scan learned, taking every entry it did not inspect from
-// whatever is on disk at that moment.
-//
-// Two commands can scan at the same time - a doctor and a models list, or two agents - and
-// they are separate processes, so the mutex above cannot serialise them. Writing this
-// process's whole snapshot over the file lost the other's work entirely: the loser's
-// freshly inspected entries vanished and the next scan paid for them again, which on this
-// machine is about six seconds per model (measured; `audiocpp_cli --inspect` is not the
-// few hundred milliseconds the comment below the inspector assumes). Merging narrows the
-// window from the whole scan to the microseconds between this read and the rename, and
-// every entry this process did not inspect is taken from disk - so the answer that was
-// already there, possibly newer, is kept.
-//
-// inspected is the set of paths this run actually re-inspected; those are the entries that
-// may be newer than the file's, and nothing else is.
 func saveIndex(path string, mine index, inspected map[string]bool) error {
 	if onDisk := loadIndex(path); len(onDisk.Models) > 0 {
 		for key := range mine.Models {
@@ -169,8 +136,6 @@ type candidate struct {
 }
 
 // candidates lists GGUF files and safetensors-style directories under dir.
-// Directory layouts are included because audio.cpp loads those directly (a
-// HuggingFace checkpoint directory is a first-class model path).
 func candidates(dir string) []candidate {
 	var found []candidate
 	walk := func(path string) {
@@ -213,17 +178,6 @@ func candidates(dir string) []candidate {
 	return found
 }
 
-// Cached reports every model file under the configured directory, with whatever the
-// inspection cache already knows about it.
-//
-// It runs nothing and writes nothing. That is the whole point of the split: the cache has
-// exactly one writer (Refresh), so a diagnostic can neither change what another command is
-// reading nor fail because a cache file could not be written - which is how `doctor` came
-// to report "models: fail" on a machine where every model was fine, with a fix naming a
-// command that no longer existed.
-//
-// A file whose size or mtime the cache does not match is reported as Inspected=false
-// rather than with its previous answer: a stale family is worse than no family.
 func Cached(cfg *config.Config) ([]Model, error) {
 	dir := cfg.ResolvedModelsDir()
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
@@ -234,11 +188,6 @@ func Cached(cfg *config.Config) ([]Model, error) {
 	return describe(candidates(dir), loadIndex(config.ModelIndexPath())), nil
 }
 
-// Refresh inspects every file the cache cannot answer for, records the answer, and drops
-// records for files that are gone. It is the cache's only writer.
-//
-// force re-inspects files that look unchanged, which is what an audio.cpp upgrade needs:
-// the same checkpoint can report different families and tasks under a different build.
 func Refresh(cfg *config.Config, force bool, progress func(string)) ([]Model, error) {
 	dir := cfg.ResolvedModelsDir()
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
@@ -330,11 +279,6 @@ func describe(found []candidate, cached index) []Model {
 	return models
 }
 
-// inspect runs `audiocpp_cli --model <path> --inspect` and parses the key=value
-// report. It is meant to be cheap - it reads the checkpoint header rather than the
-// weights - but on the reference machine it measured 5.95s for one 1 GiB checkpoint, so
-// the cache is worth more than the comment here used to assume, and so is not losing an
-// entry to a concurrent writer (see saveIndex).
 func inspect(asrBinary, path string) indexEntry {
 	// The only bound model discovery puts on a subprocess: --inspect reads a checkpoint
 	// header, and a tool that has not answered in 90s is wedged.
@@ -357,9 +301,6 @@ func inspect(asrBinary, path string) indexEntry {
 	return entry
 }
 
-// parseInspect reads the key=value lines. Only the fields voiceime acts on are
-// kept; the report contains more (graph arena sizes, weight listings) and
-// duplicating all of it here would mean tracking upstream changes for no gain.
 func parseInspect(text string) indexEntry {
 	entry := indexEntry{}
 	for _, line := range strings.Split(text, "\n") {
@@ -374,7 +315,6 @@ func parseInspect(text string) indexEntry {
 		case "variant":
 			entry.Variant = value
 		case "task":
-			// Format: "task=asr modes=offline,streaming"
 			fields := strings.Fields(value)
 			if len(fields) == 0 {
 				continue
@@ -407,18 +347,10 @@ func lastNonEmptyLine(text string) string {
 	return ""
 }
 
-// PickStreaming returns the model voiceime should use for live dictation when
-// the user has not chosen one.
-//
-// The ranking is a measured preference, not a guess: on CPU, SenseVoice-Small is
-// the only small multilingual streaming model here that keeps up comfortably
-// (about 20x realtime on an 8-core laptop), Qwen3-ASR-0.6B is roughly 3.5x
-// realtime and therefore better used as the repair model, and the 1.7B streaming
-// models do not run in real time at all on a CPU. See docs/measurements.md.
-func PickStreaming(models []Model, language string) *Model {
+func Pick(models []Model, language string) *Model {
 	ranking := map[string]int{
-		"sense_asr":        100,
-		"qwen3_asr":        90,
+		"qwen3_asr":        100,
+		"sense_asr":        90,
 		"parakeet_tdt":     80,
 		"kroko_asr":        70,
 		"moonshine_asr":    60,
@@ -430,12 +362,15 @@ func PickStreaming(models []Model, language string) *Model {
 	bestScore := -1
 	for i := range models {
 		model := &models[i]
-		if model.Error != "" || !model.StreamingASR() {
+		if model.Error != "" || !model.ASR() {
 			continue
 		}
 		score := ranking[model.Family]
 		if score == 0 {
 			score = 10
+		}
+		if model.OfflineASR() {
+			score += 1000
 		}
 		if model.SupportsLanguage(language) {
 			score += 20
@@ -447,9 +382,6 @@ func PickStreaming(models []Model, language string) *Model {
 	return best
 }
 
-// Uninspected returns the files the cache cannot answer for: what `models list --refresh`
-// would inspect. Callers report them, because a file that has not been looked at is a
-// different situation from one that turned out not to be a speech model.
 func Uninspected(scanned []Model) []Model {
 	var pending []Model
 	for _, model := range scanned {
@@ -460,13 +392,6 @@ func Uninspected(scanned []Model) []Model {
 	return pending
 }
 
-// ASRModels filters a scan down to the models voiceime can actually use, which
-// is what every caller except an explicit "show me everything" wants.
-//
-// This matters more than it looks: the models directory is shared with whatever
-// else the user keeps there - text LLMs, embedding models, vision projectors in
-// the reference machine's case. Listing those as unusable models would bury the
-// two that matter and make an agent think the install is broken.
 func ASRModels(scanned []Model) []Model {
 	var usable []Model
 	for _, model := range scanned {

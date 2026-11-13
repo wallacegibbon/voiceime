@@ -7,15 +7,8 @@ import (
 	"time"
 )
 
-// probeTimeout bounds every external program voiceime runs for informational
-// purposes. A probe that hangs must not hang a doctor or a status call, because
-// an agent waiting on it would have no way to tell the difference between a slow
-// machine and a dead one.
 const probeTimeout = 10 * time.Second
 
-// probe runs a command and returns its combined output. The error is returned
-// together with whatever output was produced, since several of the tools used
-// here report problems on stderr while still exiting zero.
 func probe(name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()
@@ -33,18 +26,6 @@ func firstLine(text string) string {
 }
 
 // listEngineContains reports whether `ibus list-engine` lists an engine name.
-//
-// The listing is a tree with a language header per group, and each engine is one
-// indented line of the form "<name> - <description>":
-//
-//	language: English
-//	  xkb:us::eng - English (US)
-//	  voiceime - Voiceime (speech)
-//
-// so an exact whole-line match never succeeds, and a substring search would take
-// "voiceime-probe" for "voiceime" (the probe component docs/ibus-protocol.md
-// describes). The name is therefore the part before the " - " separator, which
-// also skips the "language: ..." headers: they carry no engine.
 func listEngineContains(text, name string) bool {
 	if name == "" {
 		return false

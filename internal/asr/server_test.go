@@ -13,10 +13,6 @@ import (
 	"github.com/wallacegibbon/voiceime/internal/audio"
 )
 
-// The repair pass uploads one utterance and reads back its text. Everything the
-// session needs from a server route is in this exchange, so it is worth pinning:
-// which fields the request carries, that the audio survives as a WAV container,
-// and that the response is parsed rather than guessed at.
 func TestServerTranscriberUploadsTheSegmentAndReturnsItsText(t *testing.T) {
 	var (
 		gotModel    string

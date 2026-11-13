@@ -1,3 +1,4 @@
+// Package asr is the client side of recognition: one recording, one request.
 package asr
 
 import (
@@ -15,52 +16,23 @@ import (
 	"github.com/wallacegibbon/voiceime/internal/audio"
 )
 
-// Transcriber is the offline decode the repair pass needs: one finished utterance
-// in, its text out.
-//
-// It is an interface because the session must not care how the decode happens:
-// ServerTranscriber is the only production route (a resident audiocpp_server, whose
-// weights are loaded at its start rather than per utterance - D22), and a test or a
-// caller with a different reader supplies its own. The process-per-utterance route it
-// replaced paid the whole model load every time (measured with Qwen3-ASR-0.6B: ~4.4s of
-// setup per invocation against ~1.0s once), which is what the service exists to remove.
+// Transcriber turns one recording into text.
 type Transcriber interface {
 	Transcribe(ctx context.Context, pcm []byte) (string, error)
 }
 
-// ServerTranscriber re-transcribes a finished segment against a running
-// audio.cpp server, over the OpenAI-compatible transcription endpoint.
-//
-// Why a server at all: the repair pass re-decodes every accepted utterance, so a
-// refine model that is better than the streaming one is worth having until the
-// per-utterance cost of loading it exceeds the utterance itself. The server keeps
-// the weights resident, so that cost is paid once. The endpoint takes the WAV as
-// a multipart body, so unlike the CLI route this needs no temporary file.
-//
-// The one hazard is the model lock. The server holds a model for the whole length
-// of a request, so if the refine model and the streaming model are the *same*
-// entry, a repair queues behind the live dictation that owns it: measured here, a
-// 214ms repair waited 10.9s for a 12s dictation to end. Configuring the refine
-// model as its own entry is therefore a requirement, not a preference, and
-// Check reports the ids the server actually offers so a mistake surfaces at
-// startup instead of on the first utterance.
+// ServerTranscriber sends a recording to a resident audio.cpp server.
 type ServerTranscriber struct {
-	// BaseURL is the server root, e.g. http://127.0.0.1:8080.
-	BaseURL string
-	// Model is the id the server config gave the offline model.
-	Model string
-	// Language is passed through when set.
+	BaseURL  string
+	Model    string
 	Language string
-	// Timeout bounds one repair. A repair that takes longer than the utterance is
-	// worse than no repair.
-	Timeout time.Duration
-	// Client overrides the HTTP client, for tests.
-	Client *http.Client
+	Timeout  time.Duration
+	Client   *http.Client
 }
 
 var _ Transcriber = ServerTranscriber{}
 
-// Transcribe uploads the segment and returns the text the server decoded.
+// Transcribe uploads the recording and returns the text the server decoded.
 func (s ServerTranscriber) Transcribe(ctx context.Context, pcm []byte) (string, error) {
 	if len(pcm) == 0 {
 		return "", nil
@@ -69,14 +41,17 @@ func (s ServerTranscriber) Transcribe(ctx context.Context, pcm []byte) (string, 
 	if err != nil {
 		return "", err
 	}
-	if strings.TrimSpace(s.Model) == "" {
-		// The id is a constant the front ends pass in (server.DefaultID); see OpenStream.
-		return "", fmt.Errorf("no repair model id: the repair uses the entry `voiceime server install` writes")
+	model := strings.TrimSpace(s.Model)
+	if model == "" {
+		model, err = ModelID(ctx, base, s.client())
+		if err != nil {
+			return "", err
+		}
 	}
 
 	var body bytes.Buffer
 	form := multipart.NewWriter(&body)
-	if err := form.WriteField("model", s.Model); err != nil {
+	if err := form.WriteField("model", model); err != nil {
 		return "", err
 	}
 	if s.Language != "" {
@@ -84,7 +59,7 @@ func (s ServerTranscriber) Transcribe(ctx context.Context, pcm []byte) (string, 
 			return "", err
 		}
 	}
-	part, err := form.CreateFormFile("file", "segment.wav")
+	part, err := form.CreateFormFile("file", "recording.wav")
 	if err != nil {
 		return "", err
 	}
@@ -110,24 +85,67 @@ func (s ServerTranscriber) Transcribe(ctx context.Context, pcm []byte) (string, 
 
 	response, err := s.client().Do(request)
 	if err != nil {
-		return "", fmt.Errorf("server repair: %w", err)
+		return "", fmt.Errorf("transcribe: %w", err)
 	}
 	defer response.Body.Close()
 	payload, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
-		return "", fmt.Errorf("server repair: read response: %w", err)
+		return "", fmt.Errorf("transcribe: read response: %w", err)
 	}
 	if response.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("server repair: %s: %s", response.Status, summarise(payload))
+		return "", fmt.Errorf("transcribe: %s: %s", response.Status, summarise(payload))
 	}
-
 	var decoded struct {
 		Text string `json:"text"`
 	}
 	if err := json.Unmarshal(payload, &decoded); err != nil {
-		return "", fmt.Errorf("server repair: decode response: %w", err)
+		return "", fmt.Errorf("transcribe: decode response: %w", err)
 	}
 	return decoded.Text, nil
+}
+
+// ModelID asks the server which entry it serves.
+func ModelID(ctx context.Context, base string, client *http.Client) (string, error) {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1/models", nil)
+	if err != nil {
+		return "", err
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return "", fmt.Errorf("ask the server which model it serves: %w", err)
+	}
+	defer response.Body.Close()
+	payload, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if err != nil {
+		return "", fmt.Errorf("ask the server which model it serves: %w", err)
+	}
+	if response.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("ask the server which model it serves: %s", response.Status)
+	}
+	var listing struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &listing); err != nil {
+		return "", fmt.Errorf("ask the server which model it serves: %w", err)
+	}
+	switch len(listing.Data) {
+	case 1:
+		if listing.Data[0].ID == "" {
+			return "", fmt.Errorf("the server serves a model with no id")
+		}
+		return listing.Data[0].ID, nil
+	case 0:
+		return "", fmt.Errorf("the server serves no model: run `voiceime server install`")
+	default:
+		return "", fmt.Errorf("the server serves %d models: this build serves one", len(listing.Data))
+	}
 }
 
 func (s ServerTranscriber) client() *http.Client {
@@ -137,8 +155,6 @@ func (s ServerTranscriber) client() *http.Client {
 	return http.DefaultClient
 }
 
-// baseURL validates the configured address, because the failure it prevents is the one
-// every misconfigured server produces: a repair that fails per utterance.
 func (s ServerTranscriber) baseURL() (string, error) {
 	base := strings.TrimSpace(s.BaseURL)
 	if base == "" {
@@ -154,8 +170,7 @@ func (s ServerTranscriber) baseURL() (string, error) {
 	return strings.TrimRight(base, "/"), nil
 }
 
-// summarise keeps an error body to one short line, so a server's failure page
-// cannot flood a log or a notification.
+// summarise keeps an error body to one short line.
 func summarise(payload []byte) string {
 	text := strings.TrimSpace(string(payload))
 	if index := strings.IndexAny(text, "\r\n"); index >= 0 {
@@ -170,15 +185,9 @@ func summarise(payload []byte) string {
 	return text
 }
 
-// RepairRequestOptions returns the request options the offline repair decode
-// needs, with the caller's overlaid on top.
-//
-// There is one place left to put them: a multipart transcription upload has no field
-// that carries per-request options, so they are written into the model entry's
-// default_request_options when the server config is rendered. They stay a function
-// rather than a literal on purpose - the option that makes a repair decode a whole
-// utterance instead of chunking it is a property of the decode, not of the server.
-func RepairRequestOptions(overrides map[string]string) map[string]string {
+// RequestOptions are the options every transcription request carries: the whole
+// recording in one pass, with the caller's overrides on top.
+func RequestOptions(overrides map[string]string) map[string]string {
 	options := map[string]string{"audio_chunk_mode": "none"}
 	for key, value := range overrides {
 		options[key] = value

@@ -2,11 +2,6 @@ package cli
 
 import "testing"
 
-// The sample is verbatim output from `ibus list-engine` (IBus 1.5.29-rc2): a
-// language header per group and one indented line per engine. Getting this parse
-// wrong is not cosmetic - doctor reads it to decide whether text delivery is even
-// possible, and an exact whole-line match reports a correctly installed engine as
-// missing.
 const listEngineSample = `language: English
   xkb:us::eng - English (US)
   xkb:us:dvorak:eng - English (Dvorak)

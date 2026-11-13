@@ -3,7 +3,6 @@ package ibus
 import (
 	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
 
 	"github.com/wallacegibbon/voiceime/internal/config"
@@ -39,10 +38,6 @@ func TestParseShortcutSpellings(t *testing.T) {
 			t.Errorf("ParseShortcut(%q) = keyval %#x state %d, want %#x/%d",
 				testCase.spec, key.Keyval, key.State, testCase.keyval, testCase.state)
 		}
-		if key.Keycode != 0 {
-			t.Errorf("ParseShortcut(%q) set keycode %d; 0 means \"any keycode\" and is the only portable choice",
-				testCase.spec, key.Keycode)
-		}
 	}
 }
 
@@ -54,9 +49,6 @@ func TestParseShortcutRejectsBadInput(t *testing.T) {
 	}
 }
 
-// The component file records an absolute path that ibus-daemon will exec, which
-// is the thing a moved checkout breaks. ComponentExec reads it back so doctor can
-// ask whether it still exists.
 func TestComponentExecRoundTrips(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "voiceime.xml")
@@ -83,58 +75,50 @@ func TestComponentExecRejectsAnEmptyCommand(t *testing.T) {
 	}
 }
 
-// voiceime's shortcut spelling and GTK's overlap except exactly where the
-// default lives: "<F9>" is "the F9 key" to voiceime and "modifier F9" (which GTK
-// rejects) to GTK. That is why the conversion exists, and why it is not a no-op.
-func TestGTKAccelerator(t *testing.T) {
-	cases := []struct{ spec, want string }{
-		{"<F9>", "F9"},
-		{"F9", "F9"},
-		{"<F12>", "F12"},
-		{"<Control>apostrophe", "<Control>apostrophe"},
-		{"Control+apostrophe", "<Control>apostrophe"},
-		{"Control+space", "<Control>space"},
-		{"<Super>period", "<Super>period"},
-		{"<Control><Shift>space", "<Control><Shift>space"},
-		{"apostrophe", "apostrophe"},
+func TestKeyMatchesTheStateAnEngineIsHanded(t *testing.T) {
+	trigger, err := ParseShortcut("<Control>apostrophe")
+	if err != nil {
+		t.Fatalf("ParseShortcut: %v", err)
 	}
-	for _, testCase := range cases {
-		got, err := GTKAccelerator(testCase.spec)
-		if err != nil {
-			t.Errorf("GTKAccelerator(%q): %v", testCase.spec, err)
-			continue
-		}
-		if got != testCase.want {
-			t.Errorf("GTKAccelerator(%q) = %q, want %q", testCase.spec, got, testCase.want)
-		}
+	if trigger.Keyval != 0x0027 || trigger.State != ModControl {
+		t.Fatalf("parsed %+v, want apostrophe with Control", trigger)
 	}
-	if _, err := GTKAccelerator("no-such-key"); err == nil {
-		t.Error("a shortcut that is not a key name was accepted")
+	if Held := trigger.Held(ModControl); !Held {
+		t.Error("Control+apostrophe does not match a state with Control down")
+	}
+	if trigger.Held(0) {
+		t.Error("Control+apostrophe matched a state with no modifier: a bare key would start a dictation")
+	}
+	// A release carries the same modifiers plus the release bit, which the caller masks
+	// off before matching; the lock and button bits a client may add are not part of a
+	// combination.
+	release := (ModControl | ReleaseMask | ModLock) & ModifierMask
+	if !trigger.Held(release) {
+		t.Errorf("release state 0x%x does not match the trigger", release)
+	}
+	if ReleaseMask != 1<<30 {
+		t.Errorf("ReleaseMask = %d, want IBUS_RELEASE_MASK (1<<30)", ReleaseMask)
 	}
 }
 
-func TestKeyNameInvertsKeyvalFor(t *testing.T) {
-	// Every name keyvalFor accepts must round-trip through KeyName, or the GNOME
-	// keybinding would silently disagree with the configured shortcut.
-	names := []string{
-		"apostrophe", "grave", "space", "period", "comma", "semicolon", "slash",
-		"backslash", "minus", "equal", "bracketleft", "bracketright", "Return",
-		"Escape", "Tab", "BackSpace", "Delete",
+// A modifier release is one of the ways a hold ends, so each modifier keysym has to name
+// the bit the trigger was matched against.
+func TestModifierMaskOfCoversTheModifierKeysyms(t *testing.T) {
+	cases := map[uint32]uint32{
+		0xffe1: ModShift,   // XK_Shift_L
+		0xffe4: ModControl, // XK_Control_R
+		0xffea: ModMod1,    // XK_Alt_R
+		0xffeb: ModMod4,    // XK_Super_L
+		0xffee: ModMod4,    // XK_Hyper_R
 	}
-	for _, name := range names {
-		keyval, err := keyvalFor(name)
-		if err != nil {
-			t.Fatalf("keyvalFor(%q): %v", name, err)
-		}
-		if got := KeyName(keyval); got == "" {
-			t.Errorf("KeyName(0x%04x) from %q is empty", keyval, name)
+	for keyval, want := range cases {
+		if got := ModifierMaskOf(keyval); got != want {
+			t.Errorf("ModifierMaskOf(0x%04x) = 0x%x, want 0x%x", keyval, got, want)
 		}
 	}
-	for number := 1; number <= 35; number++ {
-		name := "F" + strconv.Itoa(number)
-		keyval, _ := keyvalFor(name)
-		if got := KeyName(keyval); got != name {
-			t.Errorf("KeyName(F%d) = %q, want %q", number, got, name)
+	for _, keyval := range []uint32{0x0020, 'a', 0xff0d, 0xffbe, 0xffef} {
+		if got := ModifierMaskOf(keyval); got != 0 {
+			t.Errorf("ModifierMaskOf(0x%04x) = 0x%x, want 0 for a key that is not a modifier", keyval, got)
 		}
 	}
 }

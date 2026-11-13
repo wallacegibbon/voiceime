@@ -12,31 +12,27 @@ import (
 	"github.com/wallacegibbon/voiceime/internal/models"
 )
 
-// The server is the one prerequisite dictation cannot work without, and nothing else
-// in an installation verifies it: voiceime no longer starts processes, so a missing
-// service is not a slow repair, it is no dictation at all. These are the states the
-// check has to tell apart, and the fix each one is worth.
 func TestASRServerCheckStates(t *testing.T) {
-	// A server serving both entries the checks ask for.
+	// A server serving one model, as voiceime does.
 	serving := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/health":
 			_, _ = w.Write([]byte(`{"status":"ok"}`))
 		case "/v1/models":
-			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"stream"},{"id":"refine"}]}`))
+			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"qwen3-asr-0.6b-q8_0"}]}`))
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer serving.Close()
 
-	// A server that answers but offers neither entry.
+	// A server that answers but serves more models than voiceime installs.
 	wrongEntries := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/health":
 			_, _ = w.Write([]byte(`{"status":"ok"}`))
 		default:
-			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"something-else"}]}`))
+			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"one"},{"id":"two"}]}`))
 		}
 	}))
 	defer wrongEntries.Close()
@@ -56,16 +52,16 @@ func TestASRServerCheckStates(t *testing.T) {
 			wantDetail: "no server is configured",
 		},
 		{
-			name:       "serving both entries",
+			name:       "serving one model",
 			mutate:     func(c *config.Config) { c.ASRServerURL = serving.URL },
 			wantStatus: "ok",
-			wantDetail: "is serving stream (partials) and refine (repair)",
+			wantDetail: "is serving qwen3-asr-0.6b-q8_0",
 		},
 		{
-			name:       "a server without the entries",
+			name:       "a server with more than one model",
 			mutate:     func(c *config.Config) { c.ASRServerURL = wrongEntries.URL },
 			wantStatus: "fail",
-			wantDetail: "has no entry",
+			wantDetail: "serves 2 models",
 		},
 		{
 			name:       "unparseable address",
@@ -113,9 +109,6 @@ func TestASRServerCheckStates(t *testing.T) {
 	}
 }
 
-// A service left on the previous checkpoint is the failure this check exists for: the
-// entry ids do not change when a setting does, so nothing else notices, and the symptom
-// is slightly different text rather than an error.
 func TestASRServerCheckCatchesAStaleModel(t *testing.T) {
 	stale := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -123,8 +116,7 @@ func TestASRServerCheckCatchesAStaleModel(t *testing.T) {
 			_, _ = w.Write([]byte(`{"status":"ok"}`))
 		case "/v1/models":
 			_, _ = w.Write([]byte(`{"object":"list","data":[
-				{"id":"stream","path":"/models/sense.gguf","mode":"streaming"},
-				{"id":"refine","path":"/models/other.gguf","mode":"offline"}]}`))
+				{"id":"other","path":"/models/other.gguf","mode":"offline"}]}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -137,16 +129,15 @@ func TestASRServerCheckCatchesAStaleModel(t *testing.T) {
 	}
 	cfg := config.Default()
 	cfg.ASRServerURL = stale.URL
-	cfg.StreamingModel = "/models/sense.gguf"
-	cfg.RefineModel = "/models/qwen.gguf"
+	cfg.Model = "/models/qwen.gguf"
 	cfg.ASRBin = "/bin/true" // not used by the check, but keeps the spec resolvable
 
 	check := asrServerCheck(cfg, scanned, true)
 	if check.Status != "fail" {
 		t.Fatalf("status = %q, want fail: the service serves other.gguf but the setting names qwen.gguf", check.Status)
 	}
-	if !strings.Contains(check.Detail, "qwen.gguf") || !strings.Contains(check.Detail, "other.gguf") {
-		t.Errorf("detail %q does not name both files", check.Detail)
+	if !strings.Contains(check.Detail, "qwen") || !strings.Contains(check.Detail, "other") {
+		t.Errorf("detail %q does not name both the configured and the served model", check.Detail)
 	}
 	if !strings.Contains(check.Fix, "config apply") {
 		t.Errorf("fix %q does not say how to apply the changed setting", check.Fix)
@@ -165,10 +156,6 @@ func deadURL(t *testing.T) string {
 	return "http://" + address
 }
 
-// The unit file is what makes the server exist across reboots, and what it starts
-// matters as much as whether it starts: it runs voiceime, which renders the server
-// config from the settings, so a changed model needs only a restart and a stale config
-// is impossible.
 func TestServerUnitRunsVoiceimeWithSubcommand(t *testing.T) {
 	unit := serverUnit("/opt/audio.cpp/build/linux-cpu-release/bin/audiocpp_server", "/home/u/.config/voiceime/config.toml")
 	if !strings.Contains(unit, " server run") {
@@ -195,13 +182,6 @@ func TestServerUnitRunsVoiceimeWithSubcommand(t *testing.T) {
 }
 
 // Every setting is applied by one command, and `config set` says so - for every key.
-//
-// The previous version kept a list of "settings the service reads at startup" beside
-// Config, and it had already gone stale: it named two settings that no longer existed
-// and called `language` a service setting when it is sent per request. Each of the three
-// resident processes reads the configuration when it starts, so the honest and stable
-// answer for every key is the same command - and `config set` reporting nothing for
-// nine of ten settings is how "applied" came to mean "maybe".
 func TestConfigSetNamesHowToApplyEverySetting(t *testing.T) {
 	configPath, _ := freshConfig(t)
 	for _, field := range config.Default().Fields() {

@@ -12,10 +12,6 @@ import (
 )
 
 // Component is the XML description of the engine.
-//
-// The daemon reads these files to build its registry: it learns the bus name the
-// engine process will own (<name>), what it is called in a menu (<longname>) and,
-// critically, the command it should spawn when the engine is activated (<exec>).
 type Component struct {
 	// Name is the component name and the D-Bus well-known name of the engine
 	// process. IBus uses one value for both.
@@ -50,20 +46,18 @@ func DefaultComponent(cfg *config.Config, execPath string) Component {
 		Homepage:    "https://github.com/wallacegibbon/voiceime",
 		TextDomain:  "voiceime",
 		EngineName:  cfg.IBusEngineName,
-		Language:    cfg.Language,
-		LongName:    "Voiceime (speech)",
-		EngineDesc:  "Dictate into any application with a local speech recogniser",
-		Symbol:      "🎤",
-		Rank:        1,
+		// The input source types US English (see XML); the recognition language is a
+		// separate setting and is not a property of the source, so the label reads
+		// "English (Voice)" whatever the model transcribes.
+		Language:   "en",
+		LongName:   "Voice",
+		EngineDesc: "Dictate into any application with a local speech recogniser",
+		Symbol:     "🎤",
+		Rank:       1,
 	}
 }
 
 // XML renders the component in the format ibus-daemon parses.
-//
-// The element names and nesting were taken from a working component
-// (/usr/share/ibus/component/pinyin.xml) rather than from documentation, and the
-// output was verified by loading it into a sandbox daemon and seeing the engine
-// appear in `ibus list-engine`.
 func (c Component) XML() string {
 	var builder strings.Builder
 	builder.WriteString("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n")
@@ -83,7 +77,10 @@ func (c Component) XML() string {
 	writeElement(&builder, 3, "language", c.Language)
 	writeElement(&builder, 3, "license", c.License)
 	writeElement(&builder, 3, "author", c.Author)
-	writeElement(&builder, 3, "layout", "default")
+	// The engine types nothing itself: every key but the trigger is passed to the
+	// application. Carrying the US layout is what makes it an English keyboard while it
+	// is selected, so the desktop does not need a separate English input source.
+	writeElement(&builder, 3, "layout", "us")
 	writeElement(&builder, 3, "longname", c.LongName)
 	writeElement(&builder, 3, "description", c.EngineDesc)
 	writeElement(&builder, 3, "rank", fmt.Sprint(c.Rank))
@@ -121,10 +118,6 @@ func ComponentDir() string { return filepath.Join(config.DataDir(), "component")
 // ComponentPath is the file `voiceime engine install` writes.
 func ComponentPath() string { return filepath.Join(ComponentDir(), "voiceime.xml") }
 
-// wireComponent is the file as ibus-daemon reads it. It exists so an installed component
-// can be parsed, changed and written back: `config apply` owns the fields the
-// configuration owns (the engine name and its language), and a re-render that lost the
-// exec line would repoint IBus at whatever binary the apply command ran from.
 type wireComponent struct {
 	Name        string `xml:"name"`
 	Description string `xml:"description"`
@@ -146,11 +139,6 @@ type wireComponent struct {
 }
 
 // ReadComponent parses an installed component file.
-//
-// The textdomain, license and author fields are carried through unchanged: they are not
-// settings, and a round trip that dropped them would rewrite a file voiceime did not
-// install. A file with no engine is an error - ibus-daemon needs one to register
-// anything, so it is broken rather than empty.
 func ReadComponent(path string) (Component, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -180,20 +168,13 @@ func ReadComponent(path string) (Component, error) {
 		Language:    engine.Language,
 		LongName:    engine.LongName,
 		EngineDesc:  engine.Description,
-		// Older versions stored the symbol as an XML entity and then escaped it, so an
-		// installed file carries the literal text "&#x1F3A4;" and IBus has been showing
-		// that in the panel instead of a microphone. Decoding it here is what lets
-		// `config apply` repair such a file rather than reporting it as unchanged.
-		Symbol: decodeCharacterReference(engine.Symbol),
-		Icon:   engine.Icon,
-		Rank:   engine.Rank,
+		Symbol:      decodeCharacterReference(engine.Symbol),
+		Icon:        engine.Icon,
+		Rank:        engine.Rank,
 	}
 	return component, nil
 }
 
-// decodeCharacterReference turns a numeric character reference that was written escaped
-// back into the character it names ("&#x1F3A4;" -> the microphone). Anything that is not
-// one is returned unchanged.
 func decodeCharacterReference(value string) string {
 	digits, found := strings.CutPrefix(value, "&#")
 	if !found {
@@ -217,15 +198,6 @@ func decodeCharacterReference(value string) string {
 	return string(rune(codepoint))
 }
 
-// ComponentExec reads an installed component file and returns the executable its
-// <exec> element names, which is the first field of the command ibus-daemon
-// spawns when the engine is activated.
-//
-// It exists so a check can ask the question that matters after a checkout is
-// moved or renamed: does the command the daemon will run still exist? The
-// component file records an absolute path, and nothing else notices when that
-// path goes away - the engine keeps running from the deleted binary, so
-// activation appears to work until the process is finally restarted.
 func ComponentExec(path string) (string, error) {
 	component, err := ReadComponent(path)
 	if err != nil {
@@ -238,13 +210,6 @@ func ComponentExec(path string) (string, error) {
 	return fields[0], nil
 }
 
-// InstallPaths is the value IBUS_COMPONENT_PATH must have for the daemon to find
-// our component *and* keep the system engines.
-//
-// This is not cosmetic: setting IBUS_COMPONENT_PATH replaces the default search
-// path rather than adding to it, so a value naming only our directory would hide
-// every system engine. Verified in a sandbox daemon: 1270 engines without the
-// variable, 2 with it set to one directory, 1271 with both directories listed.
 func InstallPaths(systemDir string) string {
 	if systemDir == "" {
 		systemDir = "/usr/share/ibus/component"

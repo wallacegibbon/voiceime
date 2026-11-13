@@ -1,16 +1,4 @@
 // Package cli implements the command surface.
-//
-// Two rules shape everything here, and both exist so that an automated agent can
-// operate voiceime without a human:
-//
-//  1. Every command must be non-interactive and idempotent. There are no
-//     prompts; anything a dialog would ask for is a flag or a config key.
-//  2. Every command must be machine-readable. `--json` produces exactly one
-//     JSON object on stdout, and failures are reported both as that object and
-//     as a distinct exit code, so a caller never has to parse prose.
-//
-// docs/AGENT.md documents the surface for agents; `voiceime capabilities` prints
-// the same information at runtime, derived from the code so it cannot go stale.
 package cli
 
 import (
@@ -124,11 +112,10 @@ func commands() []*Command {
 		cmdConfig(),
 		cmdDoctor(),
 		cmdEngine(),
-		cmdHotkey(),
 		cmdServer(),
 		cmdIBusEngine(),
 		cmdModels(),
-		cmdStream(),
+		cmdTranscribe(),
 	}
 }
 
@@ -197,14 +184,6 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	return ExitOK
 }
 
-// parseInterspersed parses flags that may appear before, after or between
-// positional arguments, and returns the positionals.
-//
-// Go's flag package stops at the first non-flag argument, so the natural
-// command line `voiceime transcribe file.wav --model m.gguf` would leave the
-// flags unparsed. Scripts and agents write flags last, so accepting both orders
-// is worth these twenty lines. Whether a flag takes a value is asked of the
-// FlagSet itself rather than guessed, so a boolean flag is not mistaken for one.
 func parseInterspersed(flags *flag.FlagSet, args []string) ([]string, error) {
 	var positional []string
 	for index := 0; index < len(args); index++ {
@@ -276,19 +255,12 @@ func find(name string) *Command {
 	return nil
 }
 
-// --------------------------------------------------------------------------- //
-// Global flags
-// --------------------------------------------------------------------------- //
-
 type globalOptions struct {
 	json       bool
 	pretty     bool
 	configPath string
 }
 
-// splitGlobals pulls the global flags out of the argument list wherever they
-// appear. Accepting them before and after the subcommand means an agent can
-// append `--json` to any command line without knowing its grammar.
 func splitGlobals(args []string) (globalOptions, []string, error) {
 	options := globalOptions{configPath: config.DefaultPath()}
 	var rest []string
@@ -312,10 +284,6 @@ func splitGlobals(args []string) (globalOptions, []string, error) {
 	}
 	return options, rest, nil
 }
-
-// --------------------------------------------------------------------------- //
-// Output
-// --------------------------------------------------------------------------- //
 
 func writeError(stderr io.Writer, command string, globals globalOptions, err error) {
 	code := exitCode(err)
@@ -356,7 +324,7 @@ func writeError(stderr io.Writer, command string, globals globalOptions, err err
 }
 
 func writeHelp(w io.Writer) {
-	fmt.Fprint(w, "voiceime - local streaming speech input for GNOME, no GUI by design.\n\n")
+	fmt.Fprint(w, "voiceime - speech input for GNOME: hold a key, speak, let go.\n\n")
 	fmt.Fprint(w, "Usage:\n  voiceime <command> [flags] [args]\n\n")
 	fmt.Fprint(w, "Commands:\n")
 	list := commands()

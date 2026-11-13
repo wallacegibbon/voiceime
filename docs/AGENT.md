@@ -1,381 +1,89 @@
 # Agent guide
 
-This document is written so that a program can install, configure and verify
-voiceime without a human. Every command is non-interactive, idempotent and has a
-`--json` mode. `voiceime capabilities` prints the same surface at runtime,
-derived from the code, so it is the authoritative version if the two disagree.
+Everything here is non-interactive and `--json` on request, so an agent can install,
+configure and verify voiceime by reading this file and running commands.
+`voiceime capabilities --json` prints the same surface at runtime, derived from the code;
+if the two disagree, the runtime wins.
 
-**Scope.** The command reference and operational semantics: what each command does,
-what the exit codes mean, which setting fixes which symptom. The procedure for a new
-machine is [DEPLOY.md](DEPLOY.md); the recognition pipeline is [asr.md](asr.md);
-measured numbers are in [measurements.md](measurements.md); the reasons are in
-[decisions.md](decisions.md). A fact is restated here only when operating on this
-machine needs it, and always with a pointer to its home.
-
-## Building and installing
-
-Deploying on a new machine end to end — prerequisites, configuration, model,
-engine registration, shortcut listener, and what to assert at each step — is
-[docs/DEPLOY.md](DEPLOY.md). This document is the command reference; that one is
-the procedure. What the recognition path sends over the socket, and how it fails, is
-[docs/asr.md](asr.md).
-
-The Makefile is the intended interface; every target is non-interactive.
-
-```
-make build                     # bin/voiceime, version stamped from git describe
-make check                     # gofmt, go vet, unit tests, unreachable-code check
-make install                   # ~/.local/bin (the default PREFIX); DESTDIR honoured
-make measure AUDIO=speech.wav CHUNK=3
-```
-
-A plain `go build ./cmd/voiceime` also works and produces the same binary, with
-the version reporting as `dev`. An installed copy is not required: running
-`bin/voiceime doctor` straight from the checkout is the normal development loop,
-and nothing in the program depends on being on `PATH`.
-
-Installing does not restart anything: a process keeps the binary it was started
-from, so rebuilt code runs only after the engine, the listener and the service
-have been restarted, and until then `doctor` reports the difference as a `warn`
-on `engine_process` / `hotkey_process` / `server_process`. The procedure, and
-which of the restarts systemd does for you, is
-[DEPLOY.md § Updating an installed copy](DEPLOY.md#updating-an-installed-copy).
+**Scope.** Commands and settings. The procedure for a new machine is
+[DEPLOY.md](DEPLOY.md); the recognition path is [asr.md](asr.md); measured numbers are in
+[measurements.md](measurements.md).
 
 ## Ground rules
 
-* **No prompts, no GUI.** Nothing waits for input. If a command needs a decision,
-  it is a flag or a config key.
-* **`--json` may be placed anywhere** on the command line, before or after the
-  subcommand: `voiceime doctor --json`, `voiceime --json doctor` and
-  `voiceime stream --file f.wav --json` all work. Flags and positional arguments may
-  also be interspersed.
-* **One JSON object per invocation**, on stdout on success, on stderr on failure:
-  `{"command": ..., "ok": true, "data": {...}}` or
-  `{"command": ..., "ok": false, "error": {"kind": ..., "message": ..., "fix": ...},
-  "exit_code": N}`.
-* **Exit codes** are the primary machine signal:
+* **No prompts, no GUI.** A decision is a flag or a setting.
+* **`--json` may be placed anywhere** on the command line.
+* **One JSON object per invocation**: `{"command":…,"ok":true,"data":{…}}` on stdout, or
+  `{"command":…,"ok":false,"error":{"kind":…,"message":…,"fix":…},"exit_code":N}` on stderr.
 
-  | Code | Meaning | What to do |
-  |---:|---|---|
-  | 0 | success | — |
-  | 1 | the command ran and failed | read `error.message` |
-  | 2 | the command line was wrong | fix the invocation, do not retry |
-  | 3 | a prerequisite is missing | run `error.fix`, then retry |
+| Exit | Meaning | What to do |
+|---:|---|---|
+| 0 | success | — |
+| 2 | usage error | read `error.message` |
+| 3 | a precondition is missing | run `error.fix` |
+| 1 | a genuine failure | read `error.message` |
 
-* **`fix` is a runnable command.** Findings from `doctor`, `config validate` and
-  precondition failures carry one.
-* **Nothing is destructive without a flag.** `models install` writes into the
-  models directory; `config init` refuses to overwrite without `--force`, and
-  `--force` is a migration, not a clobber: it keeps the file's values, adds the new
-  keys at their defaults and drops the removed ones.
-* **Writing is not applying.** `config set` writes the file and names `voiceime config
-  apply` as the next step; a value that leaves the file unusable is still written - staging a
-  model path before the download finishes is how a deployment is scripted - but the command
-  exits `3` and carries the fix. `models list --refresh` is the only command that writes the
-  model cache; every other command reads it and refuses with that command as its fix when the
-  cache has no answer.
-
-## Configure
-
-The configuration file is the single source of truth. Read the whole surface with:
+## Commands
 
 ```
-voiceime capabilities --json          # commands, flags, settings, detected environment
-voiceime config show --json           # current values plus each key's description
+voiceime config init|show|get|set|apply|validate
+voiceime models list [--all] [--refresh] | install <package> | uninstall <package>
+voiceime server install|run|restart|status|uninstall [--port N] [--model PATH]
+voiceime engine install [--apply]|status|uninstall
+voiceime transcribe [--file recording.wav | --seconds N]
+voiceime doctor
+voiceime capabilities
 ```
 
-`config init` writes the defaults, **discovers** an audio.cpp checkout when it finds
-one (writing the real path into the file, and saying so), and then prints the
-settings a new machine should look at rather than accept:
+* `models list --refresh` is the **only** command that inspects model files (about six
+  seconds each). Everything else reads the cache and says when a file has no answer yet.
+* `server install` sets `asr_server_url` and `model` in the configuration and starts the
+  unit; `server run` is what the unit executes.
+* `engine install` writes the IBus component and adds `('ibus', voiceime)` to GNOME's
+  input-source list, which is what makes the desktop able to select and show it.
+  `--apply` also sets the activation environment and restarts IBus.
+* `config apply` makes the running install match the file: restarts the service, rewrites
+  the component when the engine name changed, converges the input source, and drops the
+  engine so the next activation runs the new binary.
 
-```
-$ voiceime config init
-wrote /home/u/.config/voiceime/config.toml
-discovered an audio.cpp checkout at /home/u/src/audio.cpp
-review audio_cpp_dir          ~/playground/audio.cpp  (the default names the checkout voiceime was developed in; ...)
-review threads                4  (this machine has 8 physical cores; ...)
-fix: voiceime config set threads 8
-review language               zh  (the reference user's language; ...)
-review text_script            simplified  (the reference user writes Simplified Chinese; ...)
-...
-```
-
-The same list is in `config init --json` under `data.review`, with a `fix` for the entries that
-have one. Nothing is changed silently: a value is only written when the file did
-not exist or `--force` was given. On an existing file without `--force` it prints one
-line (`config already exists at <path>; not written`), changes nothing and exits 0;
-`--json` says the same under `data.written` and `data.note`. New versions do not need
-a migration of the file: the loader takes the defaults for keys the file does not
-set, and a key a version removed is tolerated and dropped at the next write; run
-`config init --force` to re-render the file (its values kept, new keys added, removed
-keys dropped) and make that visible.
-
-Set keys with the generic setter — it converts types, writes atomically and
-reports the new config's validity:
-
-```
-voiceime config set models_dir ~/models
-voiceime config set streaming_model /home/u/models/SenseVoice-Small-GGUF/sensevoice-small-q8-audiocpp-v1.gguf
-voiceime config set chunk_seconds 3
-voiceime config set language zh
-voiceime config set refine_on_segment_end true
-```
-
-Settings that matter, and the reasoning a caller needs to pick values:
+## Settings
 
 | Key | Default | Notes |
 |---|---|---|
-| `models_dir` | `~/models` | Scanned for models; downloads land here. May contain unrelated models. |
-| `audio_cpp_dir` | `~/playground/audio.cpp` | Locates `audiocpp_cli` and the model manager. The default is the reference machine's layout, so it is usually wrong elsewhere - discovery covers that: a checkout is also looked for in `~/audio.cpp`, `~/src/audio.cpp` and similar, and derived from `VOICEIME_ASR_BIN`/`AUDIOCPP_CLI`. |
-| `asr_bin` | `""` | Explicit CLI path; empty means discover. |
-| `backend` | `cpu` | `audio.cpp` backend: cpu, cuda, vulkan, hip, metal. `doctor` fails when the local `audiocpp_cli` was not built with it, and warns when a GPU driver is present while this says `cpu`. |
-| `threads` | `4` | Worker threads for both the streaming engine and repairs. The default is the reference machine's 8-core setting; `doctor` warns when it exceeds this machine's physical cores, because the two passes compete for the same ones. |
-| `streaming_model` | `""` | Which checkpoint drafts while the user speaks. Empty means "pick the best installed streaming model", which is what `voiceime server install` does once and then **writes here** - so after deployment this setting names the file that runs. Clear it and re-run install to pick again. |
-| `refine_model` | `""` | Which checkpoint decides the final text. Empty means reuse the streaming model, and install records that too. A machine with one model ends up with both settings naming the same file - two entries, because the server holds a model per request, so two resident copies. |
-| `asr_server_url` | `""` | Where the resident recognition server listens. `voiceime server install` sets it; empty means dictation cannot run, and `doctor` says so. It must be `http://`: the live stream is spoken over a raw socket and cannot do TLS, so `config validate` rejects `https://` rather than letting the repair path work while dictation fails. Both passes go through this one service, which serves two entries - `stream` (partials) and `refine` (repair) - whose ids are fixed by what `server run` writes. |
-| `asr_server_timeout_ms` | `30000` | Deadline for one repair decode: a repair slower than the sentence is worse than no repair. |
-| `language` | `zh` | Passed to the model; empty asks it to auto-detect. Also gates the two text-cleanup settings below: they do nothing unless this names Chinese. |
-| `text_script` | `simplified` | Chinese output script, `simplified` or `preserve`. The repair model (Qwen3-ASR) has no ITN and sometimes answers in Traditional characters; `simplified` converts them with embedded OpenCC `t2s` data. `preserve` keeps the model's script. |
-| `chunk_seconds` | `3` | The streaming window: how much audio a draft is decoded from. Below 1.5 measurably corrupts CJK output; validate warns. It does not gate when text is committed - a finished utterance is decoded offline and delivered when it closes - so it can be raised for accuracy without making delivery wait. |
-| `refine_on_segment_end` | `true` | The pass that repairs window-boundary damage. |
-| `refine_merge_ms` | `3000` | What counts as the end of a sentence for the offline decode. The endpointer only reports a *pause*; pauses closer together than this are decoded as one request, so the model reads the whole sentence instead of halves that each lost the other's context. `0` decodes every segment on its own, which is what used to happen and is why a sentence with a pause in it came back mangled. A dictation that ends flushes at once, so this never delays the end of a session. |
+| `models_dir` | `~/models` | Scanned for models; downloads land here. |
+| `audio_cpp_dir` | `~/playground/audio.cpp` | Locates `audiocpp_cli` and the model manager. |
+| `asr_bin` | `""` | Explicit `audiocpp_cli`; empty means discover. |
+| `model_manager` | `""` | Explicit `model_manager_v2.py`; empty means discover. |
+| `backend` | `cpu` | `audio.cpp` backend: cpu, cuda, vulkan, hip, metal. |
+| `threads` | `4` | Worker threads for the server. |
+| `model` | `""` | The checkpoint the service serves; empty picks the best installed transcription model. `server install` writes it. |
+| `language` | `zh` | Passed to the model; empty asks it to auto-detect. |
+| `text_script` | `simplified` | Chinese output script: `simplified` or `preserve`. |
+| `max_utterance_seconds` | `60` | A hold whose key never comes up stops recording here. |
+| `asr_server_url` | `""` | The service root; `server install` writes it. Must be `http://`. |
+| `asr_server_timeout_ms` | `30000` | Deadline for one transcription. |
 | `capture_source` | `""` | PipeWire source name; empty uses the default input. |
-| `silence_rms_threshold` | `600` | **Floor**, not a fixed threshold: the detector adapts up to twice the noise floor it measures in the stream, and never below this value. 600 clears the reference room's idle noise (20ms p90 = 436 RMS) and stays under normal speech; too high a value makes quiet speech silently ignored, so measure before raising it - see [measurements.md](measurements.md#endpointing-in-a-real-room). |
-| `endpoint_min_speech_ms` | `300` | Speech shorter than this is not an utterance. Raise it in a room with impulsive noise (keystrokes, chair). A phrase shorter than it is treated as noise and is **not committed at all** when dictation stops — if it is the only thing in the session, nothing is delivered and the session reports how much it withheld. Lower it only if you dictate short words, and expect more noise to be taken for speech. |
-| `endpoint_silence_ms` | `800` | Silence after speech before an utterance closes. Also sets the repair pad to half of it: without the pad a quiet tail is lost. |
-| `max_utterance_seconds` | `60` | Caps one offline decode (and the buffer that holds its audio) after this long, and forces a segment boundary at the same point. |
-| `download_mirror` | `https://hf-mirror.com` | Endpoint downloads go through, written to `HF_ENDPOINT`. Any Hugging Face protocol host works: `https://huggingface.co`, a company cache, a LAN address. |
-| `request_options` | `{}` | Extra audio.cpp request options for the repair entry, written into the server config. Set one with `voiceime config set request_options audio_chunk_mode=none`; an empty value removes it. |
-| `hotkey` | `<F9>` | The key the shortcut listener registers; a tap enters or leaves dictation mode (it switches to this engine and back). Use a function key, never a modifier combination ([decisions.md, D13](decisions.md)). |
-| `ibus_engine_name` | `voiceime` | The IBus engine name registered for text delivery. Changing it rewrites the installed component and restarts IBus through `config apply` ([decisions.md, D33](decisions.md)). |
+| `download_mirror` | `https://hf-mirror.com` | HF-protocol endpoint downloads go through. |
+| `push_to_talk` | `<Control>grave` | Held down to dictate; the release transcribes. Needs a modifier. |
+| `ibus_engine_name` | `voiceime` | IBus engine name; also the input-source id. |
+| `request_options` | `{}` | Extra audio.cpp request options for the served model, `key=value`. |
 
-Every setting is read by some resident process when it starts - the model paths,
-`chunk_seconds`, `threads`, `backend` and the option maps by the recognition service;
-`language` and the endpoint settings by the engine; `hotkey` by the shortcut listener - so
-writing one is not the same as it being in force. `voiceime config set` therefore names the
-one command that applies it, `voiceime config apply`, for every key: it restarts the
-service (re-rendering its config and waiting until it serves the new models), restarts the
-shortcut listener, rewrites the installed IBus component when the engine name or language
-changed (restarting IBus so the daemon reads it), and drops the IBus engine so it respawns
-with the new configuration.
-Editing the file by hand is equally supported, and needs the same command. The unit runs
-`voiceime server run`, so the settings remain the only source of truth, and both units name
-the configuration file they were installed for, so `--config` is honoured by the service
-and the listener too.
+Things every setting shares: `voiceime config set` writes the file atomically, validates
+it, and names the command that puts it in force (`voiceime config apply`). Hand-editing is
+supported and needs the same command.
 
-Validate after changing anything:
+## Verifying
 
 ```
-voiceime config validate --json       # exit 3 when a blocking issue exists
+voiceime doctor --json            # every finding carries a fix
+voiceime server status --json     # data.unit_active, data.listening, data.served[]
+voiceime engine status --json     # data.engine_registered, data.gnome_input_source.listed
+voiceime transcribe --seconds 5   # one decode from the microphone, with timing
 ```
 
-## Install a model
+The engine's own log is `~/.cache/voiceime/engine.log` (ibus-daemon discards the process's
+stdout). `ready: hold … to dictate` on selection, then `recording`, `decoded …` and
+`committed N character(s)` per hold.
 
-```
-voiceime models list [--all]               # what is present locally, from the cache
-voiceime models list --refresh             # identify new or changed files and record it
-voiceime models list --refresh --force     # also re-identify files that look unchanged
-voiceime models install <pkg>              # downloads into models_dir, then run --refresh
-voiceime models uninstall <pkg>            # removes one installed package
-```
-
-Identifying a checkpoint means asking `audiocpp_cli --inspect`, which costs about six
-seconds per file, so the answer is cached against the file's size and mtime. **Only
-`models list --refresh` writes that cache.** Every other command - `doctor`, `config show`,
-`server install`, `server run` - reads it and, when a file has no answer yet, says so and
-names this command rather than spending the six seconds itself. That is why `models install`
-does not register what it downloaded: it tells you to run `models list --refresh`, and
-`server install` refuses to start a service on a model it cannot identify until you do.
-
-`models list --json` says which of the two situations a file is in: each model carries
-`inspected` (false when the cache has no answer for it) and the report carries `uninspected`
-(how many such files there are). Without that distinction an agent cannot tell "this is not
-a speech model" from "nobody has looked at this yet", and those have different fixes.
-
-Downloads go through the single endpoint in `download_mirror`, which must be an
-absolute `http(s)` URL; `config validate` rejects anything else, and the value is
-passed to the model manager as `HF_ENDPOINT`. Whether an endpoint works is a
-property of the endpoint *and* the package: `models install` reports the failure, so a
-caller that sees a 404 can set another endpoint and retry the same package.
-
-Which packages to install, by machine, and the measured trade (memory, repair cost):
-[DEPLOY.md, step 4](DEPLOY.md#4-install-a-model-and-start-the-server); the numbers:
-[measurements.md](measurements.md); the rationale in one entry: [decisions.md,
-D22](decisions.md).
-
-`voiceime server install` picks the models and records them, so `streaming_model`
-and `refine_model` end up naming the files that run. Clearing one and running install
-again is how to have it pick afresh; `models list` prints what is installed with sizes.
-
-## Verify
-
-```
-voiceime doctor --json                # every prerequisite, each with its fix
-```
-
-`doctor` reads the model cache and never writes it; a model that has not been identified yet
-is a finding with `voiceime models list --refresh` as its fix.
-
-`doctor` covers: the config file, the `audiocpp_cli` and `audiocpp_server` binaries, the
-model manager script, the models directory, model selection for streaming and repair,
-capture tooling and default source, **the recognition service** (is it answering, does it
-serve the entries the client will ask for, and are those the *files* the settings name -
-the entry ids never change, so a service left on the previous checkpoint is invisible
-otherwise), IBus engine registration, the settings that are properties of the machine
-(`threads` against the physical core count, `backend` against what the local binary was
-built with), the installed artifacts (the component file's `<exec>` and both systemd
-units' `ExecStart` - each records an absolute path, and a server unit written by a
-checkout binary is a `make install` that does not reach the running service), whether the
-running engine, listener and service are the binary running `doctor`, and optional
-notification/sound tooling. Exit code 3 means at least one check failed; the `fix` of each
-failure is the next command to run.
-Loop until it exits 0.
-
-## Exercise the pipeline
-
-Both of these print their own timings, which is what makes quality questions
-answerable without a human listening:
-
-```
-voiceime stream --file speech.wav --realtime --events
-voiceime stream --file speech.wav --realtime --events --json
-voiceime stream --seconds 5                    # capture from the microphone (the default source)
-```
-
-`stream` accepts `--events` for one JSON object per event instead of human text.
-Event kinds: `ready` (model loaded, with load time), `partial` (new text, with
-the audio position at which it arrived), `segment` (an utterance closed), `vad`
-(model-reported voice activity, when a family reports it), `repair` (offline
-re-decode of a segment, with its cost), `skipped` (something was not done, with
-the reason - `no speech detected; nothing committed` is the common one), `commit`
-(text delivered), `summary`.
-
-Text is committed when a sentence ends: the endpointer hears a pause, and
-`refine_merge_ms` decides that the pause was the end of the sentence rather than a
-breath. Until then the text is preedit, which applications render underlined.
-So "the text stays underlined" means one of two things: the detector has not found
-even a pause yet (check `silence_rms_threshold` and `endpoint_silence_ms`), or it has
-and the merge window is still open - which is normal and is what keeps a sentence
-with a pause in it from being decoded as two halves.
-
-A session that ends without the endpointer accepting a single utterance commits
-nothing and says so (`skipped: no speech detected; withheld N characters ...`):
-streaming ASR produces plausible words for almost any input, and typing them into
-a focused application is worse than typing nothing. The count means the detector
-could not hear the speaker - the fix is the room measurement in
-[DEPLOY.md, step 6](DEPLOY.md#6-verify-the-microphone-path). A failed stream withholds
-its stranded draft too; the full failure contract is in
-[asr.md, the failure contract](asr.md#the-failure-contract).
-
-With `--realtime`, the `fed_seconds` of a partial is also the time from the user
-speaking to that text appearing, which is the latency number to compare against
-`chunk_seconds`.
-
-## Text delivery
-
-The engine hosts the full pipeline: activating it starts capture, streams partial
-text as an IBus preedit, repairs each finished utterance offline, and commits the
-result into the focused application.
-
-```
-voiceime engine install              # write the component file, print what to run
-voiceime engine install --apply      # also set the activation environment and restart IBus
-voiceime engine install --system     # print the one-line root install instead
-voiceime engine status --json        # is the engine registered, and where is it installed
-voiceime engine uninstall
-```
-
-A user install works only if two measured daemon facts are handled
-([ibus-protocol.md, how the daemon learns about an engine](ibus-protocol.md#how-the-daemon-learns-about-an-engine)):
-`IBUS_COMPONENT_PATH` **replaces** the default search path (so the value printed by
-`engine install` always includes `/usr/share/ibus/component` - a value naming only
-voiceime's directory hides every system engine), and the daemon's component registry
-is **cached** at `~/.cache/ibus/bus/registry` (so `--apply` removes that file before
-restarting IBus - without this the engine stays invisible even though the
-environment variable took effect).
-
-Then either switch to the engine directly (`ibus engine voiceime`, and away again
-to stop), or run the shortcut listener so one key does it:
-
-```
-voiceime config set hotkey "<F9>"     # a tap toggles dictation
-voiceime hotkey install               # systemd --user unit, starts at login;
-                                      # on X11 also a GNOME keybinding (see below)
-voiceime hotkey status --json         # data.session, data.mechanisms; data.gnome_binding
-                                      # only when a GNOME keybinding exists (X11)
-voiceime hotkey toggle                # the one-shot toggle the keybinding runs
-voiceime server install               # the resident recognition server (required for dictation)
-voiceime config apply                 # apply a changed setting or a hand-edited file
-voiceime server status --json         # data.unit_active, data.listening,
-                                      # data.served[] = {id, mode, file, path}
-voiceime server uninstall             # stop and remove it
-voiceime hotkey run --log-events      # foreground, prints every event the daemon sends
-```
-
-`hotkey install` picks the mechanism the session can actually use, and the commands
-above are the same either way: IBus's global shortcut on Wayland (where the
-compositor grabs the key and the listener receives it), and on X11 a GNOME custom
-keybinding to `voiceime hotkey toggle`, because the IBus property is not grabbed
-there. It reads the session from `XDG_SESSION_TYPE`, then `WAYLAND_DISPLAY`/`DISPLAY`;
-when neither names a display server (a bare ssh or console shell) it installs only the
-unit and returns a `warning` - re-run it from a terminal inside the session, or the
-key will do nothing on X11. `hotkey status` reports which mechanism is live
-(`data.session`, `data.mechanisms`, and `data.gnome_binding` only when a GNOME keybinding
-exists, which is the X11 case), and `hotkey uninstall` removes both.
-
-On X11 the key is run by `gsd-media-keys` as a command - once per key event,
-auto-repeat included - so `hotkey toggle` ignores a second invocation within 700 ms.
-A held key is one toggle rather than dozens of them (docs/decisions.md D19); the cost
-is that a deliberate second tap closer than that is swallowed, so tap again.
-
-Use a function key, not a modifier combination: IBus consumes the release of the
-keys it grabs, so Ctrl+' leaves Ctrl latched in the focused application until it is
-tapped again (measured; see docs/decisions.md D13).
-
-Two diagnostics that need no microphone:
-
-```
-# Commit a fixed string on activation, proving delivery only.
-voiceime ibus-engine --ibus --commit-on-enable "hello from voiceime"
-
-# Run the real pipeline over a WAV: recognition, repair and delivery, no speech.
-voiceime ibus-engine --ibus --audio-file speech.wav --trace /tmp/engine.log
-```
-
-Every dictation session writes its own account - what it heard, what it repaired, and
-what it handed to the application - to `~/.cache/voiceime/engine.log`, appended and
-bounded to 1 MiB per engine start. That file is the answer to "I pressed the key and
-nothing happened": `listening` then `committed N character(s)` means the text left
-voiceime and the application did not show it, while `no speech detected` means the
-detector never heard anything. It exists because ibus-daemon spawns the engine with its
-stdout and stderr on pipes it discards (measured: the fds are pipes and the journal holds
-no line from the engine), so without a file a session leaves no trace at all.
-
-`--trace <file>` sends the same session log plus the incoming D-Bus calls to another
-file, for protocol work. Running the engine by hand (as above) also prints the session
-log on stderr.
-
-```
-voiceime engine status          # names the log path
-tail -f ~/.cache/voiceime/engine.log
-```
-
-## Troubleshooting table
-
-| Symptom | Cause | Action |
-|---|---|---|
-| `doctor` exits 3 with `audio_cpp` failing | `audiocpp_cli` not found | `voiceime config set audio_cpp_dir <checkout>` or `voiceime config set asr_bin <binary>` |
-| `no speech models found` | empty or wrong models directory | `voiceime models install sensevoice_small_q8` |
-| `models install` fails with 404 | that package is not on the configured endpoint | `voiceime config set download_mirror https://huggingface.co` (or any host that has it) and retry |
-| `doctor` fails `download_mirror` | the value is not an `http(s)` URL, e.g. a preset name from an older config | `voiceime config set download_mirror https://hf-mirror.com` |
-| Repair fails with `Silero VAD model path does not exist` | the CLI's bundled assets resolved relative to the working directory | voiceime already sets the working directory and disables chunking for repairs; if it recurs, set `audio_cpp_dir` correctly |
-| Text is corrupted and windows are short | `chunk_seconds` below 1.5 | `voiceime config set chunk_seconds 3` |
-| Model aborts with `only supports sample_rate=16000` | capture is not producing 16 kHz | `voiceime doctor`; capture is fixed at 16 kHz, so this means the PipeWire source is resampling badly |
-| `models list` shows unrelated files | the models directory is shared | expected; discovery filters to ASR models and reports the count it ignored |
-| Text stays underlined and never commits | either the detector has not seen a pause yet, or `refine_merge_ms` is still open, or the decode is running | measure the room and set `silence_rms_threshold` / `endpoint_min_speech_ms` (see [measurements.md](measurements.md#endpointing-in-a-real-room)); `stream --events` shows whether a `segment` event happens; lower `refine_merge_ms` if you want text sooner and can accept sentences split at pauses |
-| Dictation produces nothing, and `stream --events` reports `no speech detected` | the threshold is above the speaker's voice | lower `silence_rms_threshold` and retry |
-| Dictation produces nothing, and the session reports `withheld N characters` | the recogniser heard something but the endpointer never called it speech, so committing it would type the recogniser's guess | measure the room; lower `silence_rms_threshold` (a quiet speaker) or `endpoint_min_speech_ms` (short utterances). `N` is the size of what the room measurement got wrong |
-| The service restarts forever with `status=203/EXEC` | the unit's `ExecStart` names a binary that no longer exists (the checkout was moved or renamed) | `voiceime hotkey install` then `voiceime doctor`; see [DEPLOY.md § Recovery](DEPLOY.md#recovery) |
-| `ibus list-engine` lists `voiceime` but dictation does nothing | the running engine process was started from an older binary, or the component file names a path that no longer exists | `voiceime config apply` (stops the engine by pid and restarts the listener) |
-| `N model file(s) have not been inspected yet` from `models list`, `server install`, `server run` or `server restart` | the cache has no answer for those files: only `models list --refresh` may ask audio.cpp | `voiceime models list --refresh` |
-| `doctor` fails `models` with `have not been inspected yet` | same, and `doctor` reads the cache rather than writing it | `voiceime models list --refresh` |
+`voiceime ibus-engine --ibus --audio-file speech.wav --trace /tmp/engine.log` runs the real
+path over a file, with no microphone and no keyboard.

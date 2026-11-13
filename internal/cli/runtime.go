@@ -11,9 +11,6 @@ import (
 )
 
 // absoluteConfigPath is the configuration file as a systemd unit has to name it.
-//
-// `--config` may be relative, and a unit has no working directory of its own: the
-// service would read a different file from the one the install command was given.
 func absoluteConfigPath(ctx *Context) string {
 	if absolute, err := filepath.Abs(ctx.ConfigPath); err == nil {
 		return absolute
@@ -27,9 +24,6 @@ func timeout(seconds int) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), time.Duration(seconds)*time.Second)
 }
 
-// newModelManager builds the download manager, turning each failure into the
-// command that fixes it: a bad endpoint is a configuration mistake, everything
-// else NewManager rejects is a missing prerequisite.
 func newModelManager(ctx *Context) (*models.Manager, error) {
 	manager, err := models.NewManager(ctx.Config)
 	if err != nil {

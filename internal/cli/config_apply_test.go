@@ -10,21 +10,17 @@ import (
 	"github.com/wallacegibbon/voiceime/internal/ibus"
 )
 
-// `config apply` used to restart the service and then report success even when the
-// file named a model that does not exist. The restart failed, the unit crash-looped,
-// and the only output was "service: restarted" with exit code 0 - which is how a
-// broken install came to look like a setting that did nothing.
 func TestConfigApplyRefusesAConfigThatNamesAMissingModel(t *testing.T) {
 	configPath, modelsDir := freshConfig(t)
 	missing := filepath.Join(modelsDir, "absent.gguf")
-	appendToFile(t, configPath, "refine_model = \""+missing+"\"\n")
+	appendToFile(t, configPath, "model = \""+missing+"\"\n")
 
 	code, stdout, stderr := runForTest(t, "--config", configPath, "config", "apply")
 	if code != ExitPrecondition {
 		t.Fatalf("apply exited %d, want %d (precondition)\nstdout: %s\nstderr: %s",
 			code, ExitPrecondition, stdout, stderr)
 	}
-	if !strings.Contains(stderr, "refine_model") {
+	if !strings.Contains(stderr, "model") {
 		t.Errorf("the error does not name the setting that is wrong:\n%s", stderr)
 	}
 	if strings.Contains(stdout, "restarted") {
@@ -32,19 +28,16 @@ func TestConfigApplyRefusesAConfigThatNamesAMissingModel(t *testing.T) {
 	}
 }
 
-// `config validate` has to answer the same question the service asks at startup,
-// or the one command a user is told to run before applying says "valid" about a
-// configuration that cannot start.
 func TestConfigValidateRejectsAModelPathThatDoesNotExist(t *testing.T) {
 	configPath, modelsDir := freshConfig(t)
 	missing := filepath.Join(modelsDir, "absent.gguf")
-	appendToFile(t, configPath, "streaming_model = \""+missing+"\"\n")
+	appendToFile(t, configPath, "model = \""+missing+"\"\n")
 
 	code, stdout, _ := runForTest(t, "--config", configPath, "config", "validate")
 	if code != ExitPrecondition {
 		t.Fatalf("validate exited %d, want %d (precondition)\n%s", code, ExitPrecondition, stdout)
 	}
-	if !strings.Contains(stdout, "streaming_model") || !strings.Contains(stdout, missing) {
+	if !strings.Contains(stdout, "model") || !strings.Contains(stdout, missing) {
 		t.Errorf("the report does not name the setting and the path:\n%s", stdout)
 	}
 	if !strings.Contains(stdout, "does not exist") {
@@ -57,7 +50,7 @@ func TestConfigValidateRejectsAModelPathThatDoesNotExist(t *testing.T) {
 func TestConfigValidateOffersARunnableFixForAMissingModel(t *testing.T) {
 	configPath, modelsDir := freshConfig(t)
 	missing := filepath.Join(modelsDir, "absent.gguf")
-	appendToFile(t, configPath, "refine_model = \""+missing+"\"\n")
+	appendToFile(t, configPath, "model = \""+missing+"\"\n")
 
 	code, stdout, _ := runForTest(t, "--config", configPath, "--json", "config", "validate")
 	if code != ExitPrecondition {
@@ -69,16 +62,16 @@ func TestConfigValidateOffersARunnableFixForAMissingModel(t *testing.T) {
 	var fix string
 	for _, raw := range issues {
 		issue, _ := raw.(map[string]any)
-		if issue["key"] == "refine_model" {
+		if issue["key"] == "model" {
 			fix, _ = issue["fix"].(string)
 		}
 	}
-	if !strings.Contains(fix, "config set refine_model") {
+	if !strings.Contains(fix, "config set model") {
 		t.Fatalf("the fix does not say how to correct the setting: %q", fix)
 	}
 	// Run the fix, exactly as printed, and confirm it clears the issue.
 	_, clearOut, clearErr := runForTest(t, "--config", configPath, "--json",
-		"config", "set", "refine_model", "")
+		"config", "set", "model", "")
 	if clearErr != "" {
 		t.Fatalf("the documented fix failed: %s", clearErr)
 	}
@@ -102,10 +95,6 @@ func appendToFile(t *testing.T, path, text string) {
 }
 
 // `config apply` owns the engine name and language in the installed component.
-//
-// They are baked into the XML IBus reads, so until apply rewrote it, `ibus_engine_name`
-// was the one setting apply silently ignored: the selector pointed at an engine IBus had
-// never heard of, and `doctor` said "not registered" without a reason.
 func TestWithConfiguredEngineAppliesOnlyWhatTheConfigOwns(t *testing.T) {
 	cfg := config.Default()
 	installed := ibus.DefaultComponent(cfg, "/home/u/.local/bin/voiceime ibus-engine --ibus")
@@ -144,10 +133,6 @@ func TestWithConfiguredEngineAppliesOnlyWhatTheConfigOwns(t *testing.T) {
 }
 
 // An installed file this version would write differently is rewritten once.
-//
-// The escaped symbol is the case that exposed this: the reader decodes the reference, so a
-// settings-only comparison called the file unchanged while it still held
-// <symbol>&amp;#x1F3A4;</symbol> - which IBus draws as that text instead of a microphone.
 func TestComponentNeedsRewriteSeesAnOlderWriter(t *testing.T) {
 	cfg := config.Default()
 	installed := ibus.DefaultComponent(cfg, "/home/u/.local/bin/voiceime ibus-engine --ibus")

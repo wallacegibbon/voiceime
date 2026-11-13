@@ -253,8 +253,8 @@ func TestPushToTalkRecordsOnlyWhileTheKeyIsHeld(t *testing.T) {
 	}
 	waitFor(t, "the recording to be decoded", func() bool { return len(transcriber.calls()) == 1 })
 
-	if got := control.delivered(); len(got) != 1 || got[0] != "你好。" {
-		t.Errorf("the application received %v, want the decoded sentence once", got)
+	if got := control.delivered(); len(got) != 1 || got[0] != "你好" {
+		t.Errorf("the application received %v, want the decoded sentence once, without its trailing period", got)
 	}
 }
 

@@ -345,7 +345,7 @@ func (h *PushToTalk) work() {
 		}
 		text = strings.TrimSpace(text)
 		if h.normalizer != nil {
-			text = strings.TrimSpace(h.normalizer.Normalize(text))
+			text = h.normalizer.Normalize(text)
 		}
 		if text == "" {
 			h.logf("the model heard no words in %.2fs of audio", job.seconds)
@@ -355,6 +355,8 @@ func (h *PushToTalk) work() {
 			h.logf("the model answered only punctuation (%q); nothing was committed", text)
 			continue
 		}
+		// A recogniser ends its answer with a period whether or not one was dictated.
+		text = textnorm.Final(text)
 		// A decode is worth reporting even when delivery fails: the two failures look
 		// identical from the application ("nothing appeared") and have different fixes.
 		h.logf("decoded %.2fs of audio in %v: %s", job.seconds, time.Since(started).Round(time.Millisecond), text)

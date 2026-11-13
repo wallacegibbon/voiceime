@@ -75,6 +75,20 @@ A failed dictation delivers nothing rather than a guessed sentence: the user rep
 
 ## Text form
 
-`text_script` (`simplified` | `preserve`) normalizes the answer's Chinese script with
-embedded OpenCC `t2s` data; it is a no-op for other languages. The model's own raw answer
-is what the number in the log quotes.
+Two steps run on every answer before it is typed, in this order:
+
+1. **`text_script`** (`simplified` | `preserve`) normalizes the Chinese script with embedded
+   OpenCC `t2s` data; it is a no-op for other languages.
+2. **The trailing period is dropped.** A recogniser ends its answer with a sentence-final
+   period whether or not one was dictated, which is wrong for dictation - a noun dropped at
+   a cursor in the middle of a sentence arrives with a full stop after it. Question marks,
+   exclamation marks and commas stay: those say something the speaker did say.
+
+The alternative is the model's own switch. SenseVoice answers with **no** punctuation at
+all when its `enable_itn` option is off, and that takes the digits out of dates and numbers
+with it (measured: `"嗯。"` against `"嗯"`), so voiceime keeps the switch on
+(`request_options enable_itn=false` would turn it off) and removes the one mark that is
+always added.
+
+An answer that carries no letter or digit is not typed at all: a lone `"。"` is punctuation
+from audio the model could not read, not a transcript.

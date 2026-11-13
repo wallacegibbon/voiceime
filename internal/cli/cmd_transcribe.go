@@ -10,6 +10,7 @@ import (
 	"github.com/wallacegibbon/voiceime/internal/asr"
 	"github.com/wallacegibbon/voiceime/internal/audio"
 	"github.com/wallacegibbon/voiceime/internal/config"
+	"github.com/wallacegibbon/voiceime/internal/textnorm"
 )
 
 // cmdTranscribe is the measurement front end: one recording in, one decode out, with
@@ -99,6 +100,11 @@ func runTranscribe(ctx *Context, file string, seconds float64) error {
 	if err != nil {
 		return FailureError("%v", err)
 	}
+	// The same two steps the engine applies, so this shows what would be typed.
+	if normalizer := textnorm.New(cfg.Language, textnorm.Options{Script: cfg.TextScript}); normalizer != nil {
+		text = normalizer.Normalize(text)
+	}
+	text = textnorm.Final(text)
 	ctx.Print("%s", text)
 	return ctx.Emit("transcribe", map[string]any{
 		"text":     text,

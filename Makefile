@@ -56,9 +56,11 @@ build: ## Build bin/voiceime for this machine
 install: build ## Install to $(DESTDIR)$(PREFIX)/bin (docs to $(PREFIX)/docs)
 	install -d $(DESTDIR)$(PREFIX)/bin
 	install -m 0755 $(BIN_DIR)/$(BINARY) $(DESTDIR)$(PREFIX)/bin/$(BINARY)
-	@# The hotkey unit records the absolute path of docs/AGENT.md beside the binary
-	@# (dir(binary)/../docs), so the docs are installed too: without them the
-	@# unit's Documentation= is a dead link.
+	@# The manual travels with the binary: the CLI's own hints name docs/AGENT.md and
+	@# `voiceime capabilities` lists these files, so an agent working on a machine
+	@# that has only the installed copy still has the manual to read. Nothing
+	@# installed here points at them: the systemd unit's Documentation= names
+	@# audio.cpp's AGENT.md, beside the audio.cpp binary it asks about.
 	install -d $(DESTDIR)$(PREFIX)/docs
 	install -m 0644 docs/*.md $(DESTDIR)$(PREFIX)/docs/
 	@# The binary embeds OpenCC's t2s tables (Apache-2.0); the licence and notice

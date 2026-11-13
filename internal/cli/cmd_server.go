@@ -113,7 +113,7 @@ func runServerInstall(ctx *Context, port int, modelFlag string) error {
 	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
 		return FailureError("%v", err)
 	}
-	if err := os.WriteFile(unitPath, []byte(serverUnit(binary, absoluteConfigPath(ctx))), 0o644); err != nil {
+	if err := os.WriteFile(unitPath, []byte(serverUnit(absoluteConfigPath(ctx))), 0o644); err != nil {
 		return FailureError("%v", err)
 	}
 
@@ -208,15 +208,18 @@ func modelMatches(ctx context.Context, baseURL string, spec server.Spec) error {
 
 // serverUnit renders the systemd user unit. It runs voiceime, not audio.cpp, so the
 // server config is always rendered from the settings at startup.
-func serverUnit(serverBinary, configPath string) string {
+func serverUnit(configPath string) string {
 	self, err := os.Executable()
 	if err != nil {
 		self = "voiceime"
 	}
+	documentation := ""
+	if link := documentationURL(); link != "" {
+		documentation = "Documentation=" + link + "\n"
+	}
 	return fmt.Sprintf(`[Unit]
 Description=voiceime recognition server (audio.cpp ASR, model resident)
-Documentation=file://%s
-
+%s
 [Service]
 Type=simple
 ExecStart=%s server run --config %s
@@ -225,7 +228,23 @@ RestartSec=2
 
 [Install]
 WantedBy=default.target
-`, filepath.Join(filepath.Dir(serverBinary), "..", "docs", "AGENT.md"), self, shellQuote(configPath))
+`, documentation, self, shellQuote(configPath))
+}
+
+// documentationURL names the manual installed beside this binary, or "" when it is not
+// there: `make install` puts docs/ next to bin/, and a checkout has it at the repository
+// root. A link to a file that does not exist is worse than no link, so it is tested rather
+// than assumed.
+func documentationURL() string {
+	self, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	path := filepath.Join(filepath.Dir(self), "..", "docs", "AGENT.md")
+	if _, err := os.Stat(path); err != nil {
+		return ""
+	}
+	return "file://" + path
 }
 
 // runServerForeground is what the unit's ExecStart runs: write the config that matches

@@ -157,7 +157,7 @@ func deadURL(t *testing.T) string {
 }
 
 func TestServerUnitRunsVoiceimeWithSubcommand(t *testing.T) {
-	unit := serverUnit("/opt/audio.cpp/build/linux-cpu-release/bin/audiocpp_server", "/home/u/.config/voiceime/config.toml")
+	unit := serverUnit("/home/u/.config/voiceime/config.toml")
 	if !strings.Contains(unit, " server run") {
 		t.Errorf("unit does not run the server subcommand:\n%s", unit)
 	}
@@ -170,8 +170,10 @@ func TestServerUnitRunsVoiceimeWithSubcommand(t *testing.T) {
 	if !strings.Contains(unit, "WantedBy=default.target") {
 		t.Error("unit is not enabled for the user session")
 	}
-	if !strings.Contains(unit, "Documentation=file:///opt/audio.cpp/build/linux-cpu-release/docs/AGENT.md") {
-		t.Errorf("unit does not document itself beside the binary:\n%s", unit)
+	// Documentation= is only written when the manual is actually beside the binary; this
+	// test runs from a temporary build directory, where it is not.
+	if strings.Contains(unit, "Documentation=") {
+		t.Errorf("unit cites a manual that is not installed:\n%s", unit)
 	}
 	// The settings file has to be named. Without it the service reads the default path,
 	// so a `server install --config <file>` would install a service that serves

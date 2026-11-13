@@ -16,8 +16,8 @@ import (
 func installedModels() []models.Model {
 	tasks := []models.Task{{Name: "asr", Modes: []string{"offline", "streaming"}}}
 	return []models.Model{
-		{Path: "/models/best.gguf", Inspected: true, Family: "qwen3_asr", Tasks: tasks},
-		{Path: "/models/chosen.gguf", Inspected: true, Family: "sense_asr", Tasks: tasks},
+		{Path: "/models/best.gguf", Inspected: true, Family: "sense_asr", Tasks: tasks},
+		{Path: "/models/chosen.gguf", Inspected: true, Family: "qwen3_asr", Tasks: tasks},
 	}
 }
 
@@ -33,7 +33,7 @@ func TestServerSpecServesTheConfiguredModel(t *testing.T) {
 	if spec.Model != "/models/chosen.gguf" {
 		t.Errorf("model = %q, want the configured one", spec.Model)
 	}
-	if spec.Family != "sense_asr" {
+	if spec.Family != "qwen3_asr" {
 		t.Errorf("family = %q, want the family of the model that is served", spec.Family)
 	}
 }

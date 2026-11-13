@@ -158,8 +158,8 @@ func RecommendedPackages() []struct {
 		ID     string
 		Reason string
 	}{
-		{"qwen3_asr_0_6b_q8_0", "1.07 GiB; the accurate offline reader, ~0.13x realtime on this CPU - what a dictation uses"},
-		{"sensevoice_small_q8", "242 MiB; the small offline reader, ~0.16x realtime here - a fallback on a slower machine"},
+		{"sensevoice_small_q8", "242 MiB; reads a whole recording offline, ~0.16x realtime on this CPU - the default"},
+		{"qwen3_asr_0_6b_q8_0", "1.07 GiB; the larger, more accurate reader, ~0.13x realtime here"},
 		{"kroko_asr_community_q8_0", "160 MiB, one language per package (de/en/es/fr/it/he/nl/pt/sv/tr)"},
 		{"moonshine_streaming_tiny_q8_0", "58 MiB, English-only, useful for testing"},
 	}

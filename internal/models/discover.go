@@ -349,8 +349,8 @@ func lastNonEmptyLine(text string) string {
 
 func Pick(models []Model, language string) *Model {
 	ranking := map[string]int{
-		"qwen3_asr":        100,
-		"sense_asr":        90,
+		"sense_asr":        100,
+		"qwen3_asr":        90,
 		"parakeet_tdt":     80,
 		"kroko_asr":        70,
 		"moonshine_asr":    60,

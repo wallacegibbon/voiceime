@@ -168,7 +168,7 @@ func runDoctor(ctx *Context) []Check {
 	} else if registered, _ := state["engine_registered"].(bool); !registered {
 		status = "fail"
 		detail = "the voiceime engine is not registered with IBus"
-		fix = "voiceime engine install && ibus restart"
+		fix = "voiceime engine install --apply"
 	}
 	report(Check{ID: "ibus", Status: status, Detail: detail, Fix: fix})
 

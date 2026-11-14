@@ -80,6 +80,16 @@ From component XML files, not from the engine process:
   ibus restart
   ```
 
+* **The activation environment lasts one session.** `dbus-update-activation-environment`
+  edits the environment of the *running* session. The next login starts `ibus-daemon`
+  from systemd without the variable, the component directory is not scanned, and the
+  engine is gone from `ibus list-engine` although the file is still there. To outlive a
+  login the value has to be read when the session starts, which is
+  `~/.config/environment.d/voiceime.conf`: the systemd user manager reads that directory,
+  and on GNOME `ibus-daemon` runs as the user service
+  `org.freedesktop.IBus.session.GNOME.service`. `voiceime engine install --apply` writes
+  it, `engine uninstall` removes it, and `doctor`'s `component_env` finding names it when
+  it is missing.
 * **The component registry is cached**, and the cache records the directories the
   daemon watched when it was written. A daemon started with a cache never looks at
   a newly configured directory: with `IBUS_COMPONENT_PATH` already in the daemon's

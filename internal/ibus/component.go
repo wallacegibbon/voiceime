@@ -210,9 +210,26 @@ func ComponentExec(path string) (string, error) {
 	return fields[0], nil
 }
 
+// SystemComponentDir is the directory ibus-daemon scans without being told to. A
+// component there needs no environment at all, which is why a system install is the one
+// that survives everything.
+const SystemComponentDir = "/usr/share/ibus/component"
+
+// SystemComponentPath is where `engine install --system` says to copy the component.
+func SystemComponentPath() string {
+	return filepath.Join(SystemComponentDir, "voiceime.xml")
+}
+
+// SystemInstalled reports whether the system-wide copy exists, which decides whether the
+// user-level search path is needed at all.
+func SystemInstalled() bool {
+	info, err := os.Stat(SystemComponentPath())
+	return err == nil && !info.IsDir()
+}
+
 func InstallPaths(systemDir string) string {
 	if systemDir == "" {
-		systemDir = "/usr/share/ibus/component"
+		systemDir = SystemComponentDir
 	}
 	return ComponentDir() + ":" + systemDir
 }

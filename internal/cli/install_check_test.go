@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/wallacegibbon/voiceime/internal/ibus"
 )
 
 func TestUnitExecStartReadsTheCommand(t *testing.T) {
@@ -40,6 +42,48 @@ func TestUnitExecStartRejectsAUnitWithoutOne(t *testing.T) {
 	}
 	if _, err := unitExecStart(path); err == nil {
 		t.Error("a unit with no ExecStart was accepted; systemd would report 203/EXEC with no explanation")
+	}
+}
+
+// An install that is only in the session's activation environment is the one that stops
+// working at the next login, so the four states have to be distinguishable.
+func TestComponentEnvironmentVerdict(t *testing.T) {
+	componentDir := ibus.ComponentDir()
+	cases := []struct {
+		name        string
+		system      bool
+		component   bool
+		environment bool
+		registered  bool
+		wantStatus  string
+		wantDetail  string
+	}{
+		{"system-wide", true, false, false, false, "ok", "system-wide"},
+		{"nothing installed", false, false, false, false, "", ""},
+		{"path recorded", false, true, true, false, "ok", ibus.EnvironmentFile()},
+		{"session only, engine registered", false, true, false, true, "warn", "next login"},
+		{"session only, engine gone", false, true, false, false, "fail", componentDir},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			status, detail, ok := componentEnvironmentVerdict(
+				test.system, test.component, test.environment, test.registered)
+			if test.wantStatus == "" {
+				if ok {
+					t.Fatalf("a check with nothing to say reported %q: %s", status, detail)
+				}
+				return
+			}
+			if !ok {
+				t.Fatal("the verdict was skipped")
+			}
+			if status != test.wantStatus {
+				t.Errorf("status = %q, want %q (detail: %s)", status, test.wantStatus, detail)
+			}
+			if !contains(detail, test.wantDetail) {
+				t.Errorf("detail %q does not mention %q", detail, test.wantDetail)
+			}
+		})
 	}
 }
 

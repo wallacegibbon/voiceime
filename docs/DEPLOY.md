@@ -73,9 +73,10 @@ Check the decode end to end before touching the desktop:
 ```sh
 "$BIN" engine install --apply
 # assert: "added ('ibus', 'voiceime') to the GNOME input sources"
+# assert: "wrote /home/<user>/.config/environment.d/voiceime.conf"
 "$BIN" engine status --json
 # assert: data.engine_registered == true, data.engine_visible == true,
-#         data.gnome_input_source.listed == true
+#         data.environment_set == true, data.gnome_input_source.listed == true
 gsettings get org.gnome.desktop.input-sources sources
 # assert: the list contains ('ibus', 'voiceime')
 ```
@@ -86,6 +87,14 @@ the install adds one entry and leaves the rest - their layouts, their other engi
 recent-use order - exactly as it found them. The input source is the half that
 is easy to miss: the desktop's switcher and indicator are drawn from that list, so without
 it the engine receives keystrokes but cannot be selected from the menu.
+
+It also writes the search path to `~/.config/environment.d/voiceime.conf`, because the
+activation environment it sets above belongs to this session only. `environment.d` is read
+when a session starts, so the file is what makes the install survive the next login, while
+the activation environment is what makes the engine work now. Without the file the install
+looks finished and works until the next login: `ibus-daemon` then starts without
+`IBUS_COMPONENT_PATH`, and `engine status` reports the engine as not registered although
+nothing was uninstalled (`doctor` says the same as `component_env`).
 
 Run `engine status` a few seconds after `--apply`: the daemon restart is asynchronous, and
 `ibus list-engine` fails while it comes up.
@@ -133,3 +142,4 @@ A running process keeps the binary it was started from, so `doctor` reports a st
 | no text, log shows `transcribe …: …` | the service refused or timed out | `server status --json`, then `config apply` |
 | the menu does not list Voiceime | not in the input-source list | `"$BIN" engine install --apply` |
 | `engine status` says not registered | the daemon has not read the component | `"$BIN" engine install --apply`, then re-check after a few seconds |
+| the engine disappears after every login | `IBUS_COMPONENT_PATH` was set for one session only, not written to `~/.config/environment.d/voiceime.conf` | `"$BIN" engine install --apply` (`doctor` reports `component_env`) |

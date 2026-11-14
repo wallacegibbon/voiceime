@@ -112,6 +112,13 @@ func RuntimeDir() string {
 	return filepath.Join(CacheDir(), "run")
 }
 
+// EnvironmentDir is the directory the systemd user manager reads the session
+// environment from. It belongs to the session rather than to voiceime, so the file
+// written there is named after the program (environment.d/voiceime.conf).
+func EnvironmentDir() string {
+	return filepath.Join(xdg("XDG_CONFIG_HOME", ".config"), "environment.d")
+}
+
 func UserUnitDir() string {
 	base := os.Getenv("XDG_CONFIG_HOME")
 	if base == "" {

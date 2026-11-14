@@ -11,6 +11,7 @@ import (
 
 func installChecks(ctx *Context, report func(Check)) {
 	componentExecCheck(ctx, report)
+	componentEnvironmentCheck(ctx, report)
 	runningBinaryChecks(ctx, report)
 }
 
@@ -45,6 +46,50 @@ func componentExecCheck(ctx *Context, report func(Check)) {
 		return
 	}
 	report(Check{ID: "component_exec", Status: "ok", Detail: exec})
+}
+
+// componentEnvironmentCheck reports whether the engine survives a login. A user-level
+// component is found only because IBUS_COMPONENT_PATH names its directory, and that
+// variable belongs to the session: `engine install --apply` also writes it to
+// environment.d, and an install that skipped that works until the machine is rebooted.
+func componentEnvironmentCheck(ctx *Context, report func(Check)) {
+	registered, _ := engineRegistered(ctx)
+	status, detail, ok := componentEnvironmentVerdict(
+		ibus.SystemInstalled(), ibus.Installed(), ibus.EnvironmentSet(), registered)
+	if !ok {
+		return
+	}
+	check := Check{ID: "component_env", Status: status, Detail: detail}
+	if status != "ok" {
+		check.Fix = "voiceime engine install --apply"
+	}
+	report(check)
+}
+
+// componentEnvironmentVerdict is the decision without the machine, so every case can be
+// tested: a system-wide component needs no variable, a recorded path is the working
+// user-level install, and a path that exists only in this session is either a warning
+// (the engine is registered now) or a failure (it is not, which is what a reboot looks
+// like).
+func componentEnvironmentVerdict(systemInstalled, componentInstalled, environmentSet, registered bool) (status, detail string, ok bool) {
+	switch {
+	case systemInstalled:
+		return "ok", ibus.SystemComponentPath() + " (system-wide, no variable needed)", true
+	case !componentInstalled:
+		// component_exec already reports the missing component; a second finding with
+		// the same fix would only lengthen the report.
+		return "", "", false
+	case environmentSet:
+		return "ok", ibus.EnvironmentFile(), true
+	case registered:
+		return "warn", fmt.Sprintf(
+			"%s does not set %s; this session has it, so the engine will disappear at the next login",
+			ibus.EnvironmentFile(), ibus.ComponentPathVariable), true
+	default:
+		return "fail", fmt.Sprintf(
+			"%s does not set %s, so a login starts ibus-daemon without %s and the engine is not registered at all",
+			ibus.EnvironmentFile(), ibus.ComponentPathVariable, ibus.ComponentDir()), true
+	}
 }
 
 // unitExecStart extracts the executable a systemd unit starts.

@@ -34,7 +34,8 @@ voiceime config init             # write defaults, discover audio.cpp
 voiceime models install qwen3_asr_0_6b_q8_0
 voiceime models list --refresh   # the only command that identifies models
 voiceime server install          # serve the model, resident
-voiceime engine install --apply  # register the IBus engine and the input source
+voiceime engine install --apply  # register the IBus engine and the input source, and
+                                 # record the search path so a login keeps them
 voiceime doctor                  # every finding carries a fix
 ```
 

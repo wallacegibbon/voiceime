@@ -69,7 +69,7 @@ func runEngineInstall(ctx *Context, system, apply, quiet bool) error {
 		if err != nil {
 			return FailureError("%v", err)
 		}
-		target := "/usr/share/ibus/component/voiceime.xml"
+		target := ibus.SystemComponentPath()
 		command := fmt.Sprintf("sudo install -m 644 %s %s && ibus restart", path, target)
 		if !quiet {
 			ctx.Print("component written to %s", path)
@@ -100,13 +100,14 @@ func runEngineInstall(ctx *Context, system, apply, quiet bool) error {
 	// name the system directory too or every other engine disappears. Verified in
 	// a sandbox daemon; see docs/ibus-protocol.md.
 	paths := ibus.InstallPaths("")
-	setEnv := fmt.Sprintf("dbus-update-activation-environment --systemd IBUS_COMPONENT_PATH=%s", paths)
+	environmentFile := ibus.EnvironmentFile()
+	setEnv := fmt.Sprintf("dbus-update-activation-environment --systemd %s=%s", ibus.ComponentPathVariable, paths)
 
 	if !quiet {
 		ctx.Print("component written to %s", path)
 		ctx.Print("note: IBus does not read that directory by default, and IBUS_COMPONENT_PATH")
 		ctx.Print("      replaces the default path, which is why it must also list")
-		ctx.Print("      /usr/share/ibus/component")
+		ctx.Print("      %s", ibus.SystemComponentDir)
 		if apply {
 			ctx.Print("enabling it now:")
 		} else {
@@ -114,11 +115,30 @@ func runEngineInstall(ctx *Context, system, apply, quiet bool) error {
 		}
 		ctx.Print("  %s", setEnv)
 		ctx.Print("  ibus restart")
+		if !apply {
+			// The activation environment is per session. Without --apply the value
+			// has to be written down somewhere systemd reads at login, which is the
+			// whole difference between an install that survives a reboot and one
+			// that is a command to remember.
+			ctx.Print("to keep it across logins (which `--apply` does), add to %s:", environmentFile)
+			ctx.Print("  %s=%s", ibus.ComponentPathVariable, paths)
+		}
 	}
 
+	environmentWritten := false
 	if apply {
 		if _, err := exec.LookPath("dbus-update-activation-environment"); err != nil {
 			return PreconditionError("sudo apt install dbus", "dbus-update-activation-environment is missing: %v", err)
+		}
+		// The durable half is written first: an install that is only in effect for
+		// this session is the failure this file exists to fix.
+		written, err := ibus.WriteEnvironment()
+		if err != nil {
+			return FailureError("write %s: %v", environmentFile, err)
+		}
+		environmentWritten = true
+		if !quiet {
+			ctx.Print("wrote %s, so every future login starts with the same search path", written)
 		}
 		if err := runCommand(setEnv); err != nil {
 			return FailureError("%v", err)
@@ -147,14 +167,16 @@ func runEngineInstall(ctx *Context, system, apply, quiet bool) error {
 
 	registered, detail := engineRegistered(ctx)
 	return ctx.Emit("engine install", map[string]any{
-		"mode":               "user",
-		"component":          path,
-		"component_paths":    paths,
-		"run":                []string{setEnv, "ibus restart"},
-		"applied":            apply,
-		"engine_registered":  registered,
-		"registration_note":  detail,
-		"gnome_input_source": desktopReport,
+		"mode":                "user",
+		"component":           path,
+		"component_paths":     paths,
+		"environment_file":    environmentFile,
+		"environment_written": environmentWritten,
+		"run":                 []string{setEnv, "ibus restart"},
+		"applied":             apply,
+		"engine_registered":   registered,
+		"registration_note":   detail,
+		"gnome_input_source":  desktopReport,
 	})
 }
 
@@ -162,16 +184,27 @@ func runEngineUninstall(ctx *Context) error {
 	if err := ibus.Uninstall(); err != nil {
 		return FailureError("cannot remove the component: %v", err)
 	}
+	environmentRemoved, err := ibus.RemoveEnvironment()
+	if err != nil {
+		return FailureError("cannot remove %s: %v", ibus.EnvironmentFile(), err)
+	}
 	removed, sourceReport := removeInputSource(ctx.Config.IBusEngineName)
 	ctx.Print("component removed from %s", ibus.ComponentDir())
+	if environmentRemoved {
+		ctx.Print("removed %s, so a new login stops naming that directory", ibus.EnvironmentFile())
+	}
 	if removed {
 		ctx.Print("removed it from the GNOME input sources as well")
 	}
-	ctx.Print("IBUS_COMPONENT_PATH may still name that directory; unset it and run `ibus restart` to finish.")
+	// The running session still has the variable: environment.d is read when the
+	// session starts, and `daemon-reexec` is not this command's business.
+	ctx.Print("this session's IBUS_COMPONENT_PATH still names the directory; run `ibus restart` to finish.")
 	return ctx.Emit("engine uninstall", map[string]any{
-		"component_dir":      ibus.ComponentDir(),
-		"installed":          false,
-		"gnome_input_source": sourceReport,
+		"component_dir":       ibus.ComponentDir(),
+		"installed":           false,
+		"environment_file":    ibus.EnvironmentFile(),
+		"environment_removed": environmentRemoved,
+		"gnome_input_source":  sourceReport,
 	})
 }
 
@@ -232,6 +265,9 @@ func runEngineStatus(ctx *Context) error {
 		"component_installed": ibus.Installed(),
 		"component_dir":       ibus.ComponentDir(),
 		"expected_paths":      ibus.InstallPaths(""),
+		"environment_file":    ibus.EnvironmentFile(),
+		"environment_set":     ibus.EnvironmentSet(),
+		"system_component":    ibus.SystemInstalled(),
 		"engine_name":         ctx.Config.IBusEngineName,
 		"engine_registered":   registered,
 		"detail":              detail,
@@ -254,6 +290,18 @@ func runEngineStatus(ctx *Context) error {
 	}
 	ctx.Print("component: %s (installed: %v)", ibus.ComponentPath(), ibus.Installed())
 	ctx.Print("engine %s registered: %v", ctx.Config.IBusEngineName, registered)
+	// The component directory is only scanned because a variable names it, and that
+	// variable lives in the session unless something writes it down. This is the line
+	// that answers "it worked before I rebooted".
+	switch {
+	case ibus.SystemInstalled():
+		ctx.Print("search path: %s is system-wide, so no variable is needed", ibus.SystemComponentPath())
+	case ibus.EnvironmentSet():
+		ctx.Print("search path: recorded in %s, so a new login keeps it", ibus.EnvironmentFile())
+	default:
+		ctx.Print("search path: not recorded in %s, so a new login starts ibus-daemon", ibus.EnvironmentFile())
+		ctx.Print("             without the component directory; fix: voiceime engine install --apply")
+	}
 	if listErr == nil && !listed {
 		// Not fatal - the engine still works, and the toggle says so - but it is why the
 		// desktop's own menu and indicator cannot show it.
@@ -279,7 +327,7 @@ func engineRegistered(ctx *Context) (bool, string) {
 	if listEngineContains(listing, ctx.Config.IBusEngineName) {
 		return true, ""
 	}
-	return false, "not listed by ibus: run `voiceime engine install` and restart IBus"
+	return false, "not listed by ibus: run `voiceime engine install --apply`"
 }
 
 func runCommand(line string) error {

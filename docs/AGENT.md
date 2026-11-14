@@ -43,7 +43,9 @@ voiceime capabilities
   GNOME's input-source list, which is what makes the desktop able to select and show it.
   The list belongs to the user: nothing already configured is removed or reordered, the
   recent-use order is not written, and `engine uninstall` removes only voiceime's own entry.
-  `--apply` also sets the activation environment and restarts IBus.
+  `--apply` also sets the activation environment, writes the same search path to
+  `~/.config/environment.d/voiceime.conf` so a new login keeps the engine, and restarts
+  IBus. `engine uninstall` removes that file too.
 * `config apply` makes the running install match the file: restarts the service, rewrites
   the component when the engine name changed, converges the input source, and drops the
   engine so the next activation runs the new binary.
@@ -79,7 +81,7 @@ supported and needs the same command.
 ```
 voiceime doctor --json            # every finding carries a fix
 voiceime server status --json     # data.unit_active, data.listening, data.served[]
-voiceime engine status --json     # data.engine_registered, data.gnome_input_source.listed
+voiceime engine status --json     # data.engine_registered, data.environment_set, data.gnome_input_source.listed
 voiceime transcribe --seconds 5   # one decode from the microphone, with timing
 ```
 

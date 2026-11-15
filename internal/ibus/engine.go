@@ -12,11 +12,6 @@ import (
 )
 
 const (
-	// IBusText: (type name, attachments, text, attributes variant)
-	signatureText = "(sa{sv}sv)"
-	// IBusAttrList: (type name, attachments, attributes)
-	signatureAttrList = "(sa{sv}as)"
-
 	ifaceIBusEngine  = "org.freedesktop.IBus.Engine"
 	ifaceIBusFactory = "org.freedesktop.IBus.Factory"
 	ifaceIBusService = "org.freedesktop.IBus.Service"

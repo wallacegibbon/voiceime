@@ -38,7 +38,6 @@ type Capture interface {
 
 // captureBase holds the reader-thread plumbing shared by every source.
 type captureBase struct {
-	rate       int
 	chunks     chan Chunk
 	stop       chan struct{}
 	stopped    sync.Once
@@ -50,9 +49,8 @@ type captureBase struct {
 	dropped      int64
 }
 
-func newCaptureBase(rate int) *captureBase {
+func newCaptureBase() *captureBase {
 	return &captureBase{
-		rate: rate,
 		// Buffered so a brief consumer stall is absorbed; anything longer is
 		// dropped rather than allowed to grow without bound.
 		chunks: make(chan Chunk, 250),
@@ -121,7 +119,7 @@ func (c *captureBase) publish(data []byte) {
 
 func (c *captureBase) readLoop(reader io.Reader, wait func() error) {
 	defer close(c.chunks)
-	blockBytes := c.rate * FrameMS / 1000 * BytesPerSample
+	blockBytes := FrameMS * SampleRate / 1000 * BytesPerSample
 	buffer := make([]byte, blockBytes)
 	published := 0
 	for {
@@ -182,15 +180,12 @@ type microphone struct {
 }
 
 func NewMicrophone(cfg *config.Config) (Capture, error) {
-	// The rate is not a setting: audio.cpp's bundled VAD rejects anything but 16 kHz,
-	// so a configurable value could only ever be wrong in one direction. It was one
-	// (capture_rate), and the constant is what remained of it.
-	rate := SampleRate
-
+	// The rate is not a setting, and it is not a parameter either: audio.cpp's bundled VAD
+	// rejects anything but 16 kHz, so a value that could be wrong is a value that would be.
 	if parec := config.FindExecutable("parec"); parec != "" {
 		args := []string{
 			"--format=s16le",
-			fmt.Sprintf("--rate=%d", rate),
+			fmt.Sprintf("--rate=%d", SampleRate),
 			"--channels=1",
 			"--raw",
 			// Without a latency request the server may deliver seconds at once,
@@ -201,7 +196,7 @@ func NewMicrophone(cfg *config.Config) (Capture, error) {
 			args = append(args, "--device="+cfg.CaptureSource)
 		}
 		return &microphone{
-			captureBase: newCaptureBase(rate),
+			captureBase: newCaptureBase(),
 			command:     append([]string{parec}, args...),
 			finished:    make(chan struct{}),
 		}, nil
@@ -210,7 +205,7 @@ func NewMicrophone(cfg *config.Config) (Capture, error) {
 	if pwRecord := config.FindExecutable("pw-record"); pwRecord != "" {
 		args := []string{
 			"--format", "s16",
-			"--rate", fmt.Sprint(rate),
+			"--rate", fmt.Sprint(SampleRate),
 			"--channels", "1",
 			"--raw",
 			"-",
@@ -219,7 +214,7 @@ func NewMicrophone(cfg *config.Config) (Capture, error) {
 			args = append([]string{"--target=" + cfg.CaptureSource}, args...)
 		}
 		return &microphone{
-			captureBase: newCaptureBase(rate),
+			captureBase: newCaptureBase(),
 			command:     append([]string{pwRecord}, args...),
 			finished:    make(chan struct{}),
 		}, nil
@@ -296,7 +291,7 @@ func NewFileReplay(path string, realtime bool) (Capture, error) {
 		return nil, err
 	}
 	return &fileReplay{
-		captureBase: newCaptureBase(SampleRate),
+		captureBase: newCaptureBase(),
 		data:        wav.Data,
 		realtime:    realtime,
 		done:        make(chan struct{}),

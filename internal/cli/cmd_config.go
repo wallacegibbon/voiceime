@@ -166,7 +166,10 @@ func reselectsEngine(current string, known bool) bool {
 	return known && (current == ibus.EngineName || current == "")
 }
 
-func withConfiguredEngine(installed ibus.Component, cfg *config.Config) ibus.Component {
+// withCurrentEngine is what the component file on disk would look like if this build wrote
+// it: unchanged except for the engine identity, which is the one part of that file a new
+// build can disagree with.
+func withCurrentEngine(installed ibus.Component) ibus.Component {
 	updated := installed
 	updated.EngineName = ibus.EngineName
 	return updated
@@ -189,7 +192,7 @@ func applyComponent(cfg *config.Config) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("cannot read the installed component: %w", err)
 	}
-	updated := withConfiguredEngine(installed, cfg)
+	updated := withCurrentEngine(installed)
 	if !componentNeedsRewrite(raw, updated) {
 		return "unchanged", nil
 	}
@@ -533,7 +536,7 @@ func environment(ctx *Context) map[string]any {
 	environment["wayland_display"] = os.Getenv("WAYLAND_DISPLAY")
 	environment["display"] = os.Getenv("DISPLAY")
 
-	environment["ibus"] = ibusState(ctx)
+	environment["ibus"] = ibusState()
 	return environment
 }
 
@@ -548,7 +551,7 @@ func lastLineMatching(text, prefix string) string {
 }
 
 // ibusState reports whether IBus is running and whether our engine is installed.
-func ibusState(ctx *Context) map[string]any {
+func ibusState() map[string]any {
 	state := map[string]any{}
 	if config.FindExecutable("ibus") == "" {
 		state["installed"] = false

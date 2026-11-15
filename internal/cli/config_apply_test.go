@@ -119,12 +119,13 @@ func appendToFile(t *testing.T, path, text string) {
 	}
 }
 
-// `config apply` owns the engine language in the installed component.
-func TestWithConfiguredEngineAppliesOnlyWhatTheConfigOwns(t *testing.T) {
+// The component file is owned by the install, not by whichever binary happens to run: the
+// only part of it that changes with a build is the engine identity.
+func TestWithCurrentEngineChangesOnlyTheEngineIdentity(t *testing.T) {
 	cfg := config.Default()
 	installed := ibus.DefaultComponent(cfg, "/home/u/.local/bin/voiceime ibus-engine --ibus")
 
-	if componentNeedsRewrite([]byte(installed.XML()), withConfiguredEngine(installed, cfg)) {
+	if componentNeedsRewrite([]byte(installed.XML()), withCurrentEngine(installed)) {
 		t.Error("a file this version wrote was reported as needing a rewrite")
 	}
 
@@ -133,7 +134,7 @@ func TestWithConfiguredEngineAppliesOnlyWhatTheConfigOwns(t *testing.T) {
 	stale := installed
 	stale.EngineName = "voiceime-next"
 	cfg.Language = "en"
-	updated := withConfiguredEngine(stale, cfg)
+	updated := withCurrentEngine(stale)
 	if !componentNeedsRewrite([]byte(stale.XML()), updated) {
 		t.Fatal("a component naming another engine was reported as no change")
 	}
@@ -165,7 +166,7 @@ func TestWithConfiguredEngineAppliesOnlyWhatTheConfigOwns(t *testing.T) {
 func TestComponentNeedsRewriteSeesAnOlderWriter(t *testing.T) {
 	cfg := config.Default()
 	installed := ibus.DefaultComponent(cfg, "/home/u/.local/bin/voiceime ibus-engine --ibus")
-	updated := withConfiguredEngine(installed, cfg)
+	updated := withCurrentEngine(installed)
 
 	escaped := strings.Replace(installed.XML(), "<symbol>🎤</symbol>",
 		"<symbol>&amp;#x1F3A4;</symbol>", 1)

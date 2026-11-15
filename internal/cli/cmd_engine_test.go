@@ -100,7 +100,7 @@ func TestRotateLogOnlyDropsWhatIsTooBig(t *testing.T) {
 	if err := os.WriteFile(small, []byte("recent history\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rotateLog(small, maxEngineLogBytes)
+	rotateLog(small)
 	if body, _ := os.ReadFile(small); !strings.Contains(string(body), "recent history") {
 		t.Error("rotation dropped a log that was under the bound")
 	}
@@ -109,13 +109,13 @@ func TestRotateLogOnlyDropsWhatIsTooBig(t *testing.T) {
 	if err := os.WriteFile(big, make([]byte, maxEngineLogBytes+1), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rotateLog(big, maxEngineLogBytes)
+	rotateLog(big)
 	if info, err := os.Stat(big); err != nil || info.Size() != 0 {
 		t.Errorf("an oversized log was not emptied: %v %v", info, err)
 	}
 
 	// Missing files are not an error: the first dictation creates the log.
-	rotateLog(filepath.Join(dir, "absent.log"), maxEngineLogBytes)
+	rotateLog(filepath.Join(dir, "absent.log"))
 }
 
 // Stderr is written only when a human is looking at it.

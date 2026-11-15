@@ -24,16 +24,16 @@ func runForTest(t *testing.T, args ...string) (code int, stdout, stderr string) 
 // freshConfig writes a config that is usable - one named checkpoint, present on disk - so a
 // test fails for the reason it is about. A model is a file a test names; there is no
 // directory for the tool to scan.
-func freshConfig(t *testing.T) (configPath, dir string) {
+func freshConfig(t *testing.T) string {
 	t.Helper()
-	dir = t.TempDir()
+	dir := t.TempDir()
 	writeGGUF(t, filepath.Join(dir, "test.gguf"), "sense_asr", []string{"asr"})
-	configPath = filepath.Join(dir, "config.toml")
+	configPath := filepath.Join(dir, "config.toml")
 	body := fmt.Sprintf("model = %q\nbackend = \"cpu\"\n", filepath.Join(dir, "test.gguf"))
 	if err := os.WriteFile(configPath, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return configPath, dir
+	return configPath
 }
 
 // bareConfig writes a config with nothing in it: the shape of a fresh install, before anyone
@@ -119,7 +119,7 @@ func decodeOne(t *testing.T, text string) map[string]any {
 }
 
 func TestConfigInitRefusesThenOverwritesWithForce(t *testing.T) {
-	configPath, _ := freshConfig(t)
+	configPath := freshConfig(t)
 	original, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatal(err)
@@ -167,7 +167,7 @@ func TestConfigInitRefusesThenOverwritesWithForce(t *testing.T) {
 // A successful --json invocation is exactly one object on stdout and nothing on
 // stderr, so a caller can parse it without looking anywhere else.
 func TestJsonSuccessIsOneObjectOnStdout(t *testing.T) {
-	configPath, _ := freshConfig(t)
+	configPath := freshConfig(t)
 	code, stdout, stderr := runForTest(t, "capabilities", "--json", "--config", configPath)
 	if code != ExitOK {
 		t.Fatalf("exit %d, stderr %s", code, stderr)
@@ -217,7 +217,7 @@ func TestUnknownCommandIsAUsageError(t *testing.T) {
 
 // `config set` writes the value and then fails if the file it wrote cannot be used.
 func TestConfigSetFailsWhenTheValueBreaksTheConfig(t *testing.T) {
-	configPath, _ := freshConfig(t)
+	configPath := freshConfig(t)
 
 	code, stdout, stderr := runForTest(t, "config", "set", "threads", "0", "--json", "--config", configPath)
 	if code != ExitPrecondition {

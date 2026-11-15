@@ -88,21 +88,3 @@ func TestReadWAVRejectsNonPCM(t *testing.T) {
 		t.Error("ReadWAV accepted a file that is not a WAV")
 	}
 }
-
-func silence(seconds float64) []byte {
-	return make([]byte, int(seconds*SampleRate)*BytesPerSample)
-}
-
-func peak(data []byte) int {
-	best := 0
-	for _, sample := range BytesToSamples(data) {
-		value := int(sample)
-		if value < 0 {
-			value = -value
-		}
-		if value > best {
-			best = value
-		}
-	}
-	return best
-}

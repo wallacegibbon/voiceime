@@ -109,7 +109,7 @@ func TestServerRunNamesTheModelSettingWhenNothingIsNamed(t *testing.T) {
 
 // `voiceime model` is how you check what you named: it reads the file, not the settings.
 func TestModelCommandDescribesTheNamedCheckpoint(t *testing.T) {
-	configPath, _ := freshConfig(t)
+	configPath := freshConfig(t)
 	checkpoint := ggufFixture(t, "sense_asr")
 	if _, _, stderr := runForTest(t, "--config", configPath, "config", "set", "model", checkpoint); stderr != "" {
 		t.Fatalf("config set model: %s", stderr)

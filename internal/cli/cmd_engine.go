@@ -165,7 +165,7 @@ func runEngineInstall(ctx *Context, system, apply, quiet bool) error {
 		ctx.Print("desktop: %s", desktop)
 	}
 
-	registered, detail := engineRegistered(ctx)
+	registered, detail := engineRegistered()
 	return ctx.Emit("engine install", map[string]any{
 		"mode":                "user",
 		"component":           path,
@@ -259,7 +259,7 @@ func runEngineStatus(ctx *Context) error {
 	if config.FindExecutable("ibus") == "" {
 		return PreconditionError("sudo apt install ibus", "the ibus CLI is not installed")
 	}
-	registered, detail := engineRegistered(ctx)
+	registered, detail := engineRegistered()
 	state := map[string]any{
 		"component_path":      ibus.ComponentPath(),
 		"component_installed": ibus.Installed(),
@@ -332,7 +332,7 @@ func runEngineStatus(ctx *Context) error {
 }
 
 // engineRegistered asks the daemon whether it knows our engine.
-func engineRegistered(ctx *Context) (bool, string) {
+func engineRegistered() (bool, string) {
 	listing, err := probe("ibus", "list-engine")
 	if err != nil {
 		return false, "ibus list-engine failed: " + err.Error()
@@ -470,7 +470,7 @@ func runIBusEngine(ctx *Context, options engineRunOptions) error {
 	if logPath != "" {
 		// One file per engine lifetime, bounded: a log that grows across months of
 		// dictation is a disk leak with a useful name.
-		rotateLog(logPath, maxEngineLogBytes)
+		rotateLog(logPath)
 	}
 	logf := func(format string, args ...any) {
 		line := fmt.Sprintf(format, args...)
@@ -557,9 +557,11 @@ func engineLogPath() string { return filepath.Join(config.CacheDir(), "engine.lo
 // so a long-lived install cannot fill a disk with the record of what it said.
 const maxEngineLogBytes = 1 << 20
 
-func rotateLog(path string, limit int64) {
+// rotateLog keeps the session log bounded: the cap is a property of the file, not of the
+// caller, so there is one value for it.
+func rotateLog(path string) {
 	info, err := os.Stat(path)
-	if err != nil || info.Size() <= limit {
+	if err != nil || info.Size() <= maxEngineLogBytes {
 		return
 	}
 	_ = os.Truncate(path, 0)

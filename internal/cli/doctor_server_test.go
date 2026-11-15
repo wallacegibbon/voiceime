@@ -181,7 +181,7 @@ func TestServerUnitRunsVoiceimeWithSubcommand(t *testing.T) {
 
 // Every setting is applied by one command, and `config set` says so - for every key.
 func TestConfigSetNamesHowToApplyEverySetting(t *testing.T) {
-	configPath, _ := freshConfig(t)
+	configPath := freshConfig(t)
 	for _, field := range config.Default().Fields() {
 		value := fmt.Sprint(field.Value)
 		switch field.Type {

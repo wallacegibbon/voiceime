@@ -10,14 +10,14 @@ import (
 	"github.com/wallacegibbon/voiceime/internal/ibus"
 )
 
-func installChecks(ctx *Context, report func(Check)) {
-	componentExecCheck(ctx, report)
-	componentEnvironmentCheck(ctx, report)
-	sessionEngineCheck(ctx, report)
-	runningBuildCheck(ctx, report)
+func installChecks(report func(Check)) {
+	componentExecCheck(report)
+	componentEnvironmentCheck(report)
+	sessionEngineCheck(report)
+	runningBuildCheck(report)
 }
 
-func componentExecCheck(ctx *Context, report func(Check)) {
+func componentExecCheck(report func(Check)) {
 	path := ibus.ComponentPath()
 	if !fileExists(path) {
 		report(Check{
@@ -54,8 +54,8 @@ func componentExecCheck(ctx *Context, report func(Check)) {
 // component is found only because IBUS_COMPONENT_PATH names its directory, and that
 // variable belongs to the session: `engine install --apply` also writes it to
 // environment.d, and an install that skipped that works until the machine is rebooted.
-func componentEnvironmentCheck(ctx *Context, report func(Check)) {
-	registered, _ := engineRegistered(ctx)
+func componentEnvironmentCheck(report func(Check)) {
+	registered, _ := engineRegistered()
 	status, detail, ok := componentEnvironmentVerdict(
 		ibus.SystemInstalled(), ibus.Installed(), ibus.EnvironmentSet(), registered)
 	if !ok {
@@ -76,7 +76,7 @@ func componentEnvironmentCheck(ctx *Context, report func(Check)) {
 // switcher while receiving no keys at all (measured: `ibus engine` answers "No engine is
 // set." afterwards). Nothing puts it back but selecting an input method again, which is the
 // gesture a person discovers for themselves and mistakes for a broken engine.
-func sessionEngineCheck(ctx *Context, report func(Check)) {
+func sessionEngineCheck(report func(Check)) {
 	if !ibus.Installed() {
 		// component_exec already reports an install that has no way into applications.
 		return
@@ -190,7 +190,7 @@ func servedBinaryPath() (string, bool) {
 // a build directory, which makes it a third copy of the program: measured against itself it
 // reported the engine, the service and the unit as three warnings pointing at two different
 // commands, and no action made them go away.
-func runningBuildCheck(ctx *Context, report func(Check)) {
+func runningBuildCheck(report func(Check)) {
 	var healthy, stale []string
 	worst := "ok"
 	for _, kind := range residentKinds {
@@ -324,7 +324,7 @@ func isExecutable(path string) bool {
 	return err == nil && !info.IsDir() && info.Mode()&0o111 != 0
 }
 
-func serverUnitCheck(ctx *Context, report func(Check)) {
+func serverUnitCheck(report func(Check)) {
 	path := serverUnitPath()
 	if path == "" || !fileExists(path) {
 		report(Check{

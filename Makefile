@@ -36,6 +36,7 @@ PLATFORMS   ?= linux/amd64 linux/arm64 windows/amd64 darwin/arm64
 # project's own minimum toolchain - and drag in unrelated updates - for a check
 # that never ships. v0.36.0 asks for Go 1.23.
 DEADCODE    ?= golang.org/x/tools/cmd/deadcode@v0.36.0
+STATICCHECK ?= honnef.co/go/tools/cmd/staticcheck@2025.1
 
 # A speech file to measure against. `make measure AUDIO=speech.wav` replays it at
 # real time and prints latency and repair numbers; see docs/measurements.md.
@@ -144,6 +145,25 @@ deadcode: ## Fail if main cannot reach some code in the shipped packages
 	rm -rf "$$bin" "$$out"; \
 	echo "deadcode: every function in cmd/ and internal/ is reachable from main"
 
+.PHONY: unused
+unused: ## Fail if any code is unused - including code only a test could call
+	@#
+	@# deadcode answers "can main reach this", and treats a test as no caller. This is the
+	@# other half: a helper that only a test calls, a parameter nothing varies, a constant
+	@# from a design that was replaced. Both are kept because a long-lived project accumulates
+	@# them faster than anyone notices, and every one is a thing a reader has to understand.
+	@bin=$$(mktemp -d); \
+	if ! GOBIN="$$bin" $(GO) install $(STATICCHECK) >/dev/null 2>&1; then \
+		echo "$(STATICCHECK) could not be installed; this check needs network access once:"; \
+		GOBIN="$$bin" $(GO) install $(STATICCHECK); rm -rf "$$bin"; exit 1; \
+	fi; \
+	out=$$(mktemp); \
+	if ! "$$bin/staticcheck" -checks U1000 ./... > "$$out" 2>&1; then \
+		echo "unused code:"; cat "$$out"; rm -rf "$$bin" "$$out"; exit 1; \
+	fi; \
+	rm -rf "$$bin" "$$out"; \
+	echo "unused: nothing unused, in the shipped code or in the tests"
+
 .PHONY: docs-check
 docs-check: ## Fail if a relative link or anchor in the documentation does not resolve
 	@# Build tooling, like deadcode above: it lives under tools/ rather than cmd/,
@@ -154,7 +174,7 @@ docs-check: ## Fail if a relative link or anchor in the documentation does not r
 	@$(GO) run ./tools/check_docs
 
 .PHONY: check
-check: fmt-check vet test deadcode docs-check ## Everything CI should run
+check: fmt-check vet test deadcode unused docs-check ## Everything CI should run
 
 .PHONY: tidy
 tidy: ## Tidy go.mod and go.sum

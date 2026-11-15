@@ -238,7 +238,7 @@ func TestPushToTalkRecordsOnlyWhileTheKeyIsHeld(t *testing.T) {
 	}
 	waitFor(t, "the capture to start", source.started)
 
-	source.publish(append(append(silence(0.1), tone(0.6, 6000)...), silence(0.1)...))
+	source.publish(append(append(silence(0.1), tone(0.6)...), silence(0.1)...))
 
 	// The daemon reports every repeat of a held key as another press.
 	if !handler.KeyEvent(graveKeyval, 0, ibus.ModControl) {
@@ -266,7 +266,7 @@ func TestPushToTalkSendsTheRecordingItMade(t *testing.T) {
 
 	handler.KeyEvent(graveKeyval, 0, ibus.ModControl)
 	waitFor(t, "the capture to start", source.started)
-	hold := append(append(silence(0.2), tone(0.6, 6000)...), append(silence(1.2), tone(0.6, 6000)...)...)
+	hold := append(append(silence(0.2), tone(0.6)...), append(silence(1.2), tone(0.6)...)...)
 	hold = append(hold, silence(0.3)...)
 	source.publish(hold)
 	handler.KeyEvent(graveKeyval, 0, ibus.ModControl|ibus.ReleaseMask)
@@ -297,7 +297,7 @@ func TestPushToTalkSendsALongHoldAsOneRequest(t *testing.T) {
 	waitFor(t, "the capture to start", source.started)
 	var hold []byte
 	for phrase := 0; phrase < 6; phrase++ {
-		hold = append(hold, tone(2.5, 6000)...)
+		hold = append(hold, tone(2.5)...)
 		hold = append(hold, silence(0.9)...)
 	}
 	source.publish(hold)
@@ -327,7 +327,7 @@ func TestPushToTalkCommitsNothingForPunctuation(t *testing.T) {
 
 	handler.KeyEvent(graveKeyval, 0, ibus.ModControl)
 	waitFor(t, "the capture to start", source.started)
-	source.publish(tone(0.6, 6000))
+	source.publish(tone(0.6))
 	handler.KeyEvent(graveKeyval, 0, ibus.ModControl|ibus.ReleaseMask)
 
 	waitFor(t, "the decode to come back", func() bool { return len(transcriber.calls()) == 1 })
@@ -351,7 +351,7 @@ func TestPushToTalkCommitsNothingWhenTheModelHearsNothing(t *testing.T) {
 	handler.KeyEvent(graveKeyval, 0, ibus.ModControl)
 	waitFor(t, "the capture to start", source.started)
 	// Speech, so the recording passes the gate and the model is the one answering blank.
-	source.publish(tone(0.6, 6000))
+	source.publish(tone(0.6))
 	handler.KeyEvent(graveKeyval, 0, ibus.ModControl|ibus.ReleaseMask)
 
 	waitFor(t, "the decode to come back empty", func() bool { return len(transcriber.calls()) == 1 })
@@ -371,7 +371,7 @@ func TestPushToTalkStopsWhenTheModifierComesUpFirst(t *testing.T) {
 
 	handler.KeyEvent(graveKeyval, 0, ibus.ModControl)
 	waitFor(t, "the capture to start", source.started)
-	source.publish(tone(0.5, 6000))
+	source.publish(tone(0.5))
 
 	const controlL = 0xffe3
 	if handler.KeyEvent(controlL, 0, ibus.ModControl|ibus.ReleaseMask) {
@@ -399,7 +399,7 @@ func TestPushToTalkCapsAHeldRecording(t *testing.T) {
 
 	handler.KeyEvent(graveKeyval, 0, ibus.ModControl)
 	waitFor(t, "the capture to start", source.started)
-	source.publish(tone(0.8, 6000))
+	source.publish(tone(0.8))
 
 	waitFor(t, "the capped recording to be decoded", func() bool { return len(transcriber.calls()) == 1 })
 	if seconds := audio.DurationSeconds(transcriber.calls()[0]); seconds > 0.65 {
@@ -435,7 +435,7 @@ func TestPushToTalkDoesNotSplitAHoldAtTheFirstRepeat(t *testing.T) {
 	if !handler.KeyEvent(graveKeyval, 0, ibus.ModControl) {
 		t.Error("the first repeat of the held key was passed to the application")
 	}
-	source.publish(tone(0.8, 6000))
+	source.publish(tone(0.8))
 	handler.KeyEvent(graveKeyval, 0, ibus.ModControl|ibus.ReleaseMask)
 
 	waitFor(t, "the hold to be decoded", func() bool { return len(transcriber.calls()) == 1 })
@@ -463,7 +463,7 @@ func TestPushToTalkIgnoresTheRepeatsOfAKeyWhoseRecordingWasCapped(t *testing.T) 
 
 	handler.KeyEvent(graveKeyval, 0, ibus.ModControl)
 	waitFor(t, "the capture to start", source.started)
-	source.publish(tone(0.8, 6000))
+	source.publish(tone(0.8))
 	waitFor(t, "the capped recording to end", func() bool {
 		return strings.Contains(logs.text(), "max_utterance_seconds")
 	})
@@ -484,7 +484,7 @@ func TestPushToTalkIgnoresTheRepeatsOfAKeyWhoseRecordingWasCapped(t *testing.T) 
 	waitFor(t, "a recording opened by the press after the release", func() bool {
 		return source.recordings() == 2
 	})
-	source.publish(tone(0.2, 6000))
+	source.publish(tone(0.2))
 	handler.KeyEvent(graveKeyval, 0, ibus.ModControl|ibus.ReleaseMask)
 	waitFor(t, "the second recording to be decoded", func() bool { return len(transcriber.calls()) == 2 })
 }
@@ -502,7 +502,7 @@ func TestPushToTalkRecoversFromAPressWithNoRelease(t *testing.T) {
 
 	handler.KeyEvent(graveKeyval, 0, ibus.ModControl)
 	waitFor(t, "the capture to start", source.started)
-	source.publish(tone(0.5, 6000))
+	source.publish(tone(0.5))
 
 	// Nothing arrives for this hold: the input context that received the key's release
 	// was not ours. A moment later the user presses the trigger again.
@@ -520,7 +520,7 @@ func TestPushToTalkRecoversFromAPressWithNoRelease(t *testing.T) {
 		t.Errorf("the log does not say what happened:\n%s", text)
 	}
 
-	source.publish(tone(0.5, 6000))
+	source.publish(tone(0.5))
 	handler.KeyEvent(graveKeyval, 0, ibus.ModControl|ibus.ReleaseMask)
 	waitFor(t, "the second recording to be decoded", func() bool { return len(transcriber.calls()) == 2 })
 	if got := control.delivered(); len(got) != 2 {
@@ -537,7 +537,7 @@ func TestPushToTalkDiscardsTheRecordingWhenDeselected(t *testing.T) {
 
 	handler.KeyEvent(graveKeyval, 0, ibus.ModControl)
 	waitFor(t, "the capture to start", source.started)
-	source.publish(tone(0.5, 6000))
+	source.publish(tone(0.5))
 	handler.Disable()
 
 	time.Sleep(150 * time.Millisecond)
@@ -560,7 +560,7 @@ func TestPushToTalkDeliversToTheNewestInputContext(t *testing.T) {
 
 	handler.KeyEvent(graveKeyval, 0, ibus.ModControl)
 	waitFor(t, "the capture to start", source.started)
-	source.publish(tone(0.5, 6000))
+	source.publish(tone(0.5))
 	handler.KeyEvent(graveKeyval, 0, ibus.ModControl|ibus.ReleaseMask)
 
 	waitFor(t, "the sentence to be delivered", func() bool { return len(second.delivered()) == 1 })

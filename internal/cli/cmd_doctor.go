@@ -117,7 +117,7 @@ func runDoctor(ctx *Context) []Check {
 	}
 
 	// 5. Text delivery through IBus.
-	state := ibusState(ctx)
+	state := ibusState()
 	status := "ok"
 	detail := "IBus is running"
 	fix := ""
@@ -162,8 +162,8 @@ func runDoctor(ctx *Context) []Check {
 	// 8. Installed artifacts: the paths baked into the component file and the
 	// systemd unit, and whether the resident processes run those paths. A moved
 	// checkout breaks all three silently (see install_check.go).
-	installChecks(ctx, report)
-	serverUnitCheck(ctx, report)
+	installChecks(report)
+	serverUnitCheck(report)
 
 	return checks
 }

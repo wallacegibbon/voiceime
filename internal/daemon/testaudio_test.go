@@ -11,11 +11,11 @@ import (
 )
 
 // tone is audio loud enough for a speech detector to call it speech.
-func tone(seconds, amplitude float64) []byte {
+func tone(seconds float64) []byte {
 	samples := make([]int16, int(seconds*audio.SampleRate))
 	frequency := 2 * math.Pi * 220 / audio.SampleRate
 	for i := range samples {
-		samples[i] = int16(amplitude * math.Sin(frequency*float64(i)))
+		samples[i] = int16(6000 * math.Sin(frequency*float64(i)))
 	}
 	return audio.SamplesToBytes(samples)
 }
@@ -56,7 +56,7 @@ func writeWAV(t *testing.T, path string, pcm []byte) {
 // speechWAV is a recording with a phrase in the middle, for the file diagnostic.
 func speechWAV(t *testing.T) string {
 	t.Helper()
-	payload := append(append(silence(0.2), tone(0.6, 6000)...), silence(0.5)...)
+	payload := append(append(silence(0.2), tone(0.6)...), silence(0.5)...)
 	path := filepath.Join(t.TempDir(), "speech.wav")
 	writeWAV(t, path, payload)
 	return path

@@ -25,7 +25,7 @@ func (r *gatedReader) Read([]byte) (int, error) {
 
 // A stop we asked for must not be reported as a capture failure.
 func TestRequestedStopIsNotACaptureError(t *testing.T) {
-	base := newCaptureBase(SampleRate)
+	base := newCaptureBase()
 	reader := newGatedReader()
 	done := make(chan struct{})
 	go func() {
@@ -46,7 +46,7 @@ func TestRequestedStopIsNotACaptureError(t *testing.T) {
 // The distinction is the request, not the exit status: a client that died on its
 // own, with no stop requested, is still a failure worth surfacing.
 func TestUnrequestedClientExitIsACaptureError(t *testing.T) {
-	base := newCaptureBase(SampleRate)
+	base := newCaptureBase()
 	reader := newGatedReader()
 	done := make(chan struct{})
 	go func() {

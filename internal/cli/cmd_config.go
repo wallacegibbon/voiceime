@@ -274,30 +274,31 @@ func runConfig(ctx *Context, args []string, force bool) error {
 				"note":    "already exists; pass --force to overwrite",
 			})
 		}
-		// The default audio_cpp_dir is the reference machine's layout. Writing a
-		// discovered checkout into the file is reported, not silent, and only ever
-		// replaces the *default* - never a value someone chose.
-		located := config.LocateAudioCPP(ctx.Config)
-		discovered := ""
-		if located != "" && config.Expand(ctx.Config.AudioCPPDir) != located {
-			ctx.Config.AudioCPPDir = located
-			discovered = located
+		// Where audio.cpp was built is not something to guess at every run, so it is
+		// guessed once here, written into the settings, and reported. A value that
+		// already names a runnable file is kept: init never overwrites a choice.
+		found := ""
+		if _, err := ctx.Config.FindASRBinary(); err != nil {
+			if candidates := config.DiscoverASRBinaries(); len(candidates) > 0 {
+				found = candidates[0]
+				ctx.Config.ASRBin = found
+			}
 		}
 		if err := config.Save(ctx.Config, ctx.ConfigPath); err != nil {
 			return FailureError("cannot write %s: %v", ctx.ConfigPath, err)
 		}
 		ctx.Print("wrote %s", ctx.ConfigPath)
-		if discovered != "" {
-			ctx.Print("discovered an audio.cpp checkout at %s", discovered)
+		if found != "" {
+			ctx.Print("pointed asr_bin at the audio.cpp CLI %s", found)
 		}
 		// Every default in this file is a measurement or a path from the machine
 		// voiceime was developed on. The ones that are not portable are listed
 		// rather than left for an agent to notice.
 		facts := detectHardware()
 		reviews := config.ReviewDefaults(ctx.Config, config.ReviewFacts{
-			AudioCPPCheckout: located,
-			Cores:            facts.Cores(),
-			GPUs:             facts.GPUDrivers,
+			ASRBinary: found,
+			Cores:     facts.Cores(),
+			GPUs:      facts.GPUDrivers,
 		})
 		for _, review := range reviews {
 			ctx.Print("review %-22s %v  (%s)", review.Key, review.Value, review.Why)
@@ -309,7 +310,7 @@ func runConfig(ctx *Context, args []string, force bool) error {
 			"path":       ctx.ConfigPath,
 			"written":    true,
 			"existed":    existed,
-			"discovered": map[string]any{"audio_cpp_dir": discovered},
+			"discovered": map[string]any{"asr_bin": found},
 			"review":     reviews,
 		})
 

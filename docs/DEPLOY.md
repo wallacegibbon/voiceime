@@ -27,9 +27,10 @@ fixes it. The rest of this page is those commands, in order.
 "$BIN" config show --json | head
 ```
 
-`config init` writes `~/.config/voiceime/config.toml`, discovers the audio.cpp checkout and
-lists the settings whose default is a property of the machine
-(`audio_cpp_dir`, `threads`, `backend`, `language`, `push_to_talk`). Set them now:
+`config init` writes `~/.config/voiceime/config.toml`, points `asr_bin` at the built
+`audiocpp_cli` it finds (build audio.cpp first — nothing else searches for it, ever again),
+and lists the settings whose default is a property of the machine
+(`asr_bin`, `threads`, `backend`, `language`, `text_script`, `push_to_talk`). Set them now:
 
 ```sh
 "$BIN" config set threads 8
@@ -143,6 +144,7 @@ A running process keeps the binary it was started from, so `doctor` reports a st
 
 | Symptom | Cause | Fix |
 |---|---|---|
+| `doctor` says there is no audio.cpp CLI, or that `asr_bin` names a file that cannot run | audio.cpp was never built, or the build tree moved or was cleaned | `"$BIN" config set asr_bin <path to audiocpp_cli>` (or build it and run `config init --force`), then `config apply` |
 | no text, log shows `no audio was recorded` | the sound server is not giving the microphone | `"$BIN" doctor`, then `config set capture_source` |
 | no text, log shows `transcribe …: …` | the service refused or timed out | `server status --json`, then `config apply` |
 | the menu does not list Voiceime | not in the input-source list | `"$BIN" engine install --apply` |

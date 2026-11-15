@@ -16,8 +16,8 @@ type Review struct {
 // ReviewFacts is what the caller detected. It is a plain struct so the policy
 // below stays free of I/O and testable on its own.
 type ReviewFacts struct {
-	// AudioCPPCheckout is a located audio.cpp checkout, or "".
-	AudioCPPCheckout string
+	// ASRBinary is a built audio.cpp CLI found on this machine, or "".
+	ASRBinary string
 	// Cores is the physical core count, or 0 when unknown.
 	Cores int
 	// GPUs lists vendor compute tools found on PATH.
@@ -27,22 +27,26 @@ type ReviewFacts struct {
 func ReviewDefaults(cfg *Config, facts ReviewFacts) []Review {
 	reviews := []Review{}
 
-	audioCPP := Review{
-		Key:   "audio_cpp_dir",
-		Value: cfg.AudioCPPDir,
-		Why:   "the default names the checkout voiceime was developed in; audio.cpp may be somewhere else here",
+	asr := Review{
+		Key:   "asr_bin",
+		Value: cfg.ASRBin,
+		Why:   "every decode goes through audio.cpp's CLI, and where it was built is a property of this machine, not of voiceime",
 	}
-	// Compare expanded forms: a caller may hand over either the configured
-	// spelling ("~/audio.cpp") or the resolved one from a filesystem search.
-	located := Expand(facts.AudioCPPCheckout)
+	// Compare expanded forms: a caller may hand over either the configured spelling
+	// ("~/audio.cpp/...") or the resolved one from a filesystem search.
+	found := Expand(facts.ASRBinary)
 	switch {
-	case located != "" && Expand(cfg.AudioCPPDir) != located:
-		audioCPP.Fix = "voiceime config set audio_cpp_dir " + located
-		audioCPP.Why += fmt.Sprintf(", and it looks like it is at %s", located)
-	case located != "":
-		audioCPP.Why = "matches the checkout found on this machine"
+	case found == "" && Expand(cfg.ASRBin) == "":
+		asr.Why += "; nothing built was found on this machine either, so audio.cpp has to be built or named"
+	case found == "":
+		asr.Why += ", and nothing built was found here to point it at"
+	case Expand(cfg.ASRBin) != found:
+		asr.Fix = "voiceime config set asr_bin " + found
+		asr.Why += fmt.Sprintf(", and a build was found here at %s", found)
+	default:
+		asr.Why = "matches the audio.cpp build found on this machine"
 	}
-	reviews = append(reviews, audioCPP)
+	reviews = append(reviews, asr)
 
 	threads := Review{
 		Key:   "threads",

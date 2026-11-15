@@ -29,7 +29,7 @@ func freshConfig(t *testing.T) (configPath, modelsDir string) {
 	if err := os.MkdirAll(modelsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	body := "models_dir = \"" + modelsDir + "\"\naudio_cpp_dir = \"" + dir + "\"\n"
+	body := "models_dir = \"" + modelsDir + "\"\n"
 	if err := os.WriteFile(configPath, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}

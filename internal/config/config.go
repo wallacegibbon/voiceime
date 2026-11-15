@@ -24,9 +24,8 @@ const DefaultModelsDir = "~/models"
 const TargetRate = 16000
 
 type Config struct {
-	ModelsDir   string `toml:"models_dir" desc:"Directory scanned for GGUF checkpoints."`
-	AudioCPPDir string `toml:"audio_cpp_dir" desc:"audio.cpp checkout used to locate its CLI."`
-	ASRBin      string `toml:"asr_bin" desc:"Explicit path to audiocpp_cli; empty means discover."`
+	ModelsDir string `toml:"models_dir" desc:"Directory scanned for GGUF checkpoints."`
+	ASRBin    string `toml:"asr_bin" desc:"Path to audio.cpp's audiocpp_cli; audiocpp_server is taken from beside it. 'config init' fills this in."`
 
 	Backend string `toml:"backend" desc:"audio.cpp backend: cpu, cuda, vulkan, hip, metal."`
 	Threads int    `toml:"threads" desc:"Worker threads handed to audio.cpp."`
@@ -58,12 +57,11 @@ type Config struct {
 
 func Default() *Config {
 	return &Config{
-		ModelsDir:   DefaultModelsDir,
-		AudioCPPDir: "~/playground/audio.cpp",
-		Backend:     "cpu",
-		Threads:     4,
-		Language:    "zh",
-		TextScript:  "simplified",
+		ModelsDir:  DefaultModelsDir,
+		Backend:    "cpu",
+		Threads:    4,
+		Language:   "zh",
+		TextScript: "simplified",
 		// A forgotten key must not grow a recording without bound.
 		MaxUtteranceSeconds: 60,
 		ASRServerTimeoutMS:  30000,
@@ -157,9 +155,6 @@ func Expand(path string) string {
 
 // ResolvedModelsDir returns the absolute models directory.
 func (c *Config) ResolvedModelsDir() string { return Expand(c.ModelsDir) }
-
-// AudioCPPDirPath returns the absolute audio.cpp location.
-func (c *Config) AudioCPPDirPath() string { return Expand(c.AudioCPPDir) }
 
 // checkServerURL validates the address of the resident recognition server.
 func checkServerURL(raw string) error {
@@ -432,90 +427,41 @@ func (c *Config) Set(key, raw string) error {
 
 // --------------------------------------------------------------------------- //
 
+// FindASRBinary returns the audio.cpp CLI the settings name.
+//
+// There is one way to get it: the asr_bin setting. The only fallback is PATH, which is a
+// decision someone made about this machine rather than a guess about where a build tree
+// might be. It used to guess - a checkout directory, then build/*/bin/audiocpp_cli under it,
+// preferring the path whose name contained the backend - so adding a second build tree
+// could change which inference a running service performed. Discovery belongs to
+// `config init`, which writes what it finds into asr_bin and says so.
 func (c *Config) FindASRBinary() (string, error) {
-	var candidates []string
-	if c.ASRBin != "" {
-		candidates = append(candidates, Expand(c.ASRBin))
-	}
-	for _, env := range []string{"VOICEIME_ASR_BIN", "AUDIOCPP_CLI"} {
-		if value := os.Getenv(env); value != "" {
-			candidates = append(candidates, Expand(value))
+	if configured := strings.TrimSpace(c.ASRBin); configured != "" {
+		path := Expand(configured)
+		if isRunnable(path) {
+			return path, nil
 		}
-	}
-	for _, root := range c.checkoutRoots() {
-		matches, _ := filepath.Glob(filepath.Join(root, filepath.FromSlash(audioCPPBuildGlob)))
-		sort.Strings(matches)
-		var preferred []string
-		for _, match := range matches {
-			if strings.Contains(match, c.Backend) {
-				preferred = append(preferred, match)
-			}
-		}
-		candidates = append(candidates, preferred...)
-		candidates = append(candidates, matches...)
+		return "", fmt.Errorf("%s is what asr_bin names, and it is not a runnable file: point asr_bin at the audio.cpp build's audiocpp_cli, or build audio.cpp", path)
 	}
 	if found, err := exec.LookPath("audiocpp_cli"); err == nil {
-		candidates = append(candidates, found)
+		return found, nil
 	}
-	for _, candidate := range candidates {
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
-			return candidate, nil
-		}
-	}
-	return "", errors.New("audiocpp_cli not found: set asr_bin or audio_cpp_dir, or put it on PATH")
+	return "", errors.New("no audio.cpp CLI: point asr_bin at audiocpp_cli, or put it on PATH (`voiceime capabilities` shows what is found)")
 }
 
+// FindServerBinary returns the resident host that serves the decodes. It is the sibling of
+// the CLI, which is where audio.cpp builds it: one recorded path fixes both.
 func (c *Config) FindServerBinary() (string, error) {
-	var candidates []string
-	if c.ASRBin != "" {
-		candidates = append(candidates, filepath.Join(filepath.Dir(Expand(c.ASRBin)), serverBinaryName))
-	}
-	if value := os.Getenv("VOICEIME_ASR_SERVER"); value != "" {
-		candidates = append(candidates, Expand(value))
-	}
-	for _, root := range c.checkoutRoots() {
-		matches, _ := filepath.Glob(filepath.Join(root, filepath.FromSlash(audioCPPBuildGlob)))
-		sort.Strings(matches)
-		var preferred, rest []string
-		for _, match := range matches {
-			candidate := filepath.Join(filepath.Dir(match), serverBinaryName)
-			if strings.Contains(candidate, c.Backend) {
-				preferred = append(preferred, candidate)
-			}
-			rest = append(rest, candidate)
+	if configured := strings.TrimSpace(c.ASRBin); configured != "" {
+		sibling := filepath.Join(filepath.Dir(Expand(configured)), serverBinaryName)
+		if isRunnable(sibling) {
+			return sibling, nil
 		}
-		candidates = append(candidates, preferred...)
-		candidates = append(candidates, rest...)
+	} else if found, err := exec.LookPath(serverBinaryName); err == nil {
+		return found, nil
 	}
-	if found, err := exec.LookPath(serverBinaryName); err == nil {
-		candidates = append(candidates, found)
-	}
-	for _, candidate := range candidates {
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
-			return candidate, nil
-		}
-	}
-	return "", fmt.Errorf("%s not found: point asr_bin at the audio.cpp build's audiocpp_cli, or put %s on PATH",
-		serverBinaryName, serverBinaryName)
-}
-
-func (c *Config) checkoutRoots() []string {
-	var roots []string
-	if configured := c.AudioCPPDirPath(); configured != "" {
-		roots = append(roots, configured)
-	}
-	if located := LocateAudioCPP(c); located != "" {
-		duplicate := false
-		for _, existing := range roots {
-			if existing == located {
-				duplicate = true
-			}
-		}
-		if !duplicate {
-			roots = append(roots, located)
-		}
-	}
-	return roots
+	return "", fmt.Errorf("%s not found: asr_bin names %s, and %s is not beside it (audio.cpp builds both into the same directory)",
+		serverBinaryName, strings.TrimSpace(c.ASRBin), serverBinaryName)
 }
 
 // FindExecutable returns the first of names present on PATH, or "".

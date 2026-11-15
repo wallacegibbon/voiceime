@@ -59,8 +59,7 @@ voiceime capabilities
 | Key | Default | Notes |
 |---|---|---|
 | `models_dir` | `~/models` | Scanned for GGUF checkpoints. You place files here; voiceime never downloads. |
-| `audio_cpp_dir` | `~/playground/audio.cpp` | Locates `audiocpp_cli`, which the service runs and `--refresh` inspects with. |
-| `asr_bin` | `""` | Explicit `audiocpp_cli`; empty means discover. |
+| `asr_bin` | `""` | `audiocpp_cli`, which the service runs and `--refresh` inspects with; `audiocpp_server` is taken from beside it. `config init` writes what it finds; nothing else searches the filesystem, and `PATH` is the only fallback. |
 | `backend` | `cpu` | `audio.cpp` backend: cpu, cuda, vulkan, hip, metal. |
 | `threads` | `4` | Worker threads for the server. |
 | `model` | `""` | The checkpoint the service serves; empty picks the best installed transcription model. `server install` writes it. |

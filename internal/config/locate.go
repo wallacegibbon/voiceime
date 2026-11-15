@@ -3,73 +3,40 @@ package config
 import (
 	"os"
 	"path/filepath"
-	"strings"
+	"sort"
 )
 
-// This file answers one question: where is the audio.cpp checkout on this
+// serverBinaryName is the resident host that serves offline decodes. It lives beside
+// audiocpp_cli in the same build tree, which is why one recorded path is enough: the
+// settings name the CLI and the server is its sibling.
+const serverBinaryName = "audiocpp_server"
 
-const (
-	audioCPPManagerMarker = "tools/model_manager_v2.py"
-	audioCPPBuildGlob     = "build/*/bin/audiocpp_cli"
-	// serverBinaryName is the resident host that serves offline decodes. It lives
-	// beside audiocpp_cli in the same build tree.
-	serverBinaryName = "audiocpp_server"
-)
+// audioCPPBuildGlob is where a built audio.cpp CLI lives inside a checkout.
+const audioCPPBuildGlob = "build/*/bin/audiocpp_cli"
 
-// IsAudioCPPCheckout reports whether a directory looks like an audio.cpp
-// checkout.
-func IsAudioCPPCheckout(dir string) bool {
-	if dir == "" {
-		return false
+// This file answers one question, and answers it once: is there an audio.cpp CLI on this
+// machine worth pointing asr_bin at. `config init` asks it; nothing else does. Every other
+// command reads the path the settings record, so a build tree appearing, disappearing or
+// changing name later cannot change what is running - see FindASRBinary.
+
+// DiscoverASRBinaries returns the audio.cpp CLIs found on this machine, most plausible
+// first. It returns them all rather than one because a checkout with several build trees
+// (a CPU build and a CUDA build, say) is a decision, and `config init` should show it
+// instead of making it.
+func DiscoverASRBinaries() []string {
+	var found []string
+	for _, root := range checkoutCandidates() {
+		found = appendUnique(found, buildBinaries(root)...)
 	}
-	if info, err := os.Stat(filepath.Join(dir, filepath.FromSlash(audioCPPManagerMarker))); err == nil && !info.IsDir() {
-		return true
-	}
-	matches, _ := filepath.Glob(filepath.Join(dir, filepath.FromSlash(audioCPPBuildGlob)))
-	return len(matches) > 0
+	return found
 }
 
-// LocateAudioCPP returns the first candidate directory that looks like an
-// audio.cpp checkout, or "".
-func LocateAudioCPP(cfg *Config) string {
-	return locateCheckout(checkoutCandidates(cfg))
-}
-
-// locateCheckout is the testable half: given candidates in priority order, return
-// the first that is a checkout.
-func locateCheckout(candidates []string) string {
-	for _, candidate := range candidates {
-		if IsAudioCPPCheckout(candidate) {
-			return candidate
-		}
-	}
-	return ""
-}
-
-func checkoutCandidates(cfg *Config) []string {
+// checkoutCandidates are the directories a checkout plausibly lives in. Only the ones that
+// hold a built CLI are worth returning, so this list is long on purpose: the cost is a
+// handful of stat calls in one command that a human runs once.
+func checkoutCandidates() []string {
 	var candidates []string
-	appendUnique := func(path string) {
-		if path == "" {
-			return
-		}
-		expanded := Expand(path)
-		for _, existing := range candidates {
-			if existing == expanded {
-				return
-			}
-		}
-		candidates = append(candidates, expanded)
-	}
-
-	if cfg != nil {
-		appendUnique(cfg.AudioCPPDir)
-		appendUnique(checkoutFromBinary(cfg.ASRBin))
-	}
-	appendUnique(checkoutFromBinary(os.Getenv("AUDIOCPP_CLI")))
-	appendUnique(checkoutFromBinary(os.Getenv("VOICEIME_ASR_BIN")))
-
-	home, err := os.UserHomeDir()
-	if err == nil {
+	if home, err := os.UserHomeDir(); err == nil {
 		for _, relative := range []string{
 			"audio.cpp",
 			filepath.Join("playground", "audio.cpp"),
@@ -80,29 +47,45 @@ func checkoutCandidates(cfg *Config) []string {
 			filepath.Join("workspace", "audio.cpp"),
 			filepath.Join(".local", "share", "audio.cpp"),
 		} {
-			appendUnique(filepath.Join(home, relative))
+			candidates = append(candidates, filepath.Join(home, relative))
 		}
 	}
 	for _, system := range []string{"/opt/audio.cpp", "/usr/local/src/audio.cpp", "/srv/audio.cpp"} {
-		appendUnique(system)
+		candidates = append(candidates, system)
 	}
 	return candidates
 }
 
-func checkoutFromBinary(binary string) string {
-	if binary == "" {
-		return ""
-	}
-	dir := filepath.Dir(Expand(binary))
-	for range 4 {
-		if IsAudioCPPCheckout(dir) {
-			return dir
+// buildBinaries returns the runnable CLIs one checkout root holds, in a stable order.
+func buildBinaries(root string) []string {
+	matches, _ := filepath.Glob(filepath.Join(root, filepath.FromSlash(audioCPPBuildGlob)))
+	sort.Strings(matches)
+	var found []string
+	for _, match := range matches {
+		if isRunnable(match) {
+			found = append(found, match)
 		}
-		parent := filepath.Dir(dir)
-		if parent == dir || !strings.HasPrefix(parent, string(filepath.Separator)) {
-			return ""
-		}
-		dir = parent
 	}
-	return ""
+	return found
+}
+
+func isRunnable(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir() && info.Mode()&0o111 != 0
+}
+
+func appendUnique(existing []string, add ...string) []string {
+	for _, candidate := range add {
+		duplicate := false
+		for _, have := range existing {
+			if have == candidate {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			existing = append(existing, candidate)
+		}
+	}
+	return existing
 }

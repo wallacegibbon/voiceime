@@ -80,7 +80,9 @@ not applied at all.
 
 ```sh
 "$BIN" apply
-# assert: service:   installed and started (voiceime-asr-server.service)
+# assert: asr_bin:   recorded /home/<user>/.local/bin/audiocpp_cli (what PATH names; …)
+#                    - this line appears once, on a machine that had no audio.cpp on record
+#         service:   installed and started (voiceime-asr-server.service)
 #         serving:   sensevoice-small-q8-audiocpp-v1.gguf
 #         component: /home/<user>/.local/share/voiceime/component/voiceime.xml (written);
 #                    IBus restarted
@@ -92,9 +94,14 @@ not applied at all.
 One command because the work is one decision: the installed machine should look like the
 configuration. What it writes, and why each of those files is needed, is
 [AGENT.md](AGENT.md); the measurements behind the search path and the component registry
-cache are in [ibus-protocol.md](ibus-protocol.md). Three things about running it belong
+cache are in [ibus-protocol.md](ibus-protocol.md). Four things about running it belong
 here:
 
+* It records which audio.cpp to run, on a machine that had not said. An empty `asr_bin` means
+  the answer comes from `PATH` or from a search of the usual checkout places, and either one
+  is written into the settings at once: leaving it empty would ask again next run, and on a
+  machine holding two audio.cpp builds that is how an install ends up served by a different
+  one than it was ([measurements.md](measurements.md)).
 * It waits until the configured checkpoint is resident. A service that is started but still
   loading, or still serving the previous model, has not applied anything.
 * It restarts IBus, and that is asynchronous: `apply` waits for `ibus list-engine` to answer
@@ -118,6 +125,10 @@ gsettings get org.gnome.desktop.input-sources sources
 "$BIN" transcribe --file sample_16k.wav
 # assert: the text, and a took_ms proportional to the recording
 ```
+
+A recording longer than the served model's encoder holds is refused in the model's own words
+(`500 … SenseVoice encoder input exceeds positional capacity`); the numbers measured against
+the default checkpoint are in [measurements.md](measurements.md).
 
 An empty result is a different thing from a broken path, and says so: a recording with no
 speech in it prints a line giving its length and the decode's milliseconds, and still exits

@@ -54,10 +54,12 @@ func cmdRemove() *Command {
 
 // applyReport is one line per thing that reads the configuration.
 type applyReport struct {
-	// ASRBin and OtherBuilds are present only on a machine that had no audio.cpp build
-	// recorded: apply finds one, writes it down, and says which other builds it did not
-	// choose. An install that already names a runnable file never sees these keys.
+	// ASRBin, ASRBinFrom and OtherBuilds are present only on a machine that had no
+	// audio.cpp recorded: apply writes one down, says where the answer came from, and names
+	// the builds it did not choose. An install that already names a runnable file never
+	// sees these keys.
 	ASRBin      string   `json:"asr_bin,omitempty"`
+	ASRBinFrom  string   `json:"asr_bin_from,omitempty"`
 	OtherBuilds []string `json:"other_builds,omitempty"`
 	Service     string   `json:"service"`
 	Served      []string `json:"served,omitempty"`
@@ -95,7 +97,7 @@ func runApply(ctx *Context) error {
 
 	if !ctx.JSON {
 		if report.ASRBin != "" {
-			ctx.Print("asr_bin:   pointed at %s", report.ASRBin)
+			ctx.Print("asr_bin:   recorded %s (%s)", report.ASRBin, report.ASRBinFrom)
 			for _, other := range report.OtherBuilds {
 				ctx.Print("           %s is also built here: choose it with", other)
 				ctx.Print("           `voiceime config set asr_bin %s`", other)
@@ -114,29 +116,45 @@ func runApply(ctx *Context) error {
 	return ctx.Emit("apply", report)
 }
 
-// pointAtASRBuild settles the one fact a new machine's settings cannot know: where audio.cpp
-// was built. It used to be a step of its own (`config init`), which meant a fresh machine
-// needed two commands in the right order and every later command silently did nothing if the
-// first was skipped. It belongs here because this is the command that makes a machine ready:
-// the search runs once, the answer goes into the settings apply is about to act on, and the
-// same report says what was chosen. Afterwards every command reads that recorded path, so a
-// build tree appearing, moving or gaining a second sibling cannot change what a running
-// machine does - see FindASRBinary.
+// pointAtASRBuild settles the one fact a new machine's settings cannot know: which
+// audio.cpp to run. It used to be a step of its own (`config init`), which meant a fresh
+// machine needed two commands in the right order and every later command silently did
+// nothing if the first was skipped. It belongs here because this is the command that makes a
+// machine ready: the answer is settled once, written into the settings apply is about to act
+// on, and reported in the same document as everything else it changed. Afterwards every
+// command reads that recorded path, so a build tree appearing, moving or gaining a second
+// sibling cannot change what a running machine does - see FindASRBinary.
 //
 // Nothing is looked for when the settings already name a runnable file: finding a build is
-// not overwriting a decision. When there is more than one build, the first is chosen and the
-// rest are reported rather than kept to itself: which one to run is a decision about the
-// machine, and the caller is the one who knows it.
+// not overwriting a decision. When the settings name nothing and `PATH` answers, that answer
+// is recorded too. Measured on the reference machine: ~/.local/bin holds an audiocpp_cli
+// that is not the build tree's - 34 MB against 865 MB, different md5s, both files dated the
+// same day - so "ask PATH" is a second choice about which inference runs, made invisibly and
+// changeable by anyone who edits a PATH. An `apply` after such an edit changed which binary
+// served dictation while every command still reported success.
+//
+// Where there is more than one build, the first is chosen and the rest are reported rather
+// than kept to itself: which one to run is a decision about the machine, and the caller is
+// the one who knows it.
 func pointAtASRBuild(ctx *Context, report *applyReport) error {
-	if _, err := ctx.Config.FindASRBinary(); err == nil {
-		return nil
+	if binary, err := ctx.Config.FindASRBinary(); err == nil {
+		if strings.TrimSpace(ctx.Config.ASRBin) != "" {
+			return nil
+		}
+		return recordASRBin(ctx, report, binary, nil, "what PATH names; set it to a build tree's binary to choose explicitly")
 	}
 	found := config.DiscoverASRBinaries()
 	if len(found) == 0 {
 		return nil
 	}
-	ctx.Config.ASRBin = found[0]
-	report.ASRBin, report.OtherBuilds = found[0], found[1:]
+	return recordASRBin(ctx, report, found[0], found[1:], "searched the usual checkout places")
+}
+
+// recordASRBin writes the answer down and says how it was arrived at, because "which
+// audio.cpp" is the one setting whose value a reader cannot check from the settings alone.
+func recordASRBin(ctx *Context, report *applyReport, path string, others []string, how string) error {
+	ctx.Config.ASRBin = path
+	report.ASRBin, report.OtherBuilds, report.ASRBinFrom = path, others, how
 	if err := config.Save(ctx.Config, ctx.ConfigPath); err != nil {
 		return FailureError("cannot record the audio.cpp build in %s: %v", ctx.ConfigPath, err)
 	}

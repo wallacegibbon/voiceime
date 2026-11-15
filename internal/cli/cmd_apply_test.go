@@ -185,6 +185,9 @@ func TestApplyRecordsTheASRBuildOnTheMachine(t *testing.T) {
 		if report.ASRBin != cpu {
 			t.Errorf("asr_bin = %q, want the first build found (%s)", report.ASRBin, cpu)
 		}
+		if !strings.Contains(report.ASRBinFrom, "searched") {
+			t.Errorf("asr_bin_from = %q, want it to say the answer came from the search", report.ASRBinFrom)
+		}
 		if len(report.OtherBuilds) != 1 || !strings.Contains(report.OtherBuilds[0], "cuda") {
 			t.Errorf("other_builds = %v, want the build that was not chosen named", report.OtherBuilds)
 		}
@@ -196,6 +199,40 @@ func TestApplyRecordsTheASRBuildOnTheMachine(t *testing.T) {
 		}
 		if saved.ASRBin != cpu {
 			t.Errorf("%s holds asr_bin = %q, want %s", configPath, saved.ASRBin, cpu)
+		}
+	})
+
+	t.Run("PATH names one", func(t *testing.T) {
+		// Measured on the reference machine, where ~/.local/bin holds an audiocpp_cli that
+		// is not the build tree's. Following PATH is fine for one run; leaving the settings
+		// empty means the next run asks again, and whoever edits a PATH has changed which
+		// inference serves dictation without any command saying so.
+		onPath := filepath.Join(t.TempDir(), "audiocpp_cli")
+		if err := os.WriteFile(onPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", filepath.Dir(onPath))
+
+		ctx, configPath := contextForApply(t)
+		var report applyReport
+		if err := pointAtASRBuild(ctx, &report); err != nil {
+			t.Fatal(err)
+		}
+		if report.ASRBin != onPath {
+			t.Errorf("asr_bin = %q, want the file PATH named (%s)", report.ASRBin, onPath)
+		}
+		if !strings.Contains(report.ASRBinFrom, "PATH") {
+			t.Errorf("asr_bin_from = %q, want it to say the answer came from PATH", report.ASRBinFrom)
+		}
+		if len(report.OtherBuilds) != 0 {
+			t.Errorf("other_builds = %v, want none: nothing is searched when something already answers", report.OtherBuilds)
+		}
+		saved, err := config.Load(configPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if saved.ASRBin != onPath {
+			t.Errorf("%s holds asr_bin = %q, want %s recorded", configPath, saved.ASRBin, onPath)
 		}
 	})
 

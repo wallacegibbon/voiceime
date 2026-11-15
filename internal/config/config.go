@@ -415,8 +415,10 @@ func (c *Config) Set(key, raw string) error {
 // decision someone made about this machine rather than a guess about where a build tree
 // might be. It used to guess - a checkout directory, then build/*/bin/audiocpp_cli under it,
 // preferring the path whose name contained the backend - so adding a second build tree
-// could change which inference a running service performed. Discovery belongs to
-// `voiceime apply`, which writes what it finds into asr_bin and says so.
+// could change which inference a running service performed. Settling it belongs to
+// `voiceime apply`, which writes the answer - what it finds, or what PATH named - into
+// asr_bin and says which it used. Measured on the reference machine, ~/.local/bin and a
+// build tree both hold a runnable audiocpp_cli, of different sizes and md5s.
 func (c *Config) FindASRBinary() (string, error) {
 	if configured := strings.TrimSpace(c.ASRBin); configured != "" {
 		path := Expand(configured)

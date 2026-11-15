@@ -20,6 +20,22 @@ RTF falls as the recording grows (fixed overhead amortises), so the wait after a
 `RTF × the length of what you said`: about 1.6 s for a 35 s sentence with SenseVoice, 4.4 s
 with Qwen3-0.6B. `asr_server_timeout_ms` (30 s) is the ceiling on one decode.
 
+## How long a recording the served model takes
+
+SenseVoice small refuses a recording longer than its encoder can hold, in its own words
+(`voiceime transcribe`, the default checkpoint):
+
+| Recording | Result |
+|---|---|
+| 28 s (real speech) | decodes |
+| 90 s (a 7.5 s clip repeated) | decodes |
+| 418 s | `500 … SenseVoice encoder input exceeds positional capacity` |
+
+The boundary was not narrowed. Nothing in the model's metadata or in the service's
+`/v1/models` answer states a maximum, so voiceime cannot name one and passes the refusal
+through as the server's own sentence. `max_utterance_seconds` (60 s) is inside what was
+accepted here, which is the only reason that default is safe.
+
 ## What the models do with non-speech
 
 Four recordings that contain no speech, sent to both models directly:
@@ -152,6 +168,21 @@ command succeeds a moment later. `voiceime apply` waits for `ibus list-engine` t
 before it reads or sets the session's engine - bounded at 20 s, after which it reports a
 finding instead of hanging. Without that wait `apply` answered "the input method could not be
 selected again", caused by the restart it had just performed itself.
+
+## Which audio.cpp runs is not something the settings said
+
+The reference machine holds two runnable audio.cpp binaries, dated the same day:
+
+| Path | Size | md5 |
+|---|---|---|
+| `~/.local/bin/audiocpp_cli` | 34 MB | `b4e03e71…` |
+| `~/playground/audio.cpp/build/linux-cpu-release/bin/audiocpp_cli` | 865 MB | `ce548d18…` |
+
+With `asr_bin` empty, `FindASRBinary` takes the first because it is on `PATH`, and
+`audiocpp_server` is taken from beside it - so a deploy that never named one was served by a
+different host than the one an earlier configuration had recorded, and every command called
+that a success. That is why `voiceime apply` records the answer it used, search or `PATH`
+whichever answered, instead of leaving the setting empty for the next run to re-derive.
 
 ## Not measured
 

@@ -80,7 +80,7 @@ Two more commands are entry points for other programs, not commands to run by ha
 
 | Key | Default | Notes |
 |---|---|---|
-| `asr_bin` | `""` | `audiocpp_cli`: the audio.cpp CLI, used to report which backends this build supports. `audiocpp_server` is taken from beside it. **A property of this machine.** `voiceime apply` records the build it finds when this is empty; nothing else searches the filesystem, and `PATH` is the only fallback. |
+| `asr_bin` | `""` | `audiocpp_cli`: the audio.cpp CLI, used to report which backends this build supports. `audiocpp_server` is taken from beside it. **A property of this machine.** When this is empty, `voiceime apply` records the answer it used - what `PATH` names, or the build it finds - so that no later change to `PATH` or to the build trees can move a running machine. Nothing else searches the filesystem. |
 | `backend` | `cpu` | `audio.cpp` backend: cpu, cuda, vulkan, hip, metal. cpu works everywhere; a GPU needs an audio.cpp build with that backend. |
 | `threads` | `4` | Worker threads for the server. **A property of this machine:** more threads than physical cores contend rather than help, and `doctor` reports it as the `threads` finding. |
 | `model` | `""` | **Required.** The GGUF the service serves and the engine transcribes with. Nothing picks it for you: no scan, no download. |

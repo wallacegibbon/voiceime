@@ -208,7 +208,6 @@ func runCapabilities(ctx *Context, args []string) error {
 			"usage":        ExitUsage,
 			"precondition": ExitPrecondition,
 		},
-		"environment": environment(ctx),
 		"docs": []string{
 			"docs/AGENT.md",
 			"docs/DEPLOY.md",
@@ -233,46 +232,6 @@ func commandNames() string {
 		names = append(names, command.Name)
 	}
 	return strings.Join(names, ", ")
-}
-
-// environment is the discovery result an agent needs before it can configure
-// anything: which programs are present, and whether the session can carry text.
-func environment(ctx *Context) map[string]any {
-	environment := map[string]any{}
-
-	if binary, err := ctx.Config.FindASRBinary(); err == nil {
-		environment["asr_bin"] = binary
-		if version, err := probe(binary, "--version"); err == nil {
-			environment["asr_version"] = firstLine(version)
-			environment["asr_backends_line"] = lastLineMatching(version, "backends:")
-		}
-	} else {
-		environment["asr_bin"] = nil
-	}
-
-	// The named checkpoint, as the file itself describes it. "How many GGUFs are around"
-	// is not a question this tool answers: one file is named and the rest are somebody
-	// else's.
-	if path := strings.TrimSpace(ctx.Config.Model); path != "" {
-		expanded := config.Expand(path)
-		environment["model"] = expanded
-		if info, err := model.Open(expanded); err == nil {
-			environment["model_family"] = info.Family
-			environment["model_size_bytes"] = info.SizeBytes
-		} else {
-			environment["model_error"] = err.Error()
-		}
-	}
-
-	environment["capture_tool"] = config.FindExecutable("parec", "pw-record")
-	environment["play_tool"] = config.FindExecutable("pw-play", "paplay", "canberra-gtk-play")
-	environment["notify_tool"] = config.FindExecutable("notify-send")
-	environment["default_source"] = defaultSource()
-	environment["wayland_display"] = os.Getenv("WAYLAND_DISPLAY")
-	environment["display"] = os.Getenv("DISPLAY")
-
-	environment["ibus"] = ibusState()
-	return environment
 }
 
 func lastLineMatching(text, prefix string) string {

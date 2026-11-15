@@ -2,8 +2,8 @@
 
 Everything here is non-interactive and `--json` on request, so an agent can install,
 configure and verify voiceime by reading this file and running commands.
-`voiceime capabilities --json` prints the same surface at runtime, derived from the code;
-if the two disagree, the runtime wins.
+`voiceime capabilities --json` prints the same surface at runtime, derived from the code
+(machine state is `doctor`'s, never repeated here); if the two disagree, the runtime wins.
 
 **Scope.** Commands and settings. The procedure for a new machine is
 [DEPLOY.md](DEPLOY.md); the recognition path is [asr.md](asr.md); what the engine sends over
@@ -37,7 +37,7 @@ voiceime config path|show|get|set
 voiceime model                                   # the checkpoint the configuration names
 voiceime doctor                                  # every prerequisite, machine-readable
 voiceime transcribe [--file recording.wav | --seconds N]
-voiceime capabilities                            # this surface, derived from the code
+voiceime capabilities                            # the surface: commands, settings, paths, exit codes
 ```
 
 Two more commands are entry points for other programs, not commands to run by hand:

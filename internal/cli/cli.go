@@ -363,8 +363,8 @@ func writeHelp(w io.Writer) {
 		fmt.Fprintf(w, "  %-14s %s\n", command.Name, command.Summary)
 	}
 	fmt.Fprint(w, "\nGlobal flags (accepted before or after the command):\n")
-	fmt.Fprint(w, "  --json           print one JSON object on stdout / errors on stderr\n")
-	fmt.Fprint(w, "  --pretty         indent that JSON\n")
+	fmt.Fprint(w, "  --json           one JSON object on stdout (errors on stderr); no human lines\n")
+	fmt.Fprint(w, "  --pretty         indent that JSON (it changes nothing without --json)\n")
 	fmt.Fprint(w, "  --config <path>  configuration file (default "+config.DefaultPath()+")\n")
 	fmt.Fprint(w, "\n`ibus-engine` is started by ibus-daemon and `server run` by the service unit: they are\nentry points, not commands to run by hand.\n")
 	fmt.Fprint(w, "\nEvery command is non-interactive and idempotent; docs/AGENT.md has recipes.\n")

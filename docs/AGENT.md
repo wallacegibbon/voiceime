@@ -13,7 +13,11 @@ numbers are in [measurements.md](measurements.md).
 ## Ground rules
 
 * **No prompts, no GUI.** A decision is a flag or a setting.
-* **`--json` may be placed anywhere** on the command line.
+* **`--json` may be placed anywhere** on the command line. It is the switch from a report a
+  person reads to the contract above: `data` on stdout, the error object on stderr, and no
+  prose on either. `--pretty` only indents that object - it does nothing on its own, and
+  unindented output is what the `grep` assertions in DEPLOY.md rely on, so both modes are
+  kept on purpose.
 * **One JSON object per invocation**: `{"command":…,"ok":true,"data":{…}}` on stdout, or
   `{"command":…,"ok":false,"error":{"kind":…,"message":…,"fix":…},"exit_code":N}` on stderr.
 

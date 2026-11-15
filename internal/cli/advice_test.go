@@ -11,14 +11,13 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/wallacegibbon/voiceime/internal/config"
 )
 
 // Advice names commands, and the commands live in another file. Deleting one leaves every
 // "run `voiceime …`" sentence behind pointing at nothing, which is exactly the un-followable
 // advice this project keeps finding in other people's tools - so the tree says so.
-//
-// Only string literals are read: those are the sentences a caller acts on. Comments may talk
-// about a command that used to exist, and do.
 func TestAdviceNamesACommandThatExists(t *testing.T) {
 	byName := map[string]*Command{"help": {}}
 	for _, command := range commands() {
@@ -26,9 +25,72 @@ func TestAdviceNamesACommandThatExists(t *testing.T) {
 	}
 
 	root := repositoryRoot(t)
-	fset := token.NewFileSet()
 	checked := 0
-	err := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
+	if err := walkStringLiterals(root, func(path, value string) {
+		for _, advice := range adviceIn(value) {
+			checked++
+			command, known := byName[advice.command]
+			if !known {
+				t.Errorf("%s: %q names no command (run `voiceime help`)", path, advice.text)
+				continue
+			}
+			// The action is checked too: `config apply` was a real action of a real
+			// command, and deleting the action is the drift that actually happens.
+			if advice.action != "" && len(command.Actions) > 0 &&
+				!slices.Contains(command.Actions, advice.action) {
+				t.Errorf("%s: %q: %s takes no action %q (it takes %s)", path, advice.text,
+					advice.command, advice.action, strings.Join(command.Actions, ", "))
+			}
+		}
+	}); err != nil {
+		t.Fatalf("reading the source: %v", err)
+	}
+	// A check that silently matched nothing is a check that passed by accident, so the
+	// count is part of the assertion.
+	if checked < 50 {
+		t.Fatalf("only %d pieces of advice checked: the pattern stopped matching", checked)
+	}
+	t.Logf("checked %d pieces of advice across the module", checked)
+}
+
+// Advice names settings too, and those are defined in another package. `config set
+// audio_cpp_dir /path/to/audio.cpp` was advice in a doctor finding: a whole path, ready to
+// run, for a setting that does not exist - and no command existed to notice. The settings the
+// tool actually has are one call away, so the tree checks them.
+func TestAdviceNamesASettingThatExists(t *testing.T) {
+	keys := map[string]bool{}
+	for _, field := range config.Default().Fields() {
+		keys[field.Key] = true
+	}
+
+	root := repositoryRoot(t)
+	checked := 0
+	if err := walkStringLiterals(root, func(path, value string) {
+		for _, match := range configSettingRE.FindAllStringSubmatch(value, -1) {
+			checked++
+			if !keys[match[1]] {
+				t.Errorf("%s: %q names no setting (run `voiceime capabilities` for the list)", path, match[0])
+			}
+		}
+	}); err != nil {
+		t.Fatalf("reading the source: %v", err)
+	}
+	if checked < 10 {
+		t.Fatalf("only %d setting references checked: the pattern stopped matching", checked)
+	}
+	t.Logf("checked %d references to settings across the module", checked)
+}
+
+// configSettingRE matches the advice form, not the code: a Fix or message sentence that tells
+// someone which key to write.
+var configSettingRE = regexp.MustCompile(`voiceime config (?:set|get) ([a-z_]+)`)
+
+// walkStringLiterals calls visit with the value of every string literal in the module's Go
+// files. Only literals are read: those are the sentences a caller acts on. Comments may talk
+// about a command or a setting that used to exist, and do.
+func walkStringLiterals(root string, visit func(path, value string)) error {
+	fset := token.NewFileSet()
+	return filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -56,36 +118,11 @@ func TestAdviceNamesACommandThatExists(t *testing.T) {
 			if unErr != nil {
 				return true
 			}
-			for _, advice := range adviceIn(value) {
-				checked++
-				position := fset.Position(literal.Pos())
-				where := strings.TrimPrefix(position.String(), root+string(filepath.Separator))
-				command, known := byName[advice.command]
-				if !known {
-					t.Errorf("%s: %q names no command (run `voiceime help`)", where, advice.text)
-					continue
-				}
-				// The action is checked too: `config apply` was a real action of a real
-				// command, and deleting the action is the drift that actually happens.
-				if advice.action != "" && len(command.Actions) > 0 &&
-					!slices.Contains(command.Actions, advice.action) {
-					t.Errorf("%s: %q: %s takes no action %q (it takes %s)", where, advice.text,
-						advice.command, advice.action, strings.Join(command.Actions, ", "))
-				}
-			}
+			visit(strings.TrimPrefix(fset.Position(literal.Pos()).String(), root+string(filepath.Separator)), value)
 			return true
 		})
 		return nil
 	})
-	if err != nil {
-		t.Fatalf("reading the source: %v", err)
-	}
-	// A check that silently matched nothing is a check that passed by accident, so the
-	// count is part of the assertion.
-	if checked < 50 {
-		t.Fatalf("only %d pieces of advice checked: the pattern stopped matching", checked)
-	}
-	t.Logf("checked %d pieces of advice across the module", checked)
 }
 
 // advice is one reference to a command inside a string literal, and how it is written decides

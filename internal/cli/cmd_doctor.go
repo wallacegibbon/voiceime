@@ -84,7 +84,10 @@ func runDoctor(ctx *Context) []Check {
 			ID:     "audio_cpp",
 			Status: "fail",
 			Detail: "audiocpp_cli not found",
-			Fix:    "voiceime config set audio_cpp_dir /path/to/audio.cpp  (or set asr_bin)",
+			// `apply` looks for a build and records it, which is the part a caller cannot
+			// be asked to get right first: the path has to come from the machine.
+			Fix: "build audio.cpp, then `voiceime apply` " +
+				"(or name the build with `voiceime config set asr_bin /path/to/audio.cpp/build/<backend>/bin/audiocpp_cli`)",
 		})
 	} else {
 		detail := asrBinary

@@ -105,7 +105,16 @@ func runTranscribe(ctx *Context, file string, seconds float64) error {
 		text = normalizer.Normalize(text)
 	}
 	text = textnorm.Final(text)
-	ctx.Print("%s", text)
+	if text == "" {
+		// An empty decode is an answer, not a failure: the audio went in and the model
+		// found no words in it. This command is how a deploy proves the path, and an empty
+		// stdout with exit 0 reads as a crash, so the line says which of the two it was -
+		// with the two numbers that show the path carried the audio.
+		ctx.Print("(no words recognized in %.1fs of audio; the decode took %dms, so the path works and the recording had nothing in it)",
+			recorded, took.Milliseconds())
+	} else {
+		ctx.Print("%s", text)
+	}
 	return ctx.Emit("transcribe", map[string]any{
 		"text":     text,
 		"seconds":  recorded,

@@ -119,6 +119,12 @@ gsettings get org.gnome.desktop.input-sources sources
 # assert: the text, and a took_ms proportional to the recording
 ```
 
+An empty result is a different thing from a broken path, and says so: a recording with no
+speech in it prints a line giving its length and the decode's milliseconds, and still exits
+0. `--json` has always said the same thing with `"text": ""` and the timing; the line is
+there because this command is what a deploy runs to prove the path, and an empty stdout with
+exit 0 reads as a crash.
+
 ## 6. Use it
 
 Super+Space (or the top-right menu) selects **English (Voice)**. The engine declares the

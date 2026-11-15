@@ -3,6 +3,13 @@
 # Every target is non-interactive and idempotent, for the same reason the program
 # itself is: a person or an agent should be able to drive this without a GUI and
 # without answering questions. `make help` lists what exists.
+#
+# One build tree, one platform. There used to be a `cross` target for a
+# windows/darwin/arm64 matrix and a `dist` target for a release tarball: the
+# binaries built, and nothing else did - the other half of this tool is
+# ibus-daemon, a systemd user unit and PipeWire - and there was no release to
+# package, since `VERSION` comes from `git describe` and nothing is tagged.
+# Installing is `make install`, from a checkout, by whoever is deploying.
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
@@ -27,9 +34,6 @@ LDFLAGS     ?= -s -w -X $(PKG)/internal/cli.Version=$(VERSION)
 # D-Bus. Pinned here rather than in the environment so a stray CGO_ENABLED=1
 # cannot quietly reintroduce a toolkit dependency.
 export CGO_ENABLED := 0
-# Targets for the multi-platform roadmap. Kept explicit: each one is something we
-# intend to support, not an arbitrary matrix.
-PLATFORMS   ?= linux/amd64 linux/arm64 windows/amd64 darwin/arm64
 
 # The unreachable-code check is fetched at a pinned version rather than required
 # in go.mod: the newest golang.org/x/tools needs Go 1.26, which would raise this
@@ -77,30 +81,6 @@ uninstall: ## Remove the installed binary, docs and licences
 	rm -f $(DESTDIR)$(PREFIX)/licenses/opencc/LICENSE $(DESTDIR)$(PREFIX)/licenses/opencc/NOTICE
 	-rmdir $(DESTDIR)$(PREFIX)/licenses/opencc $(DESTDIR)$(PREFIX)/licenses 2>/dev/null
 
-.PHONY: dist
-dist: build ## Package a release tarball under dist/
-	@mkdir -p dist
-	@name=$(BINARY)-$(VERSION)-linux-amd64; \
-	rm -rf dist/$$name; mkdir -p dist/$$name/docs dist/$$name/licenses/opencc; \
-	cp $(BIN_DIR)/$(BINARY) dist/$$name/; \
-	cp README.md dist/$$name/; \
-	cp docs/*.md dist/$$name/docs/; \
-	cp internal/textnorm/data/LICENSE internal/textnorm/data/NOTICE dist/$$name/licenses/opencc/; \
-	tar -C dist -czf dist/$$name.tar.gz $$name; \
-	rm -rf dist/$$name; \
-	echo "dist/$$name.tar.gz"
-
-.PHONY: cross
-cross: ## Cross-compile for the platforms in PLATFORMS
-	@mkdir -p $(BIN_DIR)
-	@for platform in $(PLATFORMS); do \
-		export GOOS=$${platform%/*} GOARCH=$${platform#*/}; \
-		suffix=$${GOOS}-$${GOARCH}; \
-		[ "$$GOOS" = windows ] && suffix=$$suffix.exe; \
-		echo "building $(BIN_DIR)/$(BINARY)-$$suffix"; \
-		$(GO) build $(GOFLAGS) -trimpath -ldflags '$(LDFLAGS)' \
-			-o $(BIN_DIR)/$(BINARY)-$$suffix ./cmd/voiceime || exit 1; \
-	done
 
 # --- quality ---------------------------------------------------------------- #
 
@@ -204,7 +184,7 @@ verify: check doctor ## Run the tests and then check the machine
 
 .PHONY: clean
 clean: ## Remove build output
-	rm -rf $(BIN_DIR) dist
+	rm -rf $(BIN_DIR)
 
 .PHONY: help
 help: ## List the available targets
@@ -214,4 +194,4 @@ help: ## List the available targets
 	@echo
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 	@echo
-	@echo "variables: BIN_DIR=$(BIN_DIR) PREFIX=$(PREFIX) VERSION=$(VERSION) PLATFORMS='$(PLATFORMS)'"
+	@echo "variables: BIN_DIR=$(BIN_DIR) PREFIX=$(PREFIX) VERSION=$(VERSION)"

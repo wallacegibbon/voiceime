@@ -87,34 +87,41 @@ func TestComponentEnvironmentVerdict(t *testing.T) {
 	}
 }
 
+// The reference is the binary the machine is configured to run, not the binary running
+// doctor: the function has no parameter for that, because a doctor run out of a build
+// directory is a third copy of the program and measuring against it reported a healthy
+// install as three warnings that nothing could clear.
 func TestRunningBinaryVerdict(t *testing.T) {
 	dir := t.TempDir()
-	existing := filepath.Join(dir, "voiceime")
-	if err := os.WriteFile(existing, []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatal(err)
+	installed := filepath.Join(dir, "installed", "voiceime")
+	build := filepath.Join(dir, "checkout", "bin", "voiceime")
+	for _, path := range []string{installed, build} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 	moved := filepath.Join(dir, "gone", "voiceime")
-	ourselves := filepath.Join(dir, "other-voiceime")
 
 	cases := []struct {
 		name     string
 		running  string
 		want     string
+		status   string
 		contains string
 	}{
-		{"same binary", ourselves, "ok", "pid"},
-		{"a different install", existing, "warn", "not this binary"},
-		{"rebuilt in place", existing + " (deleted)", "warn", "previous build"},
-		{"checkout moved", moved + " (deleted)", "fail", "moved or renamed"},
+		{"the configured binary", installed, installed, "ok", "pid"},
+		{"started by hand from a build directory", build, installed, "warn", "configured to run"},
+		{"rebuilt in place", installed + " (deleted)", installed, "warn", "previous build"},
+		{"the checkout moved", moved + " (deleted)", installed, "fail", "moved or renamed"},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
-			status, detail, ok := runningBinaryVerdict(process{PID: 42, Binary: test.running}, ourselves)
-			if !ok {
-				t.Fatal("verdict was skipped")
-			}
-			if status != test.want {
-				t.Errorf("status = %q, want %q (detail: %s)", status, test.want, detail)
+			status, detail := runningBinaryVerdict(process{PID: 42, Binary: test.running}, test.want, "the engine")
+			if status != test.status {
+				t.Errorf("status = %q, want %q (detail: %s)", status, test.status, detail)
 			}
 			if !contains(detail, test.contains) {
 				t.Errorf("detail = %q, want it to mention %q", detail, test.contains)
@@ -123,17 +130,19 @@ func TestRunningBinaryVerdict(t *testing.T) {
 	}
 }
 
-func TestRunningKindsCoverTheResidentProcesses(t *testing.T) {
-	ids := map[string]string{}
-	for _, kind := range runningKinds {
-		ids[kind.id] = kind.fix
-		if kind.pattern == "" || kind.fix == "" {
-			t.Errorf("%s needs both a pattern and a fix", kind.id)
+// One finding covers both resident processes, so a table of kinds is what keeps them in
+// the report rather than a list of check IDs.
+func TestResidentKindsCoverTheResidentProcesses(t *testing.T) {
+	names := map[string]bool{}
+	for _, kind := range residentKinds {
+		names[kind.name] = true
+		if kind.pattern == "" || kind.configured == nil {
+			t.Errorf("%s needs both a process pattern and a configured-binary lookup", kind.name)
 		}
 	}
-	for _, id := range []string{"engine_process", "server_process"} {
-		if ids[id] == "" {
-			t.Errorf("runningKinds lost %s: a stale %s is then invisible to doctor", id, id)
+	for _, name := range []string{"the engine", "the recognition service"} {
+		if !names[name] {
+			t.Errorf("residentKinds lost %s: a stale %s is then invisible to doctor", name, name)
 		}
 	}
 }

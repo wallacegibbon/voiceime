@@ -12,7 +12,7 @@ import (
 func installChecks(ctx *Context, report func(Check)) {
 	componentExecCheck(ctx, report)
 	componentEnvironmentCheck(ctx, report)
-	runningBinaryChecks(ctx, report)
+	runningBuildCheck(ctx, report)
 }
 
 func componentExecCheck(ctx *Context, report func(Check)) {
@@ -112,60 +112,105 @@ func unitExecStart(path string) (string, error) {
 	return "", fmt.Errorf("%s: no ExecStart line", path)
 }
 
-var runningKinds = []struct {
-	id      string
+// residentKind is one of the two long-lived voiceime processes: how to find it, and where
+// the binary it is supposed to run is recorded.
+type residentKind struct {
+	name    string
 	pattern string
-	fix     string
-}{
-	{"engine_process", "ibus-engine", "voiceime config apply"},
-	// The service holds the models, so a stale one serves old inference while every
-	// other check passes: server_unit verifies the unit's path, asr_server the answers.
-	{"server_process", "server run", "voiceime config apply"},
+	// configured is that record: the exec of the component file for the engine, the
+	// ExecStart of the unit for the service.
+	configured func() (string, bool)
 }
 
-func runningBinaryChecks(ctx *Context, report func(Check)) {
-	ourselves, err := os.Executable()
-	if err != nil {
-		return
+var residentKinds = []residentKind{
+	{"the engine", "ibus-engine", componentBinaryPath},
+	// The service holds the models, so a stale one serves old inference while every
+	// other check passes.
+	{"the recognition service", "server run", servedBinaryPath},
+}
+
+func componentBinaryPath() (string, bool) {
+	exec, err := ibus.ComponentExec(ibus.ComponentPath())
+	return exec, err == nil && exec != ""
+}
+
+func servedBinaryPath() (string, bool) {
+	path := serverUnitPath()
+	if path == "" {
+		return "", false
 	}
-	for _, kind := range runningKinds {
+	exec, err := unitExecStart(path)
+	return exec, err == nil && exec != ""
+}
+
+// runningBuildCheck answers one question - do the resident processes run the binaries this
+// machine is configured to run - as one finding with one fix.
+//
+// The reference is those recorded paths, never os.Executable(). Doctor is usually run from
+// a build directory, which makes it a third copy of the program: measured against itself it
+// reported the engine, the service and the unit as three warnings pointing at two different
+// commands, and no action made them go away.
+func runningBuildCheck(ctx *Context, report func(Check)) {
+	var healthy, stale []string
+	worst := "ok"
+	for _, kind := range residentKinds {
 		processes := processesRunning(kind.pattern)
 		if len(processes) == 0 {
 			continue
 		}
-		status, detail, ok := runningBinaryVerdict(processes[0], ourselves)
-		if !ok {
+		want, recorded := kind.configured()
+		if !recorded {
+			// component_exec and server_unit already report a missing component or unit;
+			// a second finding about the same absence would only lengthen the report.
 			continue
 		}
-		check := Check{ID: kind.id, Status: status, Detail: detail}
-		// The fix is only offered when something is wrong: printing a restart
-		// command under an ok finding invites an agent to restart a healthy
-		// process, which would drop the user's current dictation session.
-		if status != "ok" {
-			check.Fix = kind.fix
+		status, detail := runningBinaryVerdict(processes[0], want, kind.name)
+		switch status {
+		case "ok":
+			healthy = append(healthy, detail)
+		case "fail":
+			worst = "fail"
+			stale = append(stale, detail)
+		default:
+			if worst != "fail" {
+				worst = "warn"
+			}
+			stale = append(stale, detail)
 		}
-		report(check)
 	}
+	if len(healthy)+len(stale) == 0 {
+		return
+	}
+	if len(stale) == 0 {
+		report(Check{ID: "running_build", Status: "ok", Detail: strings.Join(healthy, "; ")})
+		return
+	}
+	// The fix is only offered when something is wrong: printing a restart command under an
+	// ok finding invites an agent to restart a healthy process, which would drop the user's
+	// current dictation session.
+	report(Check{ID: "running_build", Status: worst, Detail: strings.Join(stale, "; "), Fix: "voiceime config apply"})
 }
 
-// runningBinaryVerdict classifies the binary a running process came from.
-func runningBinaryVerdict(running process, ourselves string) (status, detail string, ok bool) {
+// runningBinaryVerdict classifies the binary a running process came from against the path
+// this machine is configured to run for it.
+func runningBinaryVerdict(running process, want, name string) (status, detail string) {
 	binary := running.Binary
-	if binary == ourselves {
-		return "ok", fmt.Sprintf("pid %d, %s", running.PID, ourselves), true
-	}
-	if !strings.HasSuffix(binary, " (deleted)") {
-		return "warn", fmt.Sprintf("pid %d is running %s, not this binary (%s)", running.PID, binary, ourselves), true
+	if binary == want {
+		return "ok", fmt.Sprintf("pid %d, %s", running.PID, want)
 	}
 	original := strings.TrimSuffix(binary, " (deleted)")
 	if !fileExists(original) {
 		return "fail", fmt.Sprintf(
 			"pid %d is running %s, which no longer exists: the checkout was moved or renamed, and the process will fail as soon as it is restarted",
-			running.PID, original), true
+			running.PID, original)
+	}
+	if original == want {
+		return "warn", fmt.Sprintf(
+			"pid %d is still running the previous build of %s; restart it for rebuilt code to take effect",
+			running.PID, original)
 	}
 	return "warn", fmt.Sprintf(
-		"pid %d is still running the previous build of %s; restart it for rebuilt code to take effect",
-		running.PID, original), true
+		"pid %d is running %s, but %s is configured to run %s", running.PID, original, name, want)
 }
 
 // process is one running voiceime process.
@@ -264,13 +309,14 @@ func serverUnitCheck(ctx *Context, report func(Check)) {
 		})
 		return
 	}
-	// The installed copy is what `make install` updates, so a unit pointing anywhere else
-	// is a service that does not follow the installation.
-	if self, err := os.Executable(); err == nil && filepath.Clean(self) != filepath.Clean(exec) {
+	// The component file and the unit are two records of the same install. When they name
+	// different binaries, `make install` updates one of them and the other keeps running the
+	// previous build - which no other check sees.
+	if want, recorded := componentBinaryPath(); recorded && filepath.Clean(want) != filepath.Clean(exec) {
 		report(Check{
 			ID:     "server_unit",
 			Status: "warn",
-			Detail: fmt.Sprintf("the unit runs %s, not this installed binary (%s): `make install` does not update the running service", exec, self),
+			Detail: fmt.Sprintf("the unit runs %s while the component file runs %s: the engine and the service are different builds", exec, want),
 			Fix:    "voiceime server install",
 		})
 		return

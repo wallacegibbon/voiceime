@@ -78,7 +78,7 @@ func runEngineInstall(ctx *Context, system, apply, quiet bool) error {
 		}
 		// The component is system-wide; the list the desktop's own switcher reads is
 		// per user, so it is written here either way.
-		desktop, desktopReport := addInputSource(ctx.Config.IBusEngineName)
+		desktop, desktopReport := addInputSource(ibus.EngineName)
 		if !quiet {
 			ctx.Print("desktop: %s", desktop)
 		}
@@ -160,7 +160,7 @@ func runEngineInstall(ctx *Context, system, apply, quiet bool) error {
 
 	// The desktop's own switcher is built from its input-source list, not from the engines
 	// ibus-daemon knows: without this entry the menu cannot show the engine at all.
-	desktop, desktopReport := addInputSource(ctx.Config.IBusEngineName)
+	desktop, desktopReport := addInputSource(ibus.EngineName)
 	if !quiet {
 		ctx.Print("desktop: %s", desktop)
 	}
@@ -188,7 +188,7 @@ func runEngineUninstall(ctx *Context) error {
 	if err != nil {
 		return FailureError("cannot remove %s: %v", ibus.EnvironmentFile(), err)
 	}
-	removed, sourceReport := removeInputSource(ctx.Config.IBusEngineName)
+	removed, sourceReport := removeInputSource(ibus.EngineName)
 	ctx.Print("component removed from %s", ibus.ComponentDir())
 	if environmentRemoved {
 		ctx.Print("removed %s, so a new login stops naming that directory", ibus.EnvironmentFile())
@@ -268,18 +268,18 @@ func runEngineStatus(ctx *Context) error {
 		"environment_file":    ibus.EnvironmentFile(),
 		"environment_set":     ibus.EnvironmentSet(),
 		"system_component":    ibus.SystemInstalled(),
-		"engine_name":         ctx.Config.IBusEngineName,
+		"engine_name":         ibus.EngineName,
 		"engine_registered":   registered,
 		"detail":              detail,
 		"log":                 engineLogPath(),
 	}
 	if listing, err := probe("ibus", "list-engine"); err == nil {
-		state["engine_visible"] = listEngineContains(listing, ctx.Config.IBusEngineName)
+		state["engine_visible"] = listEngineContains(listing, ibus.EngineName)
 	}
 	if current, err := probe("ibus", "engine"); err == nil {
 		state["current_engine"] = firstLine(current)
 	}
-	listed, listErr := gnome.HasInputSource(engineInputSource(ctx.Config.IBusEngineName))
+	listed, listErr := gnome.HasInputSource(engineInputSource(ibus.EngineName))
 	switch {
 	case listErr != nil:
 		state["gnome_input_source"] = map[string]any{"supported": false, "error": listErr.Error()}
@@ -289,7 +289,7 @@ func runEngineStatus(ctx *Context) error {
 		state["gnome_input_source"] = map[string]any{"supported": true, "listed": false}
 	}
 	ctx.Print("component: %s (installed: %v)", ibus.ComponentPath(), ibus.Installed())
-	ctx.Print("engine %s registered: %v", ctx.Config.IBusEngineName, registered)
+	ctx.Print("engine %s registered: %v", ibus.EngineName, registered)
 	// The component directory is only scanned because a variable names it, and that
 	// variable lives in the session unless something writes it down. This is the line
 	// that answers "it worked before I rebooted".
@@ -324,7 +324,7 @@ func engineRegistered(ctx *Context) (bool, string) {
 	if err != nil {
 		return false, "ibus list-engine failed: " + err.Error()
 	}
-	if listEngineContains(listing, ctx.Config.IBusEngineName) {
+	if listEngineContains(listing, ibus.EngineName) {
 		return true, ""
 	}
 	return false, "not listed by ibus: run `voiceime engine install --apply`"

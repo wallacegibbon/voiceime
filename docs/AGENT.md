@@ -70,7 +70,6 @@ voiceime capabilities
 | `asr_server_timeout_ms` | `30000` | Deadline for one transcription. |
 | `capture_source` | `""` | PipeWire source name; empty uses the default input. |
 | `push_to_talk` | `<Control>grave` | Held down to dictate; the release transcribes. Needs a modifier. |
-| `ibus_engine_name` | `voiceime` | IBus engine name; also the input-source id. |
 | `request_options` | `{}` | Extra audio.cpp request options for the served model, `key=value`. |
 
 Things every setting shares: `voiceime config set` writes the file atomically, validates

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"sort"
 	"strings"
 	"testing"
 )
@@ -21,16 +22,22 @@ func TestReviewDefaultsNamesTheSettingsThatAreNotPortable(t *testing.T) {
 	for _, review := range reviews {
 		byKey[review.Key] = review
 	}
-	for _, want := range []string{"asr_bin", "threads", "backend", "language", "text_script", "push_to_talk"} {
-		if _, found := byKey[want]; !found {
-			t.Errorf("%s is not reviewed", want)
-		}
+	// The list is exactly this, and an exhaustive comparison is what keeps it that way:
+	// the list is only useful if it is short enough to actually read, so a setting that is
+	// portable - a timeout, an engine name, anything whose value is not a property of the
+	// machine - has to be argued for before it can be added.
+	want := []string{"asr_bin", "backend", "language", "push_to_talk", "text_script", "threads"}
+	var got []string
+	for _, review := range reviews {
+		got = append(got, review.Key)
 	}
-	// Settings that are portable must not be on the list: the list is only useful
-	// if it is short enough to actually review.
-	for _, unwanted := range []string{"asr_server_timeout_ms", "max_utterance_seconds", "ibus_engine_name", "request_options"} {
-		if _, found := byKey[unwanted]; found {
-			t.Errorf("%s is reviewed, but its value is not a property of the machine", unwanted)
+	sort.Strings(got)
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("reviewed settings = %v, want exactly %v", got, want)
+	}
+	for _, setting := range want {
+		if _, found := byKey[setting]; !found {
+			t.Errorf("%s is not reviewed", setting)
 		}
 	}
 

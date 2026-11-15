@@ -13,6 +13,14 @@ import (
 // DefaultComponentName is the well-known bus name the engine process requests.
 const DefaultComponentName = "org.freedesktop.IBus.Voiceime"
 
+// EngineName is the identity of this engine: what `ibus engine <name>` addresses, what the
+// component file declares, and what the desktop's input-source list stores. It is a name and
+// not a preference - the label in the panel comes from the component's longname - and the
+// install, the status checks and the input source all have to agree on it, so it lives here
+// rather than in the settings, where a typo would leave an installed engine that no command
+// can find.
+const EngineName = "voiceime"
+
 // FactoryPath is where the daemon looks for CreateEngine on the engine process.
 const FactoryPath = "/org/freedesktop/IBus/Factory"
 

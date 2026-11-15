@@ -93,7 +93,7 @@ func applyConfig(ctx *Context) error {
 	}
 	// Not fatal on its own: an engine missing from this list still receives keystrokes,
 	// it just cannot be shown by the desktop or switched to from its menu.
-	report.Desktop, _ = addInputSource(ctx.Config.IBusEngineName)
+	report.Desktop, _ = addInputSource(ibus.EngineName)
 	report.Engine = dropEngines()
 
 	if !ctx.JSON {
@@ -158,7 +158,7 @@ func dropEngines() string {
 
 func withConfiguredEngine(installed ibus.Component, cfg *config.Config) ibus.Component {
 	updated := installed
-	updated.EngineName = cfg.IBusEngineName
+	updated.EngineName = ibus.EngineName
 	return updated
 }
 
@@ -574,7 +574,7 @@ func ibusState(ctx *Context) map[string]any {
 	state["component_path"] = ibus.ComponentPath()
 	state["component_installed"] = fileExists(ibus.ComponentPath())
 	if listing, err := probe("ibus", "list-engine"); err == nil {
-		state["engine_registered"] = listEngineContains(listing, ctx.Config.IBusEngineName)
+		state["engine_registered"] = listEngineContains(listing, ibus.EngineName)
 	} else {
 		state["engine_registered"] = false
 	}

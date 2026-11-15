@@ -94,7 +94,7 @@ func appendToFile(t *testing.T, path, text string) {
 	}
 }
 
-// `config apply` owns the engine name and language in the installed component.
+// `config apply` owns the engine language in the installed component.
 func TestWithConfiguredEngineAppliesOnlyWhatTheConfigOwns(t *testing.T) {
 	cfg := config.Default()
 	installed := ibus.DefaultComponent(cfg, "/home/u/.local/bin/voiceime ibus-engine --ibus")
@@ -103,14 +103,18 @@ func TestWithConfiguredEngineAppliesOnlyWhatTheConfigOwns(t *testing.T) {
 		t.Error("a file this version wrote was reported as needing a rewrite")
 	}
 
-	cfg.IBusEngineName = "voiceime-next"
+	// The engine name is not a setting: what is on disk naming a different engine than
+	// this build is a file from another build, and that has to be healed.
+	stale := installed
+	stale.EngineName = "voiceime-next"
 	cfg.Language = "en"
-	updated := withConfiguredEngine(installed, cfg)
-	if !componentNeedsRewrite([]byte(installed.XML()), updated) {
-		t.Fatal("a changed engine name was reported as no change")
+	updated := withConfiguredEngine(stale, cfg)
+	if !componentNeedsRewrite([]byte(stale.XML()), updated) {
+		t.Fatal("a component naming another engine was reported as no change")
 	}
-	if updated.EngineName != "voiceime-next" || updated.Language != "en" {
-		t.Errorf("engine = %q, language = %q, want the configured values", updated.EngineName, updated.Language)
+	if updated.EngineName != ibus.EngineName || updated.Language != "en" {
+		t.Errorf("engine = %q, language = %q, want %q and the configured language",
+			updated.EngineName, updated.Language, ibus.EngineName)
 	}
 	// The exec line is not a setting: apply must not repoint IBus at whatever binary it
 	// ran from.

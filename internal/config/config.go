@@ -47,8 +47,7 @@ type Config struct {
 
 	// Held down to dictate. A modifier is required, so the press cannot also be ordinary
 	// typing.
-	PushToTalk     string `toml:"push_to_talk" desc:"Combination held down to dictate; the release transcribes the recording."`
-	IBusEngineName string `toml:"ibus_engine_name" desc:"IBus engine name registered for text delivery."`
+	PushToTalk string `toml:"push_to_talk" desc:"Combination held down to dictate; the release transcribes the recording."`
 
 	// Passed straight into the generated server config, so a new audio.cpp request option
 	// is usable without a voiceime release.
@@ -68,7 +67,6 @@ func Default() *Config {
 		// A chord: the engine sees the key while the user is typing, so the press that
 		// starts a dictation must not be one the application was going to receive.
 		PushToTalk:     "<Control>grave",
-		IBusEngineName: "voiceime",
 		RequestOptions: map[string]string{},
 	}
 }
@@ -288,10 +286,6 @@ func (c *Config) Validate() []Issue {
 	}
 	if c.Backend == "" {
 		add("error", "backend", "must name a backend", "voiceime config set backend cpu")
-	}
-	if c.IBusEngineName == "" {
-		add("error", "ibus_engine_name", "must be set; text delivery has no other channel",
-			"voiceime config set ibus_engine_name voiceime")
 	}
 	if strings.TrimSpace(c.PushToTalk) == "" {
 		add("error", "push_to_talk", "must be set; the engine has no other way to start recording",

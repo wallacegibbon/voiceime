@@ -24,7 +24,7 @@ type Component struct {
 	Homepage    string
 	TextDomain  string
 
-	// EngineName is what `ibus engine <name>` and the config use.
+	// EngineName is what `ibus engine <name>` addresses; it is fixed (see EngineName).
 	EngineName string
 	Language   string
 	LongName   string
@@ -45,7 +45,7 @@ func DefaultComponent(cfg *config.Config, execPath string) Component {
 		License:     "GPL",
 		Homepage:    "https://github.com/wallacegibbon/voiceime",
 		TextDomain:  "voiceime",
-		EngineName:  cfg.IBusEngineName,
+		EngineName:  EngineName,
 		// The input source types US English (see XML); the recognition language is a
 		// separate setting and is not a property of the source, so the label reads
 		// "English (Voice)" whatever the model transcribes.

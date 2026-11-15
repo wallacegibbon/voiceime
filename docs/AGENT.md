@@ -33,7 +33,7 @@ numbers are in [measurements.md](measurements.md).
 ```
 voiceime apply                                   # make this machine match the configuration
 voiceime remove                                  # take back what apply installed
-voiceime config path|show|get|set
+voiceime config show|get|set
 voiceime model                                   # the checkpoint the configuration names
 voiceime doctor                                  # every prerequisite, machine-readable
 voiceime transcribe [--file recording.wav | --seconds N]

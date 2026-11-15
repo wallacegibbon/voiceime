@@ -11,11 +11,13 @@ import (
 	"github.com/wallacegibbon/voiceime/internal/model"
 )
 
-// configActions is the whole of the configuration command: read the file, write one value.
-// Applying a setting is not one of them - that is `voiceime apply`, which converges
-// everything that reads the file at once. Creating the file is not one of them either: apply
-// writes it, and so does the first `config set`.
-var configActions = []string{"path", "show", "get", "set"}
+// configActions is the whole of the configuration command: look at the file, read one value,
+// write one value. Applying a setting is not one of them - that is `voiceime apply`, which
+// converges everything that reads the file at once. Creating the file is not one of them
+// either: apply writes it, and so does the first `config set`. Asking where the file is is
+// not one of them either: `show` starts with its path, and `capabilities` prints it without
+// running any action at all.
+var configActions = []string{"show", "get", "set"}
 
 func cmdConfig() *Command {
 	return &Command{
@@ -54,13 +56,6 @@ func runConfig(ctx *Context, args []string) error {
 	action, rest := args[0], args[1:]
 
 	switch action {
-	case "path":
-		ctx.Print("%s", ctx.ConfigPath)
-		return ctx.Emit("config path", map[string]any{
-			"path":   ctx.ConfigPath,
-			"exists": fileExists(ctx.ConfigPath),
-		})
-
 	case "show":
 		fields := ctx.Config.Fields()
 		// The model setting is a path, and a path on its own does not say what will be
@@ -139,7 +134,7 @@ func runConfig(ctx *Context, args []string) error {
 
 	}
 
-	return UsageError("unknown config action %q", action)
+	return UsageError("unknown config action %q; config takes %s", action, strings.Join(configActions, ", "))
 }
 
 func fileExists(path string) bool {

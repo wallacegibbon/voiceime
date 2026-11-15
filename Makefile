@@ -197,15 +197,6 @@ doctor: build ## Check this machine against the built binary
 capabilities: build ## Print the machine-readable command and config surface
 	$(BIN_DIR)/$(BINARY) capabilities --pretty
 
-.PHONY: measure
-measure: build ## Replay a file and print latency/repair numbers (AUDIO=file)
-	@if [ -z "$(AUDIO)" ]; then \
-		echo "usage: make measure AUDIO=speech.wav"; \
-		echo "see docs/measurements.md for what the numbers mean"; \
-		exit 2; \
-	fi
-	$(BIN_DIR)/$(BINARY) stream --file "$(AUDIO)" --realtime --events
-
 .PHONY: verify
 verify: check doctor ## Run the tests and then check the machine
 

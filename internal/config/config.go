@@ -21,15 +21,12 @@ const AppName = "voiceime"
 
 const DefaultModelsDir = "~/models"
 
-const DefaultDownloadEndpoint = "https://hf-mirror.com"
-
 const TargetRate = 16000
 
 type Config struct {
-	ModelsDir    string `toml:"models_dir" desc:"Directory scanned for model packages; downloads are written here."`
-	AudioCPPDir  string `toml:"audio_cpp_dir" desc:"audio.cpp checkout used to locate its CLI and model manager."`
-	ASRBin       string `toml:"asr_bin" desc:"Explicit path to audiocpp_cli; empty means discover."`
-	ModelManager string `toml:"model_manager" desc:"Explicit path to tools/model_manager_v2.py; empty means discover."`
+	ModelsDir   string `toml:"models_dir" desc:"Directory scanned for GGUF checkpoints."`
+	AudioCPPDir string `toml:"audio_cpp_dir" desc:"audio.cpp checkout used to locate its CLI."`
+	ASRBin      string `toml:"asr_bin" desc:"Explicit path to audiocpp_cli; empty means discover."`
 
 	Backend string `toml:"backend" desc:"audio.cpp backend: cpu, cuda, vulkan, hip, metal."`
 	Threads int    `toml:"threads" desc:"Worker threads handed to audio.cpp."`
@@ -48,8 +45,6 @@ type Config struct {
 	ASRServerTimeoutMS int    `toml:"asr_server_timeout_ms" desc:"Deadline for one transcription."`
 
 	CaptureSource string `toml:"capture_source" desc:"PipeWire source name; empty uses the default input."`
-
-	DownloadMirror string `toml:"download_mirror" desc:"HF-protocol endpoint URL model downloads go through, e.g. https://hf-mirror.com."`
 
 	// Held down to dictate. A modifier is required, so the press cannot also be ordinary
 	// typing.
@@ -72,7 +67,6 @@ func Default() *Config {
 		// A forgotten key must not grow a recording without bound.
 		MaxUtteranceSeconds: 60,
 		ASRServerTimeoutMS:  30000,
-		DownloadMirror:      DefaultDownloadEndpoint,
 		// A chord: the engine sees the key while the user is typing, so the press that
 		// starts a dictation must not be one the application was going to receive.
 		PushToTalk:     "<Control>grave",
@@ -103,13 +97,27 @@ func DataDir() string {
 	return filepath.Join(xdg("XDG_DATA_HOME", filepath.Join(".local", "share")), AppName)
 }
 
+// RuntimeDir holds state that belongs to one session: the daemon socket, the
+// generated audio.cpp service config. A desktop session owns it (systemd's logind
+// sets XDG_RUNTIME_DIR to a private directory that is emptied at logout), and a
+// machine without one has nothing session-scoped to offer, so the answer degrades
+// to the cache directory - still disposable, just no longer per-login.
+//
+// It is never relative: a generated path that depended on the caller's working
+// directory would be a different file to the installer, the service and `doctor`.
 func RuntimeDir() string {
 	if base := os.Getenv("XDG_RUNTIME_DIR"); base != "" {
 		if info, err := os.Stat(base); err == nil && info.IsDir() {
 			return filepath.Join(base, AppName)
 		}
 	}
-	return filepath.Join(CacheDir(), "run")
+	if cache := CacheDir(); filepath.IsAbs(cache) {
+		return filepath.Join(cache, "run")
+	}
+	// No session directory and no home: the cache answer would be relative. The
+	// temp directory is the only remaining answer that is the same file to
+	// whoever resolves it.
+	return filepath.Join(os.TempDir(), AppName)
 }
 
 // EnvironmentDir is the directory the systemd user manager reads the session
@@ -134,9 +142,6 @@ func UserUnitDir() string {
 // DefaultPath is the config file every command reads when --config is absent.
 func DefaultPath() string { return filepath.Join(ConfigDir(), "config.toml") }
 
-// SocketPath is where the daemon listens for control and status requests.
-func SocketPath() string { return filepath.Join(RuntimeDir(), "daemon.sock") }
-
 // ModelIndexPath caches model inspection results so rescans stay cheap.
 func ModelIndexPath() string { return filepath.Join(CacheDir(), "model_index.json") }
 
@@ -155,27 +160,6 @@ func (c *Config) ResolvedModelsDir() string { return Expand(c.ModelsDir) }
 
 // AudioCPPDirPath returns the absolute audio.cpp location.
 func (c *Config) AudioCPPDirPath() string { return Expand(c.AudioCPPDir) }
-
-func (c *Config) DownloadEndpoint() (string, error) {
-	raw := strings.TrimSpace(c.DownloadMirror)
-	if raw == "" {
-		return "", errors.New("must be an http(s) endpoint URL, not empty")
-	}
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return "", fmt.Errorf("is not a valid URL: %v", err)
-	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return "", errors.New("must start with http:// or https://")
-	}
-	if parsed.Host == "" {
-		return "", errors.New("has no host")
-	}
-	if parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", errors.New("must not carry a query string or fragment")
-	}
-	return strings.TrimRight(raw, "/"), nil
-}
 
 // checkServerURL validates the address of the resident recognition server.
 func checkServerURL(raw string) error {
@@ -198,22 +182,6 @@ func checkServerURL(raw string) error {
 	return nil
 }
 
-// --------------------------------------------------------------------------- //
-
-var retiredSettings = map[string]bool{
-	"streaming_model":        true,
-	"refine_model":           true,
-	"chunk_seconds":          true,
-	"refine_on_segment_end":  true,
-	"refine_merge_ms":        true,
-	"endpoint_silence_ms":    true,
-	"endpoint_min_speech_ms": true,
-	"silence_rms_threshold":  true,
-	"hotkey":                 true,
-	"hotkey_shortcut_type":   true,
-	"text_numbers":           true,
-}
-
 func Load(path string) (*Config, error) {
 	cfg := Default()
 	metadata, err := toml.DecodeFile(path, cfg)
@@ -225,9 +193,6 @@ func Load(path string) (*Config, error) {
 	}
 	var unknown []string
 	for _, key := range metadata.Undecoded() {
-		if retiredSettings[key.String()] {
-			continue
-		}
 		unknown = append(unknown, key.String())
 	}
 	if len(unknown) > 0 {
@@ -319,10 +284,6 @@ func (c *Config) Validate() []Issue {
 	if c.MaxUtteranceSeconds <= 0 {
 		add("error", "max_utterance_seconds", "must be positive",
 			"voiceime config set max_utterance_seconds 60")
-	}
-	if _, err := c.DownloadEndpoint(); err != nil {
-		add("error", "download_mirror", err.Error(),
-			"voiceime config set download_mirror "+DefaultDownloadEndpoint)
 	}
 	if raw := strings.TrimSpace(c.ASRServerURL); raw != "" {
 		if err := checkServerURL(raw); err != nil {
@@ -555,22 +516,6 @@ func (c *Config) checkoutRoots() []string {
 		}
 	}
 	return roots
-}
-
-func (c *Config) FindModelManager() (string, error) {
-	var candidates []string
-	if c.ModelManager != "" {
-		candidates = append(candidates, Expand(c.ModelManager))
-	}
-	for _, root := range c.checkoutRoots() {
-		candidates = append(candidates, filepath.Join(root, filepath.FromSlash(audioCPPManagerMarker)))
-	}
-	for _, candidate := range candidates {
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-			return candidate, nil
-		}
-	}
-	return "", errors.New("model_manager_v2.py not found: set model_manager or audio_cpp_dir, or install audio.cpp")
 }
 
 // FindExecutable returns the first of names present on PATH, or "".

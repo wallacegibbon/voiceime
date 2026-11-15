@@ -87,13 +87,13 @@ func TestServerSpecSaysWhenModelsAreUninspected(t *testing.T) {
 	if !strings.Contains(err.Error(), "have not been inspected") {
 		t.Errorf("error %q does not say what is missing", err)
 	}
-	if strings.Contains(err.Error(), "install one first") {
-		t.Errorf("error %q tells the user to install a model that is already there", err)
+	if strings.Contains(err.Error(), "nothing to serve") {
+		t.Errorf("error %q says there is no model when one is sitting there unclassified", err)
 	}
-	// With nothing on disk at all, the install advice is the right one.
+	// With nothing on disk at all, the download advice is the right one.
 	if _, err := buildServerSpec(cfg, nil, 18080, ""); err == nil ||
-		!strings.Contains(err.Error(), "install one first") {
-		t.Errorf("error = %v, want the install advice when no file exists", err)
+		!strings.Contains(err.Error(), "put a GGUF in") || !strings.Contains(err.Error(), "recommended:") {
+		t.Errorf("error = %v, want the download advice when no file exists", err)
 	}
 }
 
@@ -125,8 +125,9 @@ func TestServerRunNamesTheRefreshWhenModelsAreUninspected(t *testing.T) {
 	}
 }
 
-// With nothing installed at all, the fix is the install, and it names a package.
-func TestServerRunSaysToInstallWhenNothingIsThere(t *testing.T) {
+// With nothing on disk, the answer is not "install" - voiceime does not fetch anything.
+// It is what to download, where to put it, and the command that names it afterwards.
+func TestServerRunNamesTheDownloadAndTheModelSettingWhenNothingIsThere(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	configPath, _ := freshConfig(t)
 
@@ -134,8 +135,15 @@ func TestServerRunSaysToInstallWhenNothingIsThere(t *testing.T) {
 	if code != ExitPrecondition {
 		t.Fatalf("exit %d, want %d\nstderr: %s", code, ExitPrecondition, stderr)
 	}
-	if !strings.Contains(stderr, "fix: voiceime models install ") {
-		t.Errorf("the fix does not name a package to install:\n%s", stderr)
+	if !strings.Contains(stderr, "fix: voiceime config set model ") {
+		t.Errorf("the fix is not the command that names a checkpoint:\n%s", stderr)
+	}
+	if strings.Contains(stderr, "voiceime models install") {
+		t.Errorf("the fix runs a command that no longer exists:\n%s", stderr)
+	}
+	// "no model" alone cannot be acted on: the choices differ by 20x on disk.
+	if !strings.Contains(stderr, "recommended:") {
+		t.Errorf("the failure does not say what to download:\n%s", stderr)
 	}
 }
 

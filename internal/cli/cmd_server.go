@@ -21,6 +21,10 @@ import (
 // serverUnitName is the systemd user unit that keeps the recognition server running.
 const serverUnitName = "voiceime-asr-server.service"
 
+// serverConfigName is the audio.cpp config voiceime generates from the settings. It is an
+// output, not an input: see serverConfigFile.
+const serverConfigName = "asr-server.json"
+
 // cmdServer owns the resident half of the pipeline: one service that holds the model, so
 // a dictation is one request instead of one model load.
 func cmdServer() *Command {
@@ -65,10 +69,25 @@ func serverUnitPath() string {
 	return filepath.Join(dir, serverUnitName)
 }
 
-// serverConfigFile is the generated audio.cpp config. `server run` rewrites it from the
-// settings at every start, so it never has to be edited.
+// serverConfigFile is the generated audio.cpp config - an output, never an input. It is
+// rewritten from the settings at every service start, and it lives in the runtime
+// directory rather than the configuration directory so that the only file in
+// `ConfigDir()` is the one a person or an agent edits. The unit does not name this path
+// (it runs `server run`, which regenerates it), so the service cannot be pointed at a
+// stale one; `server status` reports where it is, which is how a caller confirms which
+// model is actually served.
 func serverConfigFile() string {
-	return filepath.Join(config.ConfigDir(), "asr-server.json")
+	return filepath.Join(config.RuntimeDir(), serverConfigName)
+}
+
+// writeServerConfig renders the audio.cpp config and returns where it wrote it, so the
+// two commands that start a service resolve that path the same way.
+func writeServerConfig(spec server.Spec) (string, error) {
+	path := serverConfigFile()
+	if err := server.WriteConfig(spec, path); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 func runServerInstall(ctx *Context, port int, modelFlag string) error {
@@ -106,8 +125,8 @@ func runServerInstall(ctx *Context, port int, modelFlag string) error {
 		return FailureError("write %s: %v", ctx.ConfigPath, err)
 	}
 
-	configPath := serverConfigFile()
-	if err := server.WriteConfig(spec, configPath); err != nil {
+	configPath, err := writeServerConfig(spec)
+	if err != nil {
 		return FailureError("%v", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
@@ -118,7 +137,7 @@ func runServerInstall(ctx *Context, port int, modelFlag string) error {
 	}
 
 	if !ctx.JSON {
-		ctx.Print("wrote %s", configPath)
+		ctx.Print("generated %s (the service rewrites it from the settings at every start)", configPath)
 		ctx.Print("wrote %s", unitPath)
 		ctx.Print("serving %s (%s) as %q", spec.Model, spec.Family, server.EntryID(spec.Model))
 		ctx.Print("recorded in config: model, asr_server_url = %s", baseURL)
@@ -259,8 +278,8 @@ func runServerForeground(ctx *Context, port int, modelFlag string) error {
 	if err != nil {
 		return err
 	}
-	path := serverConfigFile()
-	if err := server.WriteConfig(spec, path); err != nil {
+	path, err := writeServerConfig(spec)
+	if err != nil {
 		return FailureError("%v", err)
 	}
 	binary, err := cfg.FindServerBinary()
@@ -428,9 +447,7 @@ func buildServerSpec(cfg *config.Config, scanned []models.Model, port int, model
 			return server.Spec{}, PreconditionError("voiceime models list --refresh",
 				"%d model file(s) have not been inspected yet", len(pending))
 		}
-		recommendation := models.RecommendedPackages()[0]
-		return server.Spec{}, PreconditionError("voiceime models install "+recommendation.ID,
-			"no model to serve: install one first   # %s", recommendation.Reason)
+		return server.Spec{}, PreconditionError(noModelFix, "%s", noModelAdvice(cfg.ResolvedModelsDir()))
 	}
 	family, err := modelFamily(scanned, resolved.Model)
 	if err != nil {
@@ -469,7 +486,9 @@ func modelFamily(scanned []models.Model, path string) (string, error) {
 func cachedModels(ctx *Context) ([]models.Model, error) {
 	cached, err := models.Cached(ctx.Config)
 	if err != nil {
-		return nil, PreconditionError("voiceime models install "+models.RecommendedPackages()[0].ID, "%v", err)
+		// The directory is the setting this error is about; "no model" is the next
+		// question, and it is answered by the callers of buildServerSpec.
+		return nil, PreconditionError("voiceime config set models_dir /path/to/models", "%v", err)
 	}
 	return cached, nil
 }

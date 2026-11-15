@@ -31,8 +31,8 @@ microphone ──► capture (parec, 16 kHz mono) ── hold ── release
 ```sh
 make install                     # ~/.local/bin, no root needed
 voiceime config init             # write defaults, discover audio.cpp
-voiceime models install qwen3_asr_0_6b_q8_0
-voiceime models list --refresh   # the only command that identifies models
+# put a GGUF in ~/models - voiceime does not fetch models
+voiceime models list --refresh   # identify what is on the machine
 voiceime server install          # serve the model, resident
 voiceime engine install --apply  # register the IBus engine and the input source, and
                                  # record the search path so a login keeps them

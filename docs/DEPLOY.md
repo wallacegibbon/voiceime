@@ -39,15 +39,20 @@ lists the settings whose default is a property of the machine
 
 ## 3. A model
 
+voiceime fetches nothing: a checkpoint is on the machine or it is not. Put a GGUF in
+`models_dir` (`~/models` by default), then identify it:
+
 ```sh
-"$BIN" models list --refresh          # what is on this machine, identified
-"$BIN" models install qwen3_asr_0_6b_q8_0
-"$BIN" models list --refresh          # identify what was downloaded
+"$BIN" models list --refresh          # inspect every file and record the answer
+# assert: one line per model as `<family> <size> <tasks(modes)> <path>`, no line saying
+# "not inspected", and the file you intend to serve is the one you expect
 ```
 
-Only `models list --refresh` inspects files (about six seconds each); everything else reads
-the cache and says when a file has no answer yet. Downloads go through `download_mirror`; if
-the endpoint does not have the package, set another one and retry.
+`models list --refresh` is the only command that inspects files (about six seconds each) and
+the only writer of the inspection cache; everything else reads the cache and says when a file
+has no answer yet. So this is also the command that classifies a checkpoint you placed by
+hand. With nothing usable in the directory, `doctor`'s `model` check names one worth fetching
+and what it costs on disk.
 
 ## 4. The service
 

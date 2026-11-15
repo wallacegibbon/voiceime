@@ -18,14 +18,13 @@ import (
 )
 
 func cmdConfig() *Command {
-	var force, yes bool
+	var force bool
 	return &Command{
 		Name:    "config",
 		Summary: "Inspect and edit the configuration file",
 		Usage:   "voiceime config <path|show|init|get|set|apply|validate> [args]",
 		Flags: func(set *flag.FlagSet) {
 			set.BoolVar(&force, "force", false, "config init: overwrite an existing file")
-			set.BoolVar(&yes, "yes", false, "accepted and ignored; keeps scripts uniform")
 		},
 		Run: func(ctx *Context, args []string) error {
 			return runConfig(ctx, args, force)
@@ -452,7 +451,6 @@ func runCapabilities(ctx *Context, args []string) error {
 			"cache_dir":        config.CacheDir(),
 			"data_dir":         config.DataDir(),
 			"runtime_dir":      config.RuntimeDir(),
-			"socket":           config.SocketPath(),
 			"model_index":      config.ModelIndexPath(),
 			"models_dir":       ctx.Config.ResolvedModelsDir(),
 			"environment_dir":  config.EnvironmentDir(),
@@ -504,12 +502,6 @@ func environment(ctx *Context) map[string]any {
 		}
 	} else {
 		environment["asr_bin"] = nil
-	}
-
-	if manager, err := ctx.Config.FindModelManager(); err == nil {
-		environment["model_manager"] = manager
-	} else {
-		environment["model_manager"] = nil
 	}
 
 	modelsDir := ctx.Config.ResolvedModelsDir()

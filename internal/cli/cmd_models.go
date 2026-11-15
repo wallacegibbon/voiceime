@@ -15,8 +15,8 @@ func cmdModels() *Command {
 	var force bool
 	return &Command{
 		Name:    "models",
-		Summary: "List installed models and install or remove packages",
-		Usage:   "voiceime models <list|install|uninstall> [args]",
+		Summary: "List the speech models on this machine",
+		Usage:   "voiceime models list [--refresh] [--force] [--all]",
 		Flags: func(set *flag.FlagSet) {
 			set.BoolVar(&refresh, "refresh", false,
 				"list: inspect files the cache cannot answer for, and record the answer (the only command that writes the cache)")
@@ -32,9 +32,9 @@ func cmdModels() *Command {
 
 func runModels(ctx *Context, args []string, showAllModels, refreshModels, forceModels bool) error {
 	if len(args) == 0 {
-		return UsageError("models needs an action: list, install or uninstall")
+		return UsageError("models needs an action: list")
 	}
-	action, rest := args[0], args[1:]
+	action := args[0]
 
 	switch action {
 	case "list":
@@ -55,7 +55,8 @@ func runModels(ctx *Context, args []string, showAllModels, refreshModels, forceM
 		}
 		if err != nil {
 			if !refreshModels {
-				return PreconditionError("voiceime models list --refresh", "%v", err)
+				// The only reason this reads is a models directory that is not there.
+				return PreconditionError(modelsDirFix, "%v", err)
 			}
 			return PreconditionError("voiceime config set audio_cpp_dir /path/to/audio.cpp", "%v", err)
 		}
@@ -89,8 +90,7 @@ func runModels(ctx *Context, args []string, showAllModels, refreshModels, forceM
 				len(pending))
 		}
 		if len(scanned) == 0 && len(pending) == 0 {
-			ctx.Print("no speech models found in %s", ctx.Config.ResolvedModelsDir())
-			ctx.Print("install one with: voiceime models install %s", models.RecommendedPackages()[0].ID)
+			ctx.Print("%s", noModelAdvice(ctx.Config.ResolvedModelsDir()))
 		}
 		if ignored > 0 {
 			ctx.Print("(%d other GGUF file(s) in %s are not audio models; `--all` lists them)",
@@ -113,71 +113,13 @@ func runModels(ctx *Context, args []string, showAllModels, refreshModels, forceM
 				"%d model file(s) in %s have not been inspected yet, so none can be classified",
 				len(pending), ctx.Config.ResolvedModelsDir())
 		default:
-			return PreconditionError("voiceime models install "+models.RecommendedPackages()[0].ID,
-				"no speech models are installed in %s", ctx.Config.ResolvedModelsDir())
+			return PreconditionError(noModelFix, "%s", noModelAdvice(ctx.Config.ResolvedModelsDir()))
 		}
 
-	case "install":
-		if len(rest) == 0 {
-			return UsageError("models install needs a package id, e.g. sensevoice_small_q8 (see docs/AGENT.md)")
-		}
-		packageID := rest[0]
-		manager, err := newModelManager(ctx)
-		if err != nil {
-			return err
-		}
-		ctx.Print("installing %s from %s into %s", packageID, manager.Endpoint, manager.ModelsDir)
-		lastPercent := -1
-		installCtx, cancelInstall := timeout(3600)
-		defer cancelInstall()
-		err = manager.Install(installCtx, packageID, func(progress models.Progress) {
-			if ctx.JSON {
-				return
-			}
-			// Progress records carry byte counts; narration is printed as it
-			// arrives. A terminal gets a one-line percentage, a pipe gets lines.
-			if progress.TotalBytes > 0 {
-				percent := int(float64(progress.Bytes) / float64(progress.TotalBytes) * 100)
-				if percent != lastPercent {
-					lastPercent = percent
-					ctx.Print("  %s: %d%%", progress.File, percent)
-				}
-				return
-			}
-			if progress.Line != "" {
-				ctx.Print("  %s", progress.Line)
-			}
-		})
-		if err != nil {
-			return FailureError("%v", err)
-		}
-		// The download did not register the model, and install does not write the cache:
-		next := "voiceime models list --refresh"
-		ctx.Print("downloaded into %s; run `%s` so voiceime can identify it", manager.ModelsDir, next)
-		return ctx.Emit("models install", map[string]any{
-			"package":    packageID,
-			"endpoint":   manager.Endpoint,
-			"models_dir": manager.ModelsDir,
-			"next":       next,
-		})
-
-	case "uninstall":
-		if len(rest) == 0 {
-			return UsageError("models uninstall needs a package id")
-		}
-		manager, err := newModelManager(ctx)
-		if err != nil {
-			return err
-		}
-		removeCtx, cancelRemove := timeout(120)
-		defer cancelRemove()
-		if err := manager.Uninstall(removeCtx, rest[0]); err != nil {
-			return FailureError("%v", err)
-		}
-		return ctx.Emit("models uninstall", map[string]any{"package": rest[0]})
 	}
 
-	return UsageError("unknown models action %q", action)
+	// Naming the valid action is what makes a wrong guess one retry instead of two.
+	return UsageError("models has one action: list (unknown action %q)", action)
 }
 
 func describeTasks(model models.Model) string {

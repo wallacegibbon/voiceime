@@ -77,7 +77,7 @@ func (m Model) SupportsLanguage(language string) bool {
 }
 
 // indexEntry is the cache record for one path. Size and mtime are the cache key:
-// a re-downloaded or replaced model is re-inspected, an untouched one is not.
+// a replaced or updated model is re-inspected, an untouched one is not.
 type indexEntry struct {
 	SizeBytes    int64    `json:"size_bytes"`
 	ModifiedUnix int64    `json:"modified_unix"`

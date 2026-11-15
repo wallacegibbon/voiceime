@@ -82,30 +82,6 @@ func TestLoadRejectsTypos(t *testing.T) {
 	}
 }
 
-func TestLoadIgnoresARetiredSetting(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.toml")
-	if err := WriteFileForTest(path, "text_numbers = \"arabic\"\nthreads = 6\n"); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load refused a file written by an earlier version: %v", err)
-	}
-	if cfg.Threads != 6 {
-		t.Errorf("threads = %d, want the other settings read normally", cfg.Threads)
-	}
-	if err := Save(cfg, path); err != nil {
-		t.Fatal(err)
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(raw), "text_numbers") {
-		t.Error("the retired key survived a write, so it would linger forever")
-	}
-}
-
 func TestLoadMissingFileIsNotAnError(t *testing.T) {
 	cfg, err := Load(filepath.Join(t.TempDir(), "absent.toml"))
 	if err != nil {
@@ -113,78 +89,6 @@ func TestLoadMissingFileIsNotAnError(t *testing.T) {
 	}
 	if cfg.Threads != Default().Threads {
 		t.Errorf("missing file did not yield defaults: %+v", cfg)
-	}
-}
-
-func TestDownloadEndpointAcceptsAnyHuggingFaceProtocolHost(t *testing.T) {
-	cases := map[string]string{
-		"https://hf-mirror.com":            "https://hf-mirror.com",
-		"https://hf-mirror.com/":           "https://hf-mirror.com",
-		"http://192.168.1.10:8080":         "http://192.168.1.10:8080",
-		"https://huggingface.co":           "https://huggingface.co",
-		"  https://mirror.example.com/hf/": "https://mirror.example.com/hf",
-	}
-	for configured, want := range cases {
-		cfg := Default()
-		cfg.DownloadMirror = configured
-		got, err := cfg.DownloadEndpoint()
-		if err != nil {
-			t.Errorf("DownloadEndpoint(%q): %v", configured, err)
-			continue
-		}
-		if got != want {
-			t.Errorf("DownloadEndpoint(%q) = %q, want %q", configured, got, want)
-		}
-	}
-}
-
-func TestDownloadEndpointRejectsTheFormerPresetNames(t *testing.T) {
-	for _, configured := range []string{"hf-mirror", "huggingface", "modelscope", ""} {
-		cfg := Default()
-		cfg.DownloadMirror = configured
-		if _, err := cfg.DownloadEndpoint(); err == nil {
-			t.Errorf("DownloadEndpoint(%q) was accepted", configured)
-		}
-		issues := Errors(cfg.Validate())
-		if len(issues) != 1 || issues[0].Key != "download_mirror" || issues[0].Fix == "" {
-			t.Errorf("Validate with download_mirror=%q = %+v, want one issue carrying a fix", configured, issues)
-		}
-	}
-}
-
-func TestDownloadEndpointRejectsMalformedEndpoints(t *testing.T) {
-	for _, configured := range []string{
-		"hf-mirror.com",             // no scheme
-		"ftp://hf-mirror.com",       // wrong scheme
-		"https://",                  // no host
-		"https://host/path?token=x", // query string
-		"https://host/path#frag",    // fragment
-	} {
-		cfg := Default()
-		cfg.DownloadMirror = configured
-		if _, err := cfg.DownloadEndpoint(); err == nil {
-			t.Errorf("DownloadEndpoint(%q) was accepted", configured)
-		}
-	}
-}
-
-func TestLoadToleratesALegacyEndpointValueSoTheFixStaysRunnable(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.toml")
-	if err := WriteFileForTest(path, "download_mirror = \"hf-mirror\"\n"); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load refused a file with a legacy endpoint, leaving no CLI path to fix it: %v", err)
-	}
-	if len(Errors(cfg.Validate())) == 0 {
-		t.Fatal("the legacy value validated clean, but it is not an endpoint URL")
-	}
-	if err := cfg.Set("download_mirror", DefaultDownloadEndpoint); err != nil {
-		t.Fatalf("the repair command is not runnable: %v", err)
-	}
-	if len(Errors(cfg.Validate())) != 0 {
-		t.Error("the documented fix did not resolve the issue")
 	}
 }
 

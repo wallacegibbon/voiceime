@@ -27,7 +27,7 @@ if the two disagree, the runtime wins.
 
 ```
 voiceime config init|show|get|set|apply|validate
-voiceime models list [--all] [--refresh] | install <package> | uninstall <package>
+voiceime models list [--all] [--refresh] [--force]
 voiceime server install|run|restart|status|uninstall [--port N] [--model PATH]
 voiceime engine install [--apply]|status|uninstall
 voiceime transcribe [--file recording.wav | --seconds N]
@@ -35,8 +35,12 @@ voiceime doctor
 voiceime capabilities
 ```
 
+* voiceime **fetches nothing**. A checkpoint is on the machine or it is not: put a GGUF in
+  `models_dir` and point `model` at it. Every "nothing to serve" answer names a model worth
+  fetching and its size, because choosing a family and a size is otherwise a guess.
 * `models list --refresh` is the **only** command that inspects model files (about six
   seconds each). Everything else reads the cache and says when a file has no answer yet.
+  After placing a new checkpoint yourself, this is the command that identifies it.
 * `server install` sets `asr_server_url` and `model` in the configuration and starts the
   unit; `server run` is what the unit executes.
 * `engine install` writes the IBus component and **appends** `('ibus', voiceime)` to
@@ -54,10 +58,9 @@ voiceime capabilities
 
 | Key | Default | Notes |
 |---|---|---|
-| `models_dir` | `~/models` | Scanned for models; downloads land here. |
-| `audio_cpp_dir` | `~/playground/audio.cpp` | Locates `audiocpp_cli` and the model manager. |
+| `models_dir` | `~/models` | Scanned for GGUF checkpoints. You place files here; voiceime never downloads. |
+| `audio_cpp_dir` | `~/playground/audio.cpp` | Locates `audiocpp_cli`, which the service runs and `--refresh` inspects with. |
 | `asr_bin` | `""` | Explicit `audiocpp_cli`; empty means discover. |
-| `model_manager` | `""` | Explicit `model_manager_v2.py`; empty means discover. |
 | `backend` | `cpu` | `audio.cpp` backend: cpu, cuda, vulkan, hip, metal. |
 | `threads` | `4` | Worker threads for the server. |
 | `model` | `""` | The checkpoint the service serves; empty picks the best installed transcription model. `server install` writes it. |
@@ -67,7 +70,6 @@ voiceime capabilities
 | `asr_server_url` | `""` | The service root; `server install` writes it. Must be `http://`. |
 | `asr_server_timeout_ms` | `30000` | Deadline for one transcription. |
 | `capture_source` | `""` | PipeWire source name; empty uses the default input. |
-| `download_mirror` | `https://hf-mirror.com` | HF-protocol endpoint downloads go through. |
 | `push_to_talk` | `<Control>grave` | Held down to dictate; the release transcribes. Needs a modifier. |
 | `ibus_engine_name` | `voiceime` | IBus engine name; also the input-source id. |
 | `request_options` | `{}` | Extra audio.cpp request options for the served model, `key=value`. |

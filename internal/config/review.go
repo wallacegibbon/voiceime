@@ -86,11 +86,6 @@ func ReviewDefaults(cfg *Config, facts ReviewFacts) []Review {
 			Value: cfg.PushToTalk,
 			Why:   "a chord of your choosing; it must not collide with a shortcut the applications you use claim",
 		},
-		Review{
-			Key:   "download_mirror",
-			Value: cfg.DownloadMirror,
-			Why:   "chosen because huggingface.co was unreachable from the reference network; any Hugging Face protocol endpoint works",
-		},
 	)
 	return reviews
 }

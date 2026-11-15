@@ -21,14 +21,14 @@ func TestReviewDefaultsNamesTheSettingsThatAreNotPortable(t *testing.T) {
 	for _, review := range reviews {
 		byKey[review.Key] = review
 	}
-	for _, want := range []string{"audio_cpp_dir", "threads", "backend", "language", "text_script", "push_to_talk", "download_mirror"} {
+	for _, want := range []string{"audio_cpp_dir", "threads", "backend", "language", "text_script", "push_to_talk"} {
 		if _, found := byKey[want]; !found {
 			t.Errorf("%s is not reviewed", want)
 		}
 	}
 	// Settings that are portable must not be on the list: the list is only useful
 	// if it is short enough to actually review.
-	for _, unwanted := range []string{"capture_rate", "chunk_seconds", "endpoint_silence_ms", "hotkey"} {
+	for _, unwanted := range []string{"asr_server_timeout_ms", "max_utterance_seconds", "ibus_engine_name", "request_options"} {
 		if _, found := byKey[unwanted]; found {
 			t.Errorf("%s is reviewed, but its value is not a property of the machine", unwanted)
 		}

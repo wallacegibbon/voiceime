@@ -95,29 +95,7 @@ func runDoctor(ctx *Context) []Check {
 		report(Check{ID: "audio_cpp", Status: "ok", Detail: detail})
 	}
 
-	// 3. Downloads: the model manager script and the endpoint it fetches from.
-	if manager, err := cfg.FindModelManager(); err != nil {
-		report(Check{
-			ID:     "model_manager",
-			Status: "fail",
-			Detail: "model_manager_v2.py not found; downloads are unavailable",
-			Fix:    "voiceime config set audio_cpp_dir /path/to/audio.cpp",
-		})
-	} else {
-		report(Check{ID: "model_manager", Status: "ok", Detail: manager})
-	}
-	if endpoint, err := cfg.DownloadEndpoint(); err != nil {
-		report(Check{
-			ID:     "download_mirror",
-			Status: "fail",
-			Detail: err.Error(),
-			Fix:    "voiceime config set download_mirror " + config.DefaultDownloadEndpoint,
-		})
-	} else {
-		report(Check{ID: "download_mirror", Status: "ok", Detail: endpoint})
-	}
-
-	// 4. The models directory itself.
+	// 3. The models directory itself.
 	modelsDir := cfg.ResolvedModelsDir()
 	if info, err := os.Stat(modelsDir); err != nil || !info.IsDir() {
 		report(Check{
@@ -130,13 +108,13 @@ func runDoctor(ctx *Context) []Check {
 		report(Check{ID: "models_dir", Status: "ok", Detail: modelsDir})
 	}
 
-	// 5. Model selection. Scanning needs the CLI, so it is skipped rather than
+	// 4. Model selection. Scanning needs the CLI, so it is skipped rather than
 	// reported as failed when the CLI is absent - one failure, not two.
 	if asrErr == nil {
 		modelChecks(ctx, report)
 	}
 
-	// 6. Capture.
+	// 5. Capture.
 	if tool := config.FindExecutable("parec", "pw-record"); tool == "" {
 		report(Check{
 			ID:     "capture",
@@ -154,7 +132,7 @@ func runDoctor(ctx *Context) []Check {
 		report(Check{ID: "capture", Status: "ok", Detail: detail})
 	}
 
-	// 7. Text delivery through IBus.
+	// 6. Text delivery through IBus.
 	state := ibusState(ctx)
 	status := "ok"
 	detail := "IBus is running"
@@ -172,7 +150,7 @@ func runDoctor(ctx *Context) []Check {
 	}
 	report(Check{ID: "ibus", Status: status, Detail: detail, Fix: fix})
 
-	// 8. Optional feedback tools. Missing ones degrade UX, never function.
+	// 7. Optional feedback tools. Missing ones degrade UX, never function.
 	var optional []string
 	for id, tool := range map[string]string{
 		"notify": config.FindExecutable("notify-send"),
@@ -194,12 +172,12 @@ func runDoctor(ctx *Context) []Check {
 		report(Check{ID: "feedback", Status: "ok", Detail: "notifications and sound cues available"})
 	}
 
-	// 9. The settings whose right value is a property of the machine.
+	// 8. The settings whose right value is a property of the machine.
 	hardwareChecks(ctx, report)
 
-	// 10. Installed artifacts: the paths baked into the component file and the
-	// systemd unit, and whether the running processes came from this binary. A
-	// moved checkout breaks all three silently (see install_check.go).
+	// 9. Installed artifacts: the paths baked into the component file and the
+	// systemd unit, and whether the resident processes run those paths. A moved
+	// checkout breaks all three silently (see install_check.go).
 	installChecks(ctx, report)
 	serverUnitCheck(ctx, report)
 
@@ -236,12 +214,11 @@ func modelChecks(ctx *Context, report func(Check)) {
 		return
 	}
 	if len(scanned) == 0 {
-		recommendation := models.RecommendedPackages()[0]
 		report(Check{
 			ID:     "model",
 			Status: "fail",
-			Detail: "no speech models found in " + cfg.ResolvedModelsDir(),
-			Fix:    fmt.Sprintf("voiceime models install %s   # %s", recommendation.ID, recommendation.Reason),
+			Detail: noModelAdvice(cfg.ResolvedModelsDir()),
+			Fix:    noModelFix,
 		})
 		return
 	}
@@ -280,12 +257,11 @@ func modelChecks(ctx *Context, report func(Check)) {
 	} else {
 		picked := models.Pick(scanned, cfg.Language)
 		if picked == nil {
-			recommendation := models.RecommendedPackages()[0]
 			report(Check{
 				ID:     "model",
 				Status: "fail",
-				Detail: "no installed model transcribes speech",
-				Fix:    fmt.Sprintf("voiceime models install %s   # %s", recommendation.ID, recommendation.Reason),
+				Detail: noModelAdvice(cfg.ResolvedModelsDir()),
+				Fix:    noModelFix,
 			})
 		} else {
 			report(Check{

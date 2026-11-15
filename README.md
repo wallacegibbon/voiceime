@@ -19,7 +19,7 @@ microphone ──► capture (parec, 16 kHz mono) ── hold ── release
                              one WAV, one decode → commit → IBus
 ```
 
-* One model, served by one systemd user unit (`voiceime server install`). The entry is
+* One model, served by one systemd user unit, started by `voiceime apply`. The entry is
   published under the model file's own name, so nothing is configured twice.
 * Selecting the engine records nothing. A dictation starts on the key press and ends on
   its release; the whole recording is sent, unchanged.
@@ -34,9 +34,8 @@ voiceime config init             # write defaults, find audio.cpp's CLI
 voiceime config set model ~/models/…/sensevoice-small-q8.gguf
                                  # a model is one GGUF you name; nothing is fetched or scanned
 voiceime model                   # what that file is: family, size, tasks
-voiceime server install          # serve it, resident
-voiceime engine install --apply  # register the IBus engine and the input source, and
-                                 # record the search path so a login keeps them
+voiceime apply                   # serve the model, register the engine and the input
+                                 # source, and record the search path a login needs
 voiceime doctor                  # every finding carries a fix
 ```
 
@@ -74,7 +73,7 @@ surface, `voiceime doctor --json` the state of this machine.
 
 ```sh
 make build     # bin/voiceime
-make check     # gofmt, vet, tests, unreachable code, doc links
+make check     # gofmt, vet, tests, unreachable code, unused code, doc links
 make install   # ~/.local/bin and ~/.local/docs
 ```
 

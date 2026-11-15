@@ -149,7 +149,7 @@ func TestValidateReportsAModelPathThatDoesNotExist(t *testing.T) {
 }
 
 // The same check must not fire for a path that exists, or a working install would
-// be reported as broken and `config apply` would refuse to run.
+// be reported as broken and `voiceime apply` would refuse to run.
 func TestValidateAcceptsAnExistingModelPath(t *testing.T) {
 	existing := filepath.Join(t.TempDir(), "model.gguf")
 	if err := os.WriteFile(existing, []byte("gguf"), 0o644); err != nil {

@@ -36,7 +36,7 @@ func TestComponentRoundTripsThroughTheInstalledFile(t *testing.T) {
 }
 
 // A file with no engine registers nothing, which is a broken install rather than an empty
-// one - `config apply` must not "fix" it into something that looks fine.
+// one - `voiceime apply` must not "fix" it into something that looks fine.
 func TestReadComponentRejectsAFileWithoutAnEngine(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "voiceime.xml")
 	body := `<?xml version="1.0" encoding="utf-8"?>

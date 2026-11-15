@@ -33,12 +33,12 @@ func TestReselectsEngineOnlyWhenItWasOursOrNone(t *testing.T) {
 	}
 }
 
-func TestConfigApplyRefusesAConfigThatNamesAMissingModel(t *testing.T) {
+func TestApplyRefusesAConfigThatNamesAMissingModel(t *testing.T) {
 	configPath := bareConfig(t)
 	missing := filepath.Join(filepath.Dir(configPath), "absent.gguf")
 	appendToFile(t, configPath, "model = \""+missing+"\"\n")
 
-	code, stdout, stderr := runForTest(t, "--config", configPath, "config", "apply")
+	code, stdout, stderr := runForTest(t, "--config", configPath, "apply")
 	if code != ExitPrecondition {
 		t.Fatalf("apply exited %d, want %d (precondition)\nstdout: %s\nstderr: %s",
 			code, ExitPrecondition, stdout, stderr)
@@ -51,50 +51,39 @@ func TestConfigApplyRefusesAConfigThatNamesAMissingModel(t *testing.T) {
 	}
 }
 
-func TestConfigValidateRejectsAModelPathThatDoesNotExist(t *testing.T) {
+// A wrong setting has to be named, explained, and given a fix that runs: doctor is the only
+// place findings are reported now, so that is where this is checked.
+func TestDoctorNamesAWrongSettingWithAFixThatRuns(t *testing.T) {
 	configPath := bareConfig(t)
 	missing := filepath.Join(filepath.Dir(configPath), "absent.gguf")
 	appendToFile(t, configPath, "model = \""+missing+"\"\n")
 
-	code, stdout, _ := runForTest(t, "--config", configPath, "config", "validate")
-	if code != ExitPrecondition {
-		t.Fatalf("validate exited %d, want %d (precondition)\n%s", code, ExitPrecondition, stdout)
-	}
-	if !strings.Contains(stdout, "model") || !strings.Contains(stdout, missing) {
-		t.Errorf("the report does not name the setting and the path:\n%s", stdout)
-	}
-	if !strings.Contains(stdout, "does not exist") {
-		t.Errorf("the report does not say what is wrong with the path:\n%s", stdout)
-	}
-}
-
-// The fix offered for a missing path has to be runnable, which is the failure mode
-// this project keeps hitting: advice that cannot be followed.
-func TestConfigValidateOffersARunnableFixForAMissingModel(t *testing.T) {
-	configPath := bareConfig(t)
-	missing := filepath.Join(filepath.Dir(configPath), "absent.gguf")
-	appendToFile(t, configPath, "model = \""+missing+"\"\n")
-
-	code, stdout, _ := runForTest(t, "--config", configPath, "--json", "config", "validate")
-	if code != ExitPrecondition {
-		t.Fatalf("validate exited %d, want %d\n%s", code, ExitPrecondition, stdout)
+	code, stdout, _ := runForTest(t, "--config", configPath, "--json", "doctor")
+	if code == ExitOK {
+		t.Fatalf("doctor reported nothing wrong with a model path that does not exist:\n%s", stdout)
 	}
 	payload := decodeOne(t, stdout)
 	data, _ := payload["data"].(map[string]any)
-	issues, _ := data["issues"].([]any)
-	var fix string
-	for _, raw := range issues {
-		issue, _ := raw.(map[string]any)
-		if issue["key"] == "model" {
-			fix, _ = issue["fix"].(string)
+	checks, _ := data["checks"].([]any)
+	var detail, fix string
+	for _, raw := range checks {
+		check, _ := raw.(map[string]any)
+		if check["id"] == "config" {
+			detail, _ = check["detail"].(string)
+			fix, _ = check["fix"].(string)
 		}
+	}
+	if !strings.Contains(detail, "model") || !strings.Contains(detail, missing) {
+		t.Errorf("the finding does not name the setting and the path: %q", detail)
+	}
+	if !strings.Contains(detail, "does not exist") {
+		t.Errorf("the finding does not say what is wrong with the path: %q", detail)
 	}
 	if !strings.Contains(fix, "config set model") {
 		t.Fatalf("the fix does not say how to correct the setting: %q", fix)
 	}
-	// Run the fix with a real checkpoint in place of its placeholder, and confirm the
-	// configuration becomes usable: advice that names the wrong command is the failure
-	// mode this project keeps hitting.
+	// Run the fix, and confirm the configuration becomes usable: advice that names the
+	// wrong command is the failure mode this project keeps hitting.
 	_, clearOut, clearErr := runForTest(t, "--config", configPath, "--json",
 		"config", "set", "model", ggufFixture(t, "sense_asr"))
 	if clearErr != "" {

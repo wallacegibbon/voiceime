@@ -17,7 +17,7 @@ const ComponentPathVariable = "IBUS_COMPONENT_PATH"
 
 // EnvironmentFile is where the search path has to live to survive a login.
 //
-// `engine install --apply` also runs `dbus-update-activation-environment --systemd`, but
+// `voiceime apply` also runs `dbus-update-activation-environment --systemd`, but
 // that edits the activation environment of the *running* session only: the next login
 // starts ibus-daemon without it, the component directory is never scanned, and the engine
 // is gone from `ibus list-engine` again. environment.d is read by the systemd user manager
@@ -38,7 +38,7 @@ func WriteEnvironment() (string, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", err
 	}
-	body := "# Written by `voiceime engine install --apply`; removed by `engine uninstall`.\n" +
+	body := "# Written by `voiceime apply`; removed by `voiceime remove`.\n" +
 		"# ibus-daemon does not read ~/.local/share/voiceime/component on its own, and the\n" +
 		"# activation environment is per session, so the path is recorded here for every\n" +
 		"# future login. docs/ibus-protocol.md has the measurements.\n" +

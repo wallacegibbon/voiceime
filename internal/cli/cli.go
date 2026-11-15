@@ -100,8 +100,27 @@ type Command struct {
 	Name    string
 	Summary string
 	Usage   string
+	// Actions are the accepted first arguments, for the commands that have sub-actions
+	// rather than arguments. They are declared here because the same list is needed in
+	// three places: the usage line, the error that says what was accepted, and the
+	// surface `capabilities` prints. Written out three times, they drift.
+	Actions []string
 	Flags   func(*flag.FlagSet)
 	Run     func(ctx *Context, args []string) error
+}
+
+// usageLine builds a command's usage from its declared actions, so the list of accepted
+// actions is written once: the same list appears in the usage line, in the error that says
+// what was accepted, and in `capabilities`.
+func usageLine(name string, actions []string, arguments string) string {
+	line := "voiceime " + name
+	if len(actions) > 0 {
+		line += " <" + strings.Join(actions, "|") + ">"
+	}
+	if arguments != "" {
+		line += " " + arguments
+	}
+	return line
 }
 
 // commands is the registry. It is a function rather than a package variable so
@@ -109,9 +128,10 @@ type Command struct {
 func commands() []*Command {
 	return []*Command{
 		cmdCapabilities(),
+		cmdApply(),
 		cmdConfig(),
 		cmdDoctor(),
-		cmdEngine(),
+		cmdRemove(),
 		cmdServer(),
 		cmdIBusEngine(),
 		cmdModel(),
@@ -336,6 +356,7 @@ func writeHelp(w io.Writer) {
 	fmt.Fprint(w, "  --json           print one JSON object on stdout / errors on stderr\n")
 	fmt.Fprint(w, "  --pretty         indent that JSON\n")
 	fmt.Fprint(w, "  --config <path>  configuration file (default "+config.DefaultPath()+")\n")
+	fmt.Fprint(w, "\n`ibus-engine` is started by ibus-daemon and `server run` by the service unit: they are\nentry points, not commands to run by hand.\n")
 	fmt.Fprint(w, "\nEvery command is non-interactive and idempotent; docs/AGENT.md has recipes.\n")
 }
 

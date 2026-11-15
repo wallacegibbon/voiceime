@@ -9,8 +9,8 @@ import (
 )
 
 // The audio.cpp config is rendered from the settings and never read back by voiceime, so
-// it belongs with the session's disposable state. Where it lands is a contract: `server
-// status` reports this path, and an agent uses it to see which model is really served.
+// it belongs with the session's disposable state. Where it lands is a contract: `voiceime
+// doctor` reports what is served, and an agent uses this path to see which model it is.
 func TestServerConfigIsGeneratedInTheRuntimeDir(t *testing.T) {
 	session := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", session)

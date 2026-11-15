@@ -132,8 +132,26 @@ $ gsettings get org.gnome.desktop.input-sources sources
 ```
 
 That is the "I cannot see whether the switch happened" report: the engine received every
-keystroke while the top-right menu kept showing the previous input method. `engine install`
-now adds `('ibus', 'voiceime')`, and the menu lists it.
+keystroke while the top-right menu kept showing the previous input method. `voiceime apply`
+adds `('ibus', 'voiceime')`, and the menu lists it.
+
+## Restarting the daemon is not the same as the daemon being back
+
+`ibus restart` returns while the old daemon is still shutting down. Asking the new one to
+select an input method immediately afterwards:
+
+```
+$ ibus restart; ibus engine voiceime
+(process:69153): IBUS-CRITICAL **: 19:31:50.529: ibus_bus_set_global_engine: assertion
+'IBUS_IS_BUS (bus)' failed
+Set global engine failed.
+```
+
+`ibus engine` and `ibus list-engine` both fail until the daemon has come back, and the same
+command succeeds a moment later. `voiceime apply` waits for `ibus list-engine` to answer
+before it reads or sets the session's engine - bounded at 20 s, after which it reports a
+finding instead of hanging. Without that wait `apply` answered "the input method could not be
+selected again", caused by the restart it had just performed itself.
 
 ## Not measured
 

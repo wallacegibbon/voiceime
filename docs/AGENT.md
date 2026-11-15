@@ -26,14 +26,19 @@ if the two disagree, the runtime wins.
 ## Commands
 
 ```
-voiceime config init|show|get|set|apply|validate
-voiceime model
-voiceime server install|run|restart|status|uninstall [--port N] [--model PATH]
-voiceime engine install [--apply]|status|uninstall
+voiceime apply                                   # make this machine match the configuration
+voiceime remove                                  # take back what apply installed
+voiceime config path|show|init|get|set
+voiceime model                                   # the checkpoint the configuration names
+voiceime doctor                                  # every prerequisite, machine-readable
 voiceime transcribe [--file recording.wav | --seconds N]
-voiceime doctor
-voiceime capabilities
+voiceime capabilities                            # this surface, derived from the code
 ```
+
+Two more commands are entry points for other programs, not commands to run by hand:
+`ibus-daemon` spawns `voiceime ibus-engine --ibus`, and the systemd unit's `ExecStart` is
+`voiceime server run`. Neither takes settings as flags: the port comes from
+`asr_server_url` and the checkpoint from `model`, so neither can disagree with the file.
 
 * voiceime **fetches nothing and scans nothing**. A model is one GGUF file and the `model`
   setting names it: there is no models directory, no candidate list, and no ranking deciding
@@ -45,18 +50,26 @@ voiceime capabilities
   subprocess is asked and nothing is cached, so there is nothing to refresh and nothing can
   go stale. `voiceime model` prints that answer for the file you named; a GGUF without a
   model spec in it is refused by name, together with what it does say it is.
-* `server install` sets `asr_server_url` and `model` in the configuration and starts the
-  unit; `server run` is what the unit executes.
-* `engine install` writes the IBus component and **appends** `('ibus', voiceime)` to
-  GNOME's input-source list, which is what makes the desktop able to select and show it.
-  The list belongs to the user: nothing already configured is removed or reordered, the
-  recent-use order is not written, and `engine uninstall` removes only voiceime's own entry.
-  `--apply` also sets the activation environment, writes the same search path to
-  `~/.config/environment.d/voiceime.conf` so a new login keeps the engine, and restarts
-  IBus. `engine uninstall` removes that file too.
-* `config apply` makes the running install match the file: restarts the service, rewrites
-  the component when the engine name changed, converges the input source, and drops the
-  engine so the next activation runs the new binary.
+* `apply` is the whole installed side, in one command: it writes and starts the systemd user
+  unit for the recognition service, **appends** `('ibus', voiceime)` to GNOME's
+  input-source list (which is what makes the desktop able to select and show the engine),
+  writes the component file and the search path to
+  `~/.config/environment.d/voiceime.conf`, restarts IBus, then drops the engine processes and
+  selects the input method again. It writes `asr_server_url` and `model` into the
+  configuration as it goes, waits until the configured checkpoint is actually resident, and
+  refuses to change anything if the configuration cannot work. Running it twice is how you
+  check it: the second run reports everything unchanged.
+* The input-source list belongs to the user. Nothing already configured is removed or
+  reordered, and the recent-use order is not written; `remove` takes out voiceime's own
+  entry and leaves the others.
+* `remove` is `apply`'s opposite: the unit, the generated service configuration, the
+  component file, the `environment.d` file, and the input source this tool added. It leaves
+  the model file - and the `model` setting that names it - alone, because that file was
+  never the installation's.
+* There is no `server install`, `server restart` or `engine install`: one command makes the
+  machine match the file, and `doctor` answers "is it there" with findings. Asking the same
+  question through several commands, each with its own idea of what "installed" means, is how
+  an install ends up described differently in three places.
 
 ## Settings
 
@@ -69,24 +82,35 @@ voiceime capabilities
 | `language` | `zh` | Passed to the model; empty asks it to auto-detect. |
 | `text_script` | `simplified` | Chinese output script: `simplified` or `preserve`. |
 | `max_utterance_seconds` | `60` | A hold whose key never comes up stops recording here. |
-| `asr_server_url` | `""` | The service root; `server install` writes it. Must be `http://`. |
+| `asr_server_url` | `""` | The service root; `voiceime apply` writes it. Must be `http://`. |
 | `asr_server_timeout_ms` | `30000` | Deadline for one transcription. |
 | `capture_source` | `""` | PipeWire source name; empty uses the default input. |
 | `push_to_talk` | `<Control>grave` | Held down to dictate; the release transcribes. Needs a modifier. |
 | `request_options` | `{}` | Extra audio.cpp request options for the served model, `key=value`. |
 
 Things every setting shares: `voiceime config set` writes the file atomically, validates
-it, and names the command that puts it in force (`voiceime config apply`). Hand-editing is
+it, and names the command that puts it in force (`voiceime apply`). Hand-editing is
 supported and needs the same command.
 
 ## Verifying
 
 ```
-voiceime doctor --json            # every finding carries a fix
-voiceime server status --json     # data.unit_active, data.listening, data.served[]
-voiceime engine status --json     # data.engine_registered, data.environment_set, data.gnome_input_source.listed
+voiceime doctor --json            # every finding carries a fix; data.checks[].id is stable
 voiceime transcribe --seconds 5   # one decode from the microphone, with timing
 ```
+
+`doctor` is the only state report. Which question is which finding:
+
+| Question | Finding |
+|---|---|
+| is the checkpoint resident, and is it the one the settings name | `asr_server` |
+| is the component installed, and does it name a binary that exists | `component_exec` |
+| will the engine still be registered after the next login | `component_env` |
+| do this session's keys reach the engine at all | `session_engine` |
+| is an old build still running | `running_build` |
+| is the service unit installed, and does it run this binary | `server_unit` |
+
+A failing finding is exit 3 with a `fix` an agent can run - usually `voiceime apply`.
 
 The engine's own log is `~/.cache/voiceime/engine.log` (ibus-daemon discards the process's
 stdout). `ready: hold … to dictate` on selection, then `recording`, `decoded …` and

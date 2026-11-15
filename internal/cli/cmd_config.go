@@ -1,28 +1,28 @@
 package cli
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
-	"syscall"
-	"time"
 
 	"github.com/wallacegibbon/voiceime/internal/config"
 	"github.com/wallacegibbon/voiceime/internal/ibus"
 	"github.com/wallacegibbon/voiceime/internal/model"
-	"github.com/wallacegibbon/voiceime/internal/server"
 )
+
+// configActions is the whole of the configuration command: read the file, write one value.
+// Applying a setting is not one of them - that is `voiceime apply`, which converges
+// everything that reads the file at once.
+var configActions = []string{"path", "show", "init", "get", "set"}
 
 func cmdConfig() *Command {
 	var force bool
 	return &Command{
 		Name:    "config",
 		Summary: "Inspect and edit the configuration file",
-		Usage:   "voiceime config <path|show|init|get|set|apply|validate> [args]",
+		Actions: configActions,
+		Usage:   usageLine("config", configActions, "[args]"),
 		Flags: func(set *flag.FlagSet) {
 			set.BoolVar(&force, "force", false, "config init: overwrite an existing file")
 		},
@@ -50,195 +50,9 @@ func configuredModel(ctx *Context) map[string]string {
 	return out
 }
 
-// applyReport is what `config apply` did, one line per thing that reads the configuration.
-type applyReport struct {
-	Service   string   `json:"service"`
-	Served    []string `json:"served,omitempty"`
-	Component string   `json:"component"`
-	// Desktop is the input-source list the desktop's own switcher reads: the entry the
-	// engine needs there is a property of the *name*, so a changed ibus_engine_name has
-	// to converge it as well.
-	Desktop string `json:"desktop"`
-	Engine  string `json:"engine"`
-}
-
-func applyConfig(ctx *Context) error {
-	if issues := config.Errors(ctx.Config.Validate()); len(issues) > 0 {
-		issue := issues[0]
-		return PreconditionError(issue.Fix, "cannot apply the configuration: %s: %s", issue.Key, issue.Message)
-	}
-
-	var report applyReport
-	var err error
-	if report.Service, report.Served, err = applyService(ctx); err != nil {
-		return err
-	}
-	if report.Component, err = applyComponent(ctx.Config); err != nil {
-		return FailureError("%v", err)
-	}
-	// Not fatal on its own: an engine missing from this list still receives keystrokes,
-	// it just cannot be shown by the desktop or switched to from its menu.
-	report.Desktop, _ = addInputSource(ibus.EngineName)
-	report.Engine = dropEngines()
-
-	if !ctx.JSON {
-		ctx.Print("service:  %v", report.Service)
-		if len(report.Served) > 0 {
-			ctx.Print("serving:  %s", strings.Join(report.Served, " and "))
-		}
-		ctx.Print("component: %v", report.Component)
-		ctx.Print("desktop:  %v", report.Desktop)
-		ctx.Print("engine:   %v", report.Engine)
-	}
-	return ctx.Emit("config apply", report)
-}
-
-func applyService(ctx *Context) (status string, served []string, err error) {
-	if _, lookupErr := exec.LookPath("systemctl"); lookupErr != nil || !fileExists(serverUnitPath()) {
-		return "not installed", nil, nil
-	}
-	local, port := false, 0
-	if strings.TrimSpace(ctx.Config.ASRServerURL) != "" {
-		host, parsedPort, parseErr := server.ParseURL(ctx.Config.ASRServerURL)
-		if parseErr != nil {
-			return "", nil, FailureError("%v", parseErr)
-		}
-		local, port = server.IsLocalHost(host), parsedPort
-	}
-	spec, specErr := buildServerSpec(ctx.Config, port, "")
-	if specErr != nil {
-		return "", nil, specErr
-	}
-	if restartErr := runCommand("systemctl --user restart " + serverUnitName); restartErr != nil {
-		return "", nil, FailureError("restart %s: %v", serverUnitName, restartErr)
-	}
-	if local {
-		probeCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-		waitErr := waitForModel(probeCtx, ctx.Config.ASRServerURL, spec)
-		cancel()
-		if waitErr != nil {
-			return "", nil, FailureError("the service restarted but is not serving the configured models: %v", waitErr)
-		}
-		served = []string{filepath.Base(spec.Model)}
-	}
-	return "restarted", served, nil
-}
-
-// dropEngines stops the engine processes, and puts the session's input method back.
-//
-// Stopping them is what makes a rebuilt binary take effect. It also does more than stop a
-// process: the daemon clears the global engine when the bus name disappears, which leaves
-// every application in the session showing the input method in the desktop's switcher while
-// receiving no keys at all (measured: `ibus engine` answers "No engine is set." afterwards).
-// Nothing puts it back by itself - the process is not respawned until an input method is
-// selected again - so the person at the keyboard finds the workaround on their own, switches
-// to another input method and back, and reasonably blames the engine for it.
-func dropEngines() string {
-	// What the session is using has to be read before anything is stopped: afterwards there
-	// is nothing left to read.
-	current, known := "", false
-	if name, err := currentEngine(); err == nil {
-		current, known = name, true
-	}
-	stopped, forced := stopEngines()
-
-	outcome := "was not running"
-	if stopped > 0 {
-		outcome = fmt.Sprintf("%d dropped", stopped)
-		if forced {
-			outcome += " (one had to be killed)"
-		}
-	}
-	if !reselectsEngine(current, known) {
-		return outcome
-	}
-	if err := selectEngine(); err != nil {
-		return outcome + "; the input method could not be selected again (" + err.Error() +
-			"), so no application will receive keys until one is: ibus engine " + ibus.EngineName
-	}
-	return outcome + "; the input method was selected again"
-}
-
-// reselectsEngine says whether the session's input method should be put back after the
-// engine processes are stopped: ours, or none at all, which is what stopping one leaves
-// behind. Any other engine is the user's choice and is left alone.
-func reselectsEngine(current string, known bool) bool {
-	return known && (current == ibus.EngineName || current == "")
-}
-
-// withCurrentEngine is what the component file on disk would look like if this build wrote
-// it: unchanged except for the engine identity, which is the one part of that file a new
-// build can disagree with.
-func withCurrentEngine(installed ibus.Component) ibus.Component {
-	updated := installed
-	updated.EngineName = ibus.EngineName
-	return updated
-}
-
-// componentNeedsRewrite compares the file on disk with what this version would write.
-func componentNeedsRewrite(raw []byte, updated ibus.Component) bool {
-	return string(raw) != updated.XML()
-}
-
-func applyComponent(cfg *config.Config) (string, error) {
-	if !ibus.Installed() {
-		return "not installed", nil
-	}
-	raw, err := os.ReadFile(ibus.ComponentPath())
-	if err != nil {
-		return "", fmt.Errorf("cannot read the installed component: %w", err)
-	}
-	installed, err := ibus.ReadComponent(ibus.ComponentPath())
-	if err != nil {
-		return "", fmt.Errorf("cannot read the installed component: %w", err)
-	}
-	updated := withCurrentEngine(installed)
-	if !componentNeedsRewrite(raw, updated) {
-		return "unchanged", nil
-	}
-	if _, err := ibus.Install(updated); err != nil {
-		return "", fmt.Errorf("rewrite %s: %w", ibus.ComponentPath(), err)
-	}
-	// The daemon caches the component registry beside the directories it watched when the
-	// cache was written, so a changed file needs that cache gone as well as a restart
-	// (measured when the search path changed; see ibus.RegistryCachePath).
-	if cache := ibus.RegistryCachePath(); cache != "" {
-		_ = os.Remove(cache)
-	}
-	if err := runCommand("ibus restart"); err != nil {
-		return "", fmt.Errorf("the component was rewritten but IBus did not restart, so it is still reading the old one: %w", err)
-	}
-	return "rewritten; IBus restarted", nil
-}
-
-func stopEngines() (stopped int, forced bool) {
-	engines := processesRunning("ibus-engine")
-	for _, engine := range engines {
-		if process, err := os.FindProcess(engine.PID); err == nil {
-			_ = process.Signal(syscall.SIGTERM)
-		}
-	}
-	// Give the engine the time its shutdown path needs to commit the sentence in
-	// progress; the drain budget is 5s (D25), so six is enough.
-	deadline := time.Now().Add(6 * time.Second)
-	for time.Now().Before(deadline) {
-		if len(processesRunning("ibus-engine")) == 0 {
-			return len(engines), false
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	for _, engine := range processesRunning("ibus-engine") {
-		if process, err := os.FindProcess(engine.PID); err == nil {
-			_ = process.Kill()
-			forced = true
-		}
-	}
-	return len(engines), forced
-}
-
 func runConfig(ctx *Context, args []string, force bool) error {
 	if len(args) == 0 {
-		return UsageError("config needs an action: path, show, init, get, set, apply or validate")
+		return UsageError("config needs an action: %s", strings.Join(configActions, ", "))
 	}
 	action, rest := args[0], args[1:]
 
@@ -369,7 +183,7 @@ func runConfig(ctx *Context, args []string, force bool) error {
 			return PreconditionError(issue.Fix, "%s = %v is written, but the configuration is unusable: %s",
 				key, value, issue.Message)
 		}
-		applies := "voiceime config apply"
+		applies := "voiceime apply"
 		ctx.Print("%s = %v", key, value)
 		ctx.Print("this takes effect when the processes that read it restart: run `%s`", applies)
 		return ctx.Emit("config set", map[string]any{
@@ -377,35 +191,6 @@ func runConfig(ctx *Context, args []string, force bool) error {
 			"apply_with": applies,
 		})
 
-	case "apply":
-		return applyConfig(ctx)
-
-	case "validate":
-		issues := ctx.Config.Validate()
-		blocking := config.Errors(issues)
-		for _, issue := range issues {
-			ctx.Print("%-7s %-22s %s", issue.Severity, issue.Key, issue.Message)
-			if issue.Fix != "" {
-				ctx.Print("        fix: %s", issue.Fix)
-			}
-		}
-		if len(issues) == 0 {
-			ctx.Print("config is valid")
-		}
-		if err := ctx.Emit("config validate", map[string]any{
-			"valid":  len(blocking) == 0,
-			"issues": issues,
-		}); err != nil {
-			return err
-		}
-		if len(blocking) > 0 {
-			// No fix on the error itself: the actionable command belongs to the
-			// issue and was printed above. Naming this command as its own fix is
-			// the kind of un-followable advice this project keeps finding.
-			return PreconditionError("", "%d blocking issue(s) in %s",
-				len(blocking), ctx.ConfigPath)
-		}
-		return nil
 	}
 
 	return UsageError("unknown config action %q", action)
@@ -449,6 +234,7 @@ func runCapabilities(ctx *Context, args []string) error {
 			"name":    command.Name,
 			"summary": command.Summary,
 			"usage":   command.Usage,
+			"actions": command.Actions,
 			"flags":   flags,
 		})
 	}

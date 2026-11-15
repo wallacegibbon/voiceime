@@ -36,7 +36,7 @@ and a recording that contains only punctuation is dropped rather than typed, bec
 
 ## The service
 
-`voiceime server install` writes a systemd user unit whose `ExecStart` is
+`voiceime apply` writes a systemd user unit whose `ExecStart` is
 **`voiceime server run`**. That command renders the audio.cpp config from `config.toml`
 and then runs the server, so the settings stay the only source of truth: there is no
 generated file that can disagree with them.

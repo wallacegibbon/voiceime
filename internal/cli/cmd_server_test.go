@@ -25,7 +25,7 @@ func TestServerSpecServesTheConfiguredModelWithTheFamilyItCarries(t *testing.T) 
 
 	cfg := config.Default()
 	cfg.Model = chosen
-	spec, err := buildServerSpec(cfg, 18080, "")
+	spec, err := buildServerSpec(cfg, 18080)
 	if err != nil {
 		t.Fatalf("buildServerSpec: %v", err)
 	}
@@ -37,25 +37,10 @@ func TestServerSpecServesTheConfiguredModelWithTheFamilyItCarries(t *testing.T) 
 	}
 }
 
-// A flag is a one-off override, and it has to beat the setting it duplicates.
-func TestServerSpecPrefersTheFlag(t *testing.T) {
-	dir := t.TempDir()
-	cfg := config.Default()
-	cfg.Model = writeGGUF(t, filepath.Join(dir, "chosen.gguf"), "qwen3_asr", []string{"asr"})
-
-	spec, err := buildServerSpec(cfg, 18080, writeGGUF(t, filepath.Join(dir, "other.gguf"), "sense_asr", []string{"asr"}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasSuffix(spec.Model, "other.gguf") || spec.Family != "sense_asr" {
-		t.Errorf("spec = %+v, want the file named on the command line", spec)
-	}
-}
-
 // Nothing named: the answer is what to fetch and the command that names it afterwards. voiceime
 // fetches nothing and scans nothing, so "install a model" is not a thing to say here.
 func TestServerSpecWithoutANamedCheckpointGivesTheAdvice(t *testing.T) {
-	_, err := buildServerSpec(config.Default(), 18080, "")
+	_, err := buildServerSpec(config.Default(), 18080)
 	if err == nil {
 		t.Fatal("buildServerSpec succeeded with nothing named")
 	}
@@ -77,7 +62,7 @@ func TestServerSpecRejectsAFileWithoutAModelSpec(t *testing.T) {
 	}
 	cfg := config.Default()
 	cfg.Model = notACheckpoint
-	_, err := buildServerSpec(cfg, 18080, "")
+	_, err := buildServerSpec(cfg, 18080)
 	if err == nil {
 		t.Fatal("a text file was accepted as a checkpoint")
 	}
@@ -98,7 +83,7 @@ func TestServerRunNamesTheModelSettingWhenNothingIsNamed(t *testing.T) {
 	if !strings.Contains(stderr, "config set model ") {
 		t.Errorf("the fix is not the command that names a checkpoint:\n%s", stderr)
 	}
-	if strings.Contains(stderr, "voiceime models ") {
+	if strings.Contains(stderr, "models list") || strings.Contains(stderr, "models install") {
 		t.Errorf("the fix runs a command that no longer exists:\n%s", stderr)
 	}
 	// "no model" alone cannot be acted on: the choices differ by 20x on disk.
@@ -132,8 +117,9 @@ func TestModelCommandDescribesTheNamedCheckpoint(t *testing.T) {
 	}
 }
 
-// A failed install leaves no unit behind.
-func TestServerInstallWritesNoUnitWhenTheSettingsCannotBeSaved(t *testing.T) {
+// A failed apply leaves no unit behind. The settings are written before the files that
+// describe them, so a unit can never name a configuration that never named the service.
+func TestApplyLeavesNoUnitWhenTheSettingsCannotBeSaved(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 
@@ -155,15 +141,18 @@ func TestServerInstallWritesNoUnitWhenTheSettingsCannotBeSaved(t *testing.T) {
 		Stderr:     io.Discard,
 	}
 
-	err := runServerInstall(ctx, 18080, "")
+	status, _, err := applyService(ctx)
 	if err == nil {
-		t.Fatal("installing with an unwritable configuration reported success")
+		t.Fatal("applying with an unwritable configuration reported success")
+	}
+	if status != "" {
+		t.Errorf("a failed apply reported %q", status)
 	}
 	if !strings.Contains(err.Error(), os.DevNull) {
 		t.Errorf("error %q does not name the configuration it could not write", err)
 	}
 	unit := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "systemd", "user", serverUnitName)
 	if _, statErr := os.Stat(unit); !os.IsNotExist(statErr) {
-		t.Errorf("a unit was written at %s even though the install failed", unit)
+		t.Errorf("a unit was written at %s even though apply failed", unit)
 	}
 }

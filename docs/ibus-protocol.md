@@ -87,16 +87,16 @@ From component XML files, not from the engine process:
   login the value has to be read when the session starts, which is
   `~/.config/environment.d/voiceime.conf`: the systemd user manager reads that directory,
   and on GNOME `ibus-daemon` runs as the user service
-  `org.freedesktop.IBus.session.GNOME.service`. `voiceime engine install --apply` writes
-  it, `engine uninstall` removes it, and `doctor`'s `component_env` finding names it when
+  `org.freedesktop.IBus.session.GNOME.service`. `voiceime apply` writes
+  it, `voiceime remove` takes it away, and `doctor`'s `component_env` finding names it when
   it is missing.
 * **The component registry is cached**, and the cache records the directories the
   daemon watched when it was written. A daemon started with a cache never looks at
   a newly configured directory: with `IBUS_COMPONENT_PATH` already in the daemon's
   environment (confirmed by reading `/proc/<pid>/environ`), the engine stayed
   invisible across `ibus restart` and appeared the moment
-  `~/.cache/ibus/bus/registry` was removed. `voiceime engine install --apply` now
-  removes that file before restarting, and this is the step that makes a user
+  `~/.cache/ibus/bus/registry` was removed. `voiceime apply` removes
+  that file before restarting, and this is the step that makes a user
   install actually take effect.
 * Adding a component file to an already-watched directory is **not** picked up
   live: a new XML written into the watched directory did not appear in

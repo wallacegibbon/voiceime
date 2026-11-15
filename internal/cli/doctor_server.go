@@ -12,8 +12,10 @@ import (
 	"github.com/wallacegibbon/voiceime/internal/server"
 )
 
-// serverUnitInstalled reports whether a unit exists to start the server, which decides
-// which fix doctor offers: "start it" and "install it" are different repairs.
+// serverUnitInstalled reports whether a unit exists to start the server. It does not change
+// the fix - `voiceime apply` covers both cases - it changes what the finding can say:
+// "nothing on this machine is installed to answer it" is a different situation from "the
+// service is installed and not answering".
 func serverUnitInstalled() bool {
 	path := serverUnitPath()
 	if path == "" {
@@ -32,7 +34,7 @@ func asrServerCheck(cfg *config.Config, unitInstalled bool) Check {
 			ID:     "asr_server",
 			Status: "fail",
 			Detail: "no server is configured, and dictation decodes through one",
-			Fix:    "voiceime server install",
+			Fix:    "voiceime apply",
 		}
 	}
 	host, _, err := server.ParseURL(raw)
@@ -41,7 +43,7 @@ func asrServerCheck(cfg *config.Config, unitInstalled bool) Check {
 			ID:     "asr_server",
 			Status: "fail",
 			Detail: err.Error(),
-			Fix:    "voiceime server install",
+			Fix:    "voiceime apply",
 		}
 	}
 
@@ -56,10 +58,10 @@ func asrServerCheck(cfg *config.Config, unitInstalled bool) Check {
 				ID:     "asr_server",
 				Status: "fail",
 				Detail: fmt.Sprintf("%s is not answering: %v", strings.TrimRight(raw, "/"), probeErr),
-				Fix:    "voiceime config apply",
+				Fix:    "voiceime apply",
 			}
 		}
-		fix := "voiceime server install"
+		fix := "voiceime apply"
 		if !server.IsLocalHost(host) {
 			fix = "systemctl --user start " + serverUnitName + " on that machine"
 		}
@@ -76,7 +78,7 @@ func asrServerCheck(cfg *config.Config, unitInstalled bool) Check {
 	// left on another checkpoint is the failure that matters here.
 	entries, err := server.Entries(ctx, raw)
 	if err != nil {
-		return Check{ID: "asr_server", Status: "fail", Detail: err.Error(), Fix: "voiceime server install"}
+		return Check{ID: "asr_server", Status: "fail", Detail: err.Error(), Fix: "voiceime apply"}
 	}
 	if len(entries) != 1 {
 		offered := make([]string, 0, len(entries))
@@ -88,7 +90,7 @@ func asrServerCheck(cfg *config.Config, unitInstalled bool) Check {
 			Status: "fail",
 			Detail: fmt.Sprintf("%s serves %d models (%s); voiceime serves one",
 				strings.TrimRight(raw, "/"), len(entries), strings.Join(offered, ", ")),
-			Fix: "voiceime server install",
+			Fix: "voiceime apply",
 		}
 	}
 	detail := fmt.Sprintf("%s is serving %s", strings.TrimRight(raw, "/"), entries[0].ID)
@@ -97,13 +99,13 @@ func asrServerCheck(cfg *config.Config, unitInstalled bool) Check {
 			entries[0].ID, filepath.Base(entries[0].Path))
 	}
 	if _, port, err := server.ParseURL(raw); err == nil && server.IsLocalHost(host) {
-		if spec, specErr := buildServerSpec(cfg, port, ""); specErr == nil {
+		if spec, specErr := buildServerSpec(cfg, port); specErr == nil {
 			if matchErr := modelMatches(ctx, raw, spec); matchErr != nil {
 				return Check{
 					ID:     "asr_server",
 					Status: "fail",
 					Detail: matchErr.Error() + " (the service has not been restarted since the setting changed)",
-					Fix:    "voiceime config apply",
+					Fix:    "voiceime apply",
 				}
 			}
 		}

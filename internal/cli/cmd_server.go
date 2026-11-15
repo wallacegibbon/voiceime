@@ -25,38 +25,34 @@ const serverUnitName = "voiceime-asr-server.service"
 // output, not an input: see serverConfigFile.
 const serverConfigName = "asr-server.json"
 
-// cmdServer owns the resident half of the pipeline: one service that holds the model, so
-// a dictation is one request instead of one model load.
+// cmdServer is the recognition service's own process. `voiceime apply` starts it through a
+// systemd user unit whose ExecStart is `voiceime server run`; this is that entry, and the
+// way to run the service where there is no systemd user session.
+//
+// It has no install/restart/status actions: those were a copy of what `voiceime apply` and
+// `voiceime doctor` already decide, with their own idea of what "installed" means.
+// serverActions: the service is installed, restarted and inspected by `voiceime apply` and
+// `voiceime doctor`. What is left is the process the unit runs.
+var serverActions = []string{"run"}
+
 func cmdServer() *Command {
-	var port int
-	var modelPath string
 	return &Command{
 		Name:    "server",
-		Summary: "Install, remove or inspect the resident recognition server",
-		Usage:   "voiceime server <install|uninstall|status|restart|run> [--port N] [--model PATH]",
-		Flags: func(set *flag.FlagSet) {
-			set.IntVar(&port, "port", server.DefaultPort, "port the server listens on")
-			set.StringVar(&modelPath, "model", "", "GGUF to serve (default: the model setting, or the best installed one)")
-		},
+		Summary: "Run the resident recognition server in the foreground (the service's ExecStart)",
+		Actions: serverActions,
+		Usage:   usageLine("server", serverActions, ""),
+		Flags:   func(set *flag.FlagSet) {},
 		Run: func(ctx *Context, args []string) error {
-			action := "status"
-			if len(args) > 0 {
-				action = args[0]
+			if len(args) == 0 {
+				return UsageError("server needs an action: %s", strings.Join(serverActions, ", "))
 			}
-			switch action {
-			case "install":
-				return runServerInstall(ctx, port, modelPath)
-			case "run":
-				return runServerForeground(ctx, port, modelPath)
-			case "restart":
-				return runServerRestart(ctx)
-			case "uninstall":
-				return runServerUninstall(ctx)
-			case "status":
-				return runServerStatus(ctx)
-			default:
-				return UsageError("unknown server action %q", action)
+			if args[0] != "run" {
+				return UsageError("unknown server action %q; the service is installed and restarted by `voiceime apply`", args[0])
 			}
+			if len(args) > 1 {
+				return UsageError("server run takes no arguments")
+			}
+			return runServerForeground(ctx)
 		},
 	}
 }
@@ -74,8 +70,8 @@ func serverUnitPath() string {
 // directory rather than the configuration directory so that the only file in
 // `ConfigDir()` is the one a person or an agent edits. The unit does not name this path
 // (it runs `server run`, which regenerates it), so the service cannot be pointed at a
-// stale one; `server status` reports where it is, which is how a caller confirms which
-// model is actually served.
+// stale one; `voiceime doctor` reports what is served, which is how a caller confirms which
+// model is actually running.
 func serverConfigFile() string {
 	return filepath.Join(config.RuntimeDir(), serverConfigName)
 }
@@ -88,100 +84,6 @@ func writeServerConfig(spec server.Spec) (string, error) {
 		return "", err
 	}
 	return path, nil
-}
-
-func runServerInstall(ctx *Context, port int, modelFlag string) error {
-	cfg := ctx.Config
-	spec, err := buildServerSpec(cfg, port, modelFlag)
-	if err != nil {
-		return err
-	}
-	binary, err := cfg.FindServerBinary()
-	if err != nil {
-		return PreconditionError("voiceime config set asr_bin /path/to/audio.cpp/build/<backend>/bin/audiocpp_cli",
-			"%v", err)
-	}
-	unitPath := serverUnitPath()
-	if unitPath == "" {
-		return FailureError("cannot determine where to write the unit file")
-	}
-
-	// Settings first, then the files that describe them: a failed save must not leave a
-	// unit pointing at a configuration that never named the service.
-	baseURL := spec.BaseURL()
-	for _, change := range []struct{ key, value string }{
-		{"asr_server_url", baseURL},
-		{"model", spec.Model},
-	} {
-		if err := cfg.Set(change.key, change.value); err != nil {
-			return FailureError("config set %s: %v", change.key, err)
-		}
-	}
-	if err := config.Save(cfg, ctx.ConfigPath); err != nil {
-		return FailureError("write %s: %v", ctx.ConfigPath, err)
-	}
-
-	configPath, err := writeServerConfig(spec)
-	if err != nil {
-		return FailureError("%v", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
-		return FailureError("%v", err)
-	}
-	if err := os.WriteFile(unitPath, []byte(serverUnit(absoluteConfigPath(ctx))), 0o644); err != nil {
-		return FailureError("%v", err)
-	}
-
-	if !ctx.JSON {
-		ctx.Print("generated %s (the service rewrites it from the settings at every start)", configPath)
-		ctx.Print("wrote %s", unitPath)
-		ctx.Print("serving %s (%s) as %q", spec.Model, spec.Family, server.EntryID(spec.Model))
-		ctx.Print("recorded in config: model, asr_server_url = %s", baseURL)
-	}
-	commands := []string{
-		"systemctl --user daemon-reload",
-		"systemctl --user enable " + serverUnitName,
-		"systemctl --user restart " + serverUnitName,
-	}
-	applied := false
-	if _, err := exec.LookPath("systemctl"); err == nil {
-		for _, command := range commands {
-			if err := runCommand(command); err != nil {
-				if !ctx.JSON {
-					ctx.Print("could not run `%s`: %v", command, err)
-				}
-				continue
-			}
-			applied = true
-		}
-	}
-	if !applied && !ctx.JSON {
-		ctx.Print("start it by hand with: %s --config %s", binary, configPath)
-	}
-
-	// The unit is started, not serving: waiting for the model to load is what turns
-	// "installed" into a fact.
-	if applied {
-		probeCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-		err := waitForModel(probeCtx, baseURL, spec)
-		cancel()
-		if err != nil {
-			return FailureError("the service was installed but is not serving: %v (see `systemctl --user status %s`)",
-				err, serverUnitName)
-		}
-		if !ctx.JSON {
-			ctx.Print("serving at %s", baseURL)
-		}
-	}
-	return ctx.Emit("server", map[string]any{
-		"config": configPath,
-		"unit":   unitPath,
-		"binary": binary,
-		"model":  spec.Model,
-		"entry":  server.EntryID(spec.Model),
-		"url":    baseURL,
-		"active": applied,
-	})
 }
 
 // waitForModel waits until the service serves the checkpoint it was just given. /health
@@ -262,11 +164,22 @@ func documentationURL() string {
 	return "file://" + path
 }
 
-// runServerForeground is what the unit's ExecStart runs: write the config that matches
-// the settings, then become the server.
-func runServerForeground(ctx *Context, port int, modelFlag string) error {
+// runServerForeground is what the unit's ExecStart runs: write the config that matches the
+// settings, then become the server.
+//
+// The port comes from asr_server_url, because that is the address the engine dials: a second
+// place to set it would be a second way for the two to disagree.
+func runServerForeground(ctx *Context) error {
 	cfg := ctx.Config
-	spec, err := buildServerSpec(cfg, port, modelFlag)
+	port := server.DefaultPort
+	if baseURL := strings.TrimSpace(cfg.ASRServerURL); baseURL != "" {
+		_, parsed, err := server.ParseURL(baseURL)
+		if err != nil {
+			return PreconditionError("voiceime config set asr_server_url http://127.0.0.1:18080", "%v", err)
+		}
+		port = parsed
+	}
+	spec, err := buildServerSpec(cfg, port)
 	if err != nil {
 		return err
 	}
@@ -310,125 +223,10 @@ func runServerForeground(ctx *Context, port int, modelFlag string) error {
 	}
 }
 
-// runServerRestart applies a changed setting.
-func runServerRestart(ctx *Context) error {
-	if _, err := os.Stat(serverUnitPath()); err != nil {
-		return PreconditionError("voiceime server install", "no service is installed yet")
-	}
-	if err := runCommand("systemctl --user restart " + serverUnitName); err != nil {
-		return FailureError("systemctl --user restart %s: %v", serverUnitName, err)
-	}
-	_, port, err := server.ParseURL(ctx.Config.ASRServerURL)
-	if err != nil {
-		return PreconditionError("voiceime server install", "%v", err)
-	}
-	spec, err := buildServerSpec(ctx.Config, port, "")
-	if err != nil {
-		return PreconditionError("voiceime server install", "%v", err)
-	}
-	probeCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
-	if err := waitForModel(probeCtx, ctx.Config.ASRServerURL, spec); err != nil {
-		return FailureError("%v", err)
-	}
-	if !ctx.JSON {
-		ctx.Print("restarted; serving %s", filepath.Base(spec.Model))
-	}
-	return ctx.Emit("server", map[string]any{
-		"restarted": true,
-		"model":     spec.Model,
-		"entry":     server.EntryID(spec.Model),
-	})
-}
-
-func runServerUninstall(ctx *Context) error {
-	unitPath := serverUnitPath()
-	stopped := false
-	if _, err := exec.LookPath("systemctl"); err == nil {
-		if err := runCommand("systemctl --user disable --now " + serverUnitName); err == nil {
-			stopped = true
-		}
-	}
-	removed := []string{}
-	for _, path := range []string{unitPath, serverConfigFile()} {
-		if path == "" {
-			continue
-		}
-		if err := os.Remove(path); err == nil {
-			removed = append(removed, path)
-		}
-	}
-	if _, err := exec.LookPath("systemctl"); err == nil {
-		_ = runCommand("systemctl --user daemon-reload")
-	}
-	if ctx.Config.ASRServerURL != "" {
-		if err := ctx.Config.Set("asr_server_url", ""); err == nil {
-			_ = config.Save(ctx.Config, ctx.ConfigPath)
-			removed = append(removed, "asr_server_url cleared")
-		}
-	}
-	if !ctx.JSON {
-		for _, entry := range removed {
-			ctx.Print("removed %s", entry)
-		}
-		if !stopped {
-			ctx.Print("the service was not running, or systemd is unavailable")
-		}
-	}
-	return ctx.Emit("server", map[string]any{"removed": removed, "stopped": stopped})
-}
-
-func runServerStatus(ctx *Context) error {
-	cfg := ctx.Config
-	status := map[string]any{
-		"unit":        serverUnitPath(),
-		"config":      serverConfigFile(),
-		"url":         cfg.ASRServerURL,
-		"unit_active": false,
-		"listening":   false,
-	}
-	if _, err := os.Stat(serverUnitPath()); err == nil {
-		status["installed"] = true
-	}
-	if _, err := exec.LookPath("systemctl"); err == nil {
-		if out, err := exec.Command("systemctl", "--user", "is-active", serverUnitName).Output(); err == nil {
-			status["unit_active"] = true
-			status["unit_state"] = strings.TrimSpace(string(out))
-		}
-	}
-	base := cfg.ASRServerURL
-	if base == "" {
-		base = fmt.Sprintf("http://127.0.0.1:%d", server.DefaultPort)
-	}
-	probeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := server.Probe(probeCtx, base); err == nil {
-		status["listening"] = true
-		if entries, err := server.Entries(probeCtx, base); err == nil {
-			served := make([]map[string]string, 0, len(entries))
-			for _, entry := range entries {
-				served = append(served, map[string]string{
-					"id":   entry.ID,
-					"mode": entry.Mode,
-					"file": filepath.Base(entry.Path),
-					"path": entry.Path,
-				})
-			}
-			status["served"] = served
-		} else {
-			status["model_error"] = err.Error()
-		}
-	}
-	return ctx.Emit("server", status)
-}
-
 // buildServerSpec decides which checkpoint the service serves. Shared with doctor, so the
 // check can say what should be running.
-func buildServerSpec(cfg *config.Config, port int, modelFlag string) (server.Spec, error) {
-	configured := strings.TrimSpace(modelFlag)
-	if configured == "" {
-		configured = strings.TrimSpace(cfg.Model)
-	}
+func buildServerSpec(cfg *config.Config, port int) (server.Spec, error) {
+	configured := strings.TrimSpace(cfg.Model)
 	if configured == "" {
 		return server.Spec{}, PreconditionError(noModelFix, "%s", noModelAdvice())
 	}

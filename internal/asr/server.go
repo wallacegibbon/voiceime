@@ -142,7 +142,7 @@ func ModelID(ctx context.Context, base string, client *http.Client) (string, err
 		}
 		return listing.Data[0].ID, nil
 	case 0:
-		return "", fmt.Errorf("the server serves no model: run `voiceime server install`")
+		return "", fmt.Errorf("the server serves no model: run `voiceime apply`")
 	default:
 		return "", fmt.Errorf("the server serves %d models: this build serves one", len(listing.Data))
 	}
@@ -158,7 +158,7 @@ func (s ServerTranscriber) client() *http.Client {
 func (s ServerTranscriber) baseURL() (string, error) {
 	base := strings.TrimSpace(s.BaseURL)
 	if base == "" {
-		return "", fmt.Errorf("no server configured: run `voiceime server install`")
+		return "", fmt.Errorf("no server configured: run `voiceime apply`")
 	}
 	parsed, err := url.Parse(base)
 	if err != nil {

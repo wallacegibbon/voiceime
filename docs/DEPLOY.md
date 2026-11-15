@@ -12,7 +12,7 @@ BIN=~/.local/bin/voiceime
 ## 1. Build and install
 
 ```sh
-make check        # gofmt, vet, tests, unreachable code, doc links
+make check        # gofmt, vet, tests, unreachable code, unused code, doc links
 make install      # ~/.local/bin/voiceime, ~/.local/docs
 "$BIN" doctor
 ```
@@ -34,9 +34,11 @@ and lists the settings whose default is a property of the machine
 
 ```sh
 "$BIN" config set threads 8
-"$BIN" config set model ""            # empty: pick the best installed model
-"$BIN" config validate --json         # exit 3 when a setting would stop the service
 ```
+
+A setting takes effect when the next `apply` (below) reads the file, so nothing else is run
+here. What a wrong setting would do is `doctor`'s `config` finding, which names the setting
+and the command that corrects it.
 
 ## 3. A model
 
@@ -64,55 +66,65 @@ audio.cpp's. That second case says so by name - `is a GGUF (whisper) with no aud
 spec in it` - and what to do about it is to convert the checkpoint with audio.cpp, not to
 point voiceime at it harder.
 
-## 4. The service
+## 4. Make the machine match the file: `voiceime apply`
+
+One command installs and starts everything: the recognition service, the IBus component, the
+search path a login needs, and the desktop's input source. It is idempotent - a second run
+reports everything unchanged - and it refuses halfway: a configuration that cannot work is
+not applied at all.
 
 ```sh
-"$BIN" server install
-# assert: "serving <path> (family) as <id>" and then "serving at http://127.0.0.1:18080"
-"$BIN" server status --json
-# assert: data.unit_active == true, data.listening == true, data.served[0].file is the model
+"$BIN" apply
+# assert: service:   installed and started (voiceime-asr-server.service)
+#         serving:   sensevoice-small-q8-audiocpp-v1.gguf
+#         component: /home/<user>/.local/share/voiceime/component/voiceime.xml (written);
+#                    IBus restarted
+#         desktop:   appended ('ibus', 'voiceime') to the GNOME input sources; the sources
+#                    already configured are untouched
+#         engine:    was not running
 ```
 
-The unit runs `voiceime server run`, which renders the audio.cpp config from the settings at
-every start: changing `model` and re-running `config apply` is the whole update.
+One command because the work is one decision: the installed machine should look like the
+configuration. The service is written when its unit is missing and restarted when it is not -
+the unit runs `voiceime server run`, which renders the audio.cpp configuration from the
+settings at every start, so changing `model` and running `apply` again is the whole update.
+Then `apply` waits until the model is actually resident, which is what makes "applied" a fact
+rather than a request; a service that is merely started has applied nothing.
 
-Check the decode end to end before touching the desktop:
+The engine half writes the component file naming this binary, appends `('ibus', 'voiceime')`
+to GNOME's input-source list, and records the component directory in
+`~/.config/environment.d/voiceime.conf`. That list is the user's: `apply` adds one entry and
+leaves the rest - their layouts, their other engines, their recent-use order - exactly as it
+found them. The input source is the half that is easy to miss: the desktop's switcher and
+indicator are drawn from that list, so without it the engine receives keystrokes but cannot be
+selected from the menu.
+
+The `environment.d` file is there because the activation environment `apply` sets belongs to
+this session only. `environment.d` is read when a session starts, so the file is what makes
+the install survive the next login while the activation environment is what makes the engine
+work now. Without it the install looks finished and works until the next login: `ibus-daemon`
+starts without `IBUS_COMPONENT_PATH`, and the engine is not registered although nothing was
+uninstalled (`doctor` reports the same as `component_env`).
+
+`apply` ends by dropping the engine processes, so that the next activation runs the new
+binary, and selecting the input method again afterwards: an engine process that goes away
+takes the session's input method with it, and nothing puts it back by itself. The daemon
+restart above is asynchronous, so `apply` waits for `ibus list-engine` to answer again before
+it reads or sets the session's engine.
+
+Assert the desktop half from outside, once the daemon is back:
+
+```sh
+gsettings get org.gnome.desktop.input-sources sources
+# assert: the list contains ('ibus', 'voiceime')
+```
+
+## 5. The recognition path, without a keyboard
 
 ```sh
 "$BIN" transcribe --file sample_16k.wav
 # assert: the text, and a took_ms proportional to the recording
 ```
-
-## 5. The IBus engine
-
-```sh
-"$BIN" engine install --apply
-# assert: "added ('ibus', 'voiceime') to the GNOME input sources"
-# assert: "wrote /home/<user>/.config/environment.d/voiceime.conf"
-"$BIN" engine status --json
-# assert: data.engine_registered == true, data.engine_visible == true,
-#         data.environment_set == true, data.gnome_input_source.listed == true
-gsettings get org.gnome.desktop.input-sources sources
-# assert: the list contains ('ibus', 'voiceime')
-```
-
-`--apply` writes the component, adds its directory to `IBUS_COMPONENT_PATH`, deletes the
-registry cache, restarts IBus and appends the input source. The source list is the user's:
-the install adds one entry and leaves the rest - their layouts, their other engines, their
-recent-use order - exactly as it found them. The input source is the half that
-is easy to miss: the desktop's switcher and indicator are drawn from that list, so without
-it the engine receives keystrokes but cannot be selected from the menu.
-
-It also writes the search path to `~/.config/environment.d/voiceime.conf`, because the
-activation environment it sets above belongs to this session only. `environment.d` is read
-when a session starts, so the file is what makes the install survive the next login, while
-the activation environment is what makes the engine work now. Without the file the install
-looks finished and works until the next login: `ibus-daemon` then starts without
-`IBUS_COMPONENT_PATH`, and `engine status` reports the engine as not registered although
-nothing was uninstalled (`doctor` says the same as `component_env`).
-
-Run `engine status` a few seconds after `--apply`: the daemon restart is asynchronous, and
-`ibus list-engine` fails while it comes up.
 
 ## 6. Use it
 
@@ -129,37 +141,47 @@ of a hold: `ready: hold <Control>grave to dictate`, then `recording`, `decoded �
 ## 7. Acceptance, in one command
 
 ```sh
-"$BIN" doctor --json >/dev/null;                                   doctor=$?
-"$BIN" server status --json | grep -q '"listening": *true';        server=$?
-"$BIN" engine status --json | grep -q '"engine_registered": *true'; engine=$?
-"$BIN" engine status --json | grep -q '"listed": *true';           desktop=$?
-echo "doctor=$doctor server=$server engine=$engine desktop=$desktop"
+"$BIN" doctor --json >/tmp/voiceime-doctor.json; doctor=$?
+for id in asr_server component_exec component_env session_engine running_build; do
+  grep -q "\"id\":\"$id\",\"status\":\"ok\"" /tmp/voiceime-doctor.json && echo "$id ok" || echo "$id not ok"
+done
 ```
 
-All four zero is the deployable state. What no command can assert is a human seeing text in
-a focused window: dictate one sentence into a text editor.
+`doctor=0` and five lines ending in `ok` is the deployable state: the model resident, the
+component installed and still installed after the next login, keys reaching the engine, and
+nothing stale running. What no command can assert is a human seeing text in a focused window:
+dictate one sentence into a text editor.
+
+## Removing an installation
+
+```sh
+"$BIN" remove
+```
+
+Stops the service and the engine, and deletes the unit, the component file, the
+`environment.d` file and the input-source entry this tool added. The user's other input
+methods are left alone, and so is the model file: `model` names a file you own, and removing
+an installation does not delete it.
 
 ## Updating an installed copy
 
 ```sh
 make install
-"$BIN" config apply      # restarts the service, drops the engine, converges the component
+"$BIN" apply
 ```
 
 A running process keeps the binary it was started from, so `doctor` reports a stale one as a
-`warn` until it is restarted. `config apply` is what restarts them, and it selects the input
-method again afterwards: an engine process that goes away takes the session's input method
-with it, so without that the person at the keyboard is left unable to type until they pick an
-input method themselves.
+`warn` (`running_build`) until it is restarted. `apply` is what restarts them, and it selects
+the input method again afterwards, for the reason given in §4.
 
 ## Recovery
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `doctor` says there is no audio.cpp CLI, or that `asr_bin` names a file that cannot run | audio.cpp was never built, or the build tree moved or was cleaned | `"$BIN" config set asr_bin <path to audiocpp_cli>` (or build it and run `config init --force`), then `config apply` |
+| `doctor` says there is no audio.cpp CLI, or that `asr_bin` names a file that cannot run | audio.cpp was never built, or the build tree moved or was cleaned | `"$BIN" config set asr_bin <path to audiocpp_cli>` (or build it and run `config init --force`), then `"$BIN" apply` |
 | no text, log shows `no audio was recorded` | the sound server is not giving the microphone | `"$BIN" doctor`, then `config set capture_source` |
-| no text, log shows `transcribe …: …` | the service refused or timed out | `server status --json`, then `config apply` |
-| the desktop still shows the input method, but no application receives any key at all | no engine is selected for the session: an engine process ended, and the daemon clears the global engine when its bus name disappears (`ibus engine` answers `No engine is set.`) | `ibus engine voiceime`, which also starts the engine process (`doctor` reports `session_engine`; `config apply` selects it again too) |
-| the menu does not list Voiceime | not in the input-source list | `"$BIN" engine install --apply` |
-| `engine status` says not registered | the daemon has not read the component | `"$BIN" engine install --apply`, then re-check after a few seconds |
-| the engine disappears after every login | `IBUS_COMPONENT_PATH` was set for one session only, not written to `~/.config/environment.d/voiceime.conf` | `"$BIN" engine install --apply` (`doctor` reports `component_env`) |
+| no text, log shows `transcribe …: …` | the service refused or timed out | `"$BIN" doctor` (the `asr_server` finding), then `"$BIN" apply` |
+| the desktop still shows the input method, but no application receives any key at all | no engine is selected for the session: an engine process ended, and the daemon clears the global engine when its bus name disappears (`ibus engine` answers `No engine is set.`) | `ibus engine voiceime`, which also starts the engine process (`doctor` reports `session_engine`; `apply` selects it again too) |
+| the menu does not list Voiceime | not in the input-source list | `"$BIN" apply` |
+| `doctor` reports `ibus` or `component_exec` as not registered | the daemon has not read the component | `"$BIN" apply`, then `"$BIN" doctor` again |
+| the engine disappears after every login | `IBUS_COMPONENT_PATH` was set for one session only, not written to `~/.config/environment.d/voiceime.conf` | `"$BIN" apply` (`doctor` reports `component_env`) |

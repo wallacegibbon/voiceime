@@ -80,7 +80,7 @@ func TestASRServerCheckStates(t *testing.T) {
 			unit:       true,
 			wantStatus: "fail",
 			wantDetail: "is not answering",
-			wantFix:    "config apply",
+			wantFix:    "voiceime apply",
 		},
 	}
 
@@ -135,7 +135,7 @@ func TestASRServerCheckCatchesAStaleModel(t *testing.T) {
 	if !strings.Contains(check.Detail, "qwen") || !strings.Contains(check.Detail, "other") {
 		t.Errorf("detail %q does not name both the configured and the served model", check.Detail)
 	}
-	if !strings.Contains(check.Fix, "config apply") {
+	if !strings.Contains(check.Fix, "voiceime apply") {
 		t.Errorf("fix %q does not say how to apply the changed setting", check.Fix)
 	}
 }
@@ -172,8 +172,8 @@ func TestServerUnitRunsVoiceimeWithSubcommand(t *testing.T) {
 		t.Errorf("unit cites a manual that is not installed:\n%s", unit)
 	}
 	// The settings file has to be named. Without it the service reads the default path,
-	// so a `server install --config <file>` would install a service that serves
-	// something other than the file it was given.
+	// so an `apply --config <file>` would install a service that serves something other
+	// than the file it was given.
 	if !strings.Contains(unit, "--config /home/u/.config/voiceime/config.toml") {
 		t.Errorf("unit does not name the configuration file:\n%s", unit)
 	}
@@ -199,7 +199,7 @@ func TestConfigSetNamesHowToApplyEverySetting(t *testing.T) {
 			t.Fatalf("config set %s %q: exit %d, stderr %s", field.Key, value, code, stderr)
 		}
 		payload := decodeOne(t, stdout)["data"].(map[string]any)
-		if payload["apply_with"] != "voiceime config apply" {
+		if payload["apply_with"] != "voiceime apply" {
 			t.Errorf("%s: apply_with = %v, want the one command that applies a setting", field.Key, payload["apply_with"])
 		}
 	}

@@ -35,7 +35,7 @@ type Config struct {
 	// A hold whose key never comes up stops recording here.
 	MaxUtteranceSeconds float64 `toml:"max_utterance_seconds" desc:"Stop one recording after this many seconds."`
 
-	ASRServerURL       string `toml:"asr_server_url" desc:"Resident audiocpp_server root, e.g. http://127.0.0.1:18080; 'voiceime server install' sets it."`
+	ASRServerURL       string `toml:"asr_server_url" desc:"Resident audiocpp_server root, e.g. http://127.0.0.1:18080; 'voiceime apply' sets it."`
 	ASRServerTimeoutMS int    `toml:"asr_server_timeout_ms" desc:"Deadline for one transcription."`
 
 	CaptureSource string `toml:"capture_source" desc:"PipeWire source name; empty uses the default input."`

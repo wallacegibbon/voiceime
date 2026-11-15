@@ -24,7 +24,7 @@ func componentExecCheck(report func(Check)) {
 			ID:     "component_exec",
 			Status: "warn",
 			Detail: "no component file at " + path + "; dictation has no way into applications yet",
-			Fix:    "voiceime engine install --apply",
+			Fix:    "voiceime apply",
 		})
 		return
 	}
@@ -34,7 +34,7 @@ func componentExecCheck(report func(Check)) {
 			ID:     "component_exec",
 			Status: "fail",
 			Detail: err.Error(),
-			Fix:    "voiceime engine install --apply",
+			Fix:    "voiceime apply",
 		})
 		return
 	}
@@ -43,7 +43,7 @@ func componentExecCheck(report func(Check)) {
 			ID:     "component_exec",
 			Status: "fail",
 			Detail: fmt.Sprintf("the component tells IBus to run %s, which does not exist (the checkout was moved or renamed)", exec),
-			Fix:    "voiceime engine install --apply",
+			Fix:    "voiceime apply",
 		})
 		return
 	}
@@ -52,7 +52,7 @@ func componentExecCheck(report func(Check)) {
 
 // componentEnvironmentCheck reports whether the engine survives a login. A user-level
 // component is found only because IBUS_COMPONENT_PATH names its directory, and that
-// variable belongs to the session: `engine install --apply` also writes it to
+// variable belongs to the session: `voiceime apply` writes it to
 // environment.d, and an install that skipped that works until the machine is rebooted.
 func componentEnvironmentCheck(report func(Check)) {
 	registered, _ := engineRegistered()
@@ -63,7 +63,7 @@ func componentEnvironmentCheck(report func(Check)) {
 	}
 	check := Check{ID: "component_env", Status: status, Detail: detail}
 	if status != "ok" {
-		check.Fix = "voiceime engine install --apply"
+		check.Fix = "voiceime apply"
 	}
 	report(check)
 }
@@ -228,7 +228,7 @@ func runningBuildCheck(report func(Check)) {
 	// The fix is only offered when something is wrong: printing a restart command under an
 	// ok finding invites an agent to restart a healthy process, which would drop the user's
 	// current dictation session.
-	report(Check{ID: "running_build", Status: worst, Detail: strings.Join(stale, "; "), Fix: "voiceime config apply"})
+	report(Check{ID: "running_build", Status: worst, Detail: strings.Join(stale, "; "), Fix: "voiceime apply"})
 }
 
 // runningBinaryVerdict classifies the binary a running process came from against the path
@@ -331,13 +331,13 @@ func serverUnitCheck(report func(Check)) {
 			ID:     "server_unit",
 			Status: "fail",
 			Detail: "no recognition server unit; dictation decodes through one, so nothing works without it",
-			Fix:    "voiceime server install",
+			Fix:    "voiceime apply",
 		})
 		return
 	}
 	exec, err := unitExecStart(path)
 	if err != nil {
-		report(Check{ID: "server_unit", Status: "fail", Detail: err.Error(), Fix: "voiceime server install"})
+		report(Check{ID: "server_unit", Status: "fail", Detail: err.Error(), Fix: "voiceime apply"})
 		return
 	}
 	if !isExecutable(exec) {
@@ -345,7 +345,7 @@ func serverUnitCheck(report func(Check)) {
 			ID:     "server_unit",
 			Status: "fail",
 			Detail: fmt.Sprintf("%s runs %s, which does not exist; systemd will restart it forever with status=203/EXEC", path, exec),
-			Fix:    "voiceime server install",
+			Fix:    "voiceime apply",
 		})
 		return
 	}
@@ -357,7 +357,7 @@ func serverUnitCheck(report func(Check)) {
 			ID:     "server_unit",
 			Status: "warn",
 			Detail: fmt.Sprintf("the unit runs %s while the component file runs %s: the engine and the service are different builds", exec, want),
-			Fix:    "voiceime server install",
+			Fix:    "voiceime apply",
 		})
 		return
 	}

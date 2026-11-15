@@ -111,7 +111,8 @@ func runDoctor(ctx *Context) []Check {
 		if source := defaultSource(); source != "" {
 			detail += " (default source: " + source + ")"
 		} else {
-			detail += " (no default source reported; check `voiceime devices`)"
+			detail += " (no default source reported; `pactl list short sources`, then " +
+				"`voiceime config set capture_source <name>`)"
 		}
 		report(Check{ID: "capture", Status: "ok", Detail: detail})
 	}
@@ -129,8 +130,8 @@ func runDoctor(ctx *Context) []Check {
 		fix = "ibus-daemon -drx"
 	} else if registered, _ := state["engine_registered"].(bool); !registered {
 		status = "fail"
-		detail = "the voiceime engine is not registered with IBus"
-		fix = "voiceime engine install --apply"
+		detail = "the engine is not registered with IBus"
+		fix = "voiceime apply"
 	}
 	report(Check{ID: "ibus", Status: status, Detail: detail, Fix: fix})
 

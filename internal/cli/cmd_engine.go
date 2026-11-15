@@ -156,11 +156,10 @@ func runCommand(line string) error {
 
 func cmdIBusEngine() *Command {
 	var (
-		commitOnEnable string
-		address        string
-		tracePath      string
-		componentName  string
-		audioFile      string
+		address       string
+		tracePath     string
+		componentName string
+		audioFile     string
 	)
 	return &Command{
 		Name:    "ibus-engine",
@@ -168,8 +167,6 @@ func cmdIBusEngine() *Command {
 		Usage:   "voiceime ibus-engine --ibus [--address unix:path=...]",
 		Flags: func(set *flag.FlagSet) {
 			set.Bool("ibus", false, "accepted and ignored; ibus-daemon passes it")
-			set.StringVar(&commitOnEnable, "commit-on-enable", "",
-				"diagnostic: commit this text when the engine is activated, without audio")
 			set.StringVar(&address, "address", "", "IBus bus address (default: IBUS_ADDRESS or the registry file)")
 			set.StringVar(&tracePath, "trace", "", "append incoming D-Bus calls and the session log to this file")
 			set.StringVar(&audioFile, "audio-file", "",
@@ -184,11 +181,10 @@ func cmdIBusEngine() *Command {
 				os.Setenv("VOICEIME_IBUS_TRACE", tracePath)
 			}
 			return runIBusEngine(ctx, engineRunOptions{
-				address:        address,
-				commitOnEnable: commitOnEnable,
-				componentName:  componentName,
-				audioFile:      audioFile,
-				tracePath:      tracePath,
+				address:       address,
+				componentName: componentName,
+				audioFile:     audioFile,
+				tracePath:     tracePath,
 			})
 		},
 	}
@@ -197,15 +193,14 @@ func cmdIBusEngine() *Command {
 // engineRunOptions is the engine process's whole configuration. It is a struct
 // because the argument list had grown past the point where position is readable.
 type engineRunOptions struct {
-	address        string
-	commitOnEnable string
-	componentName  string
-	audioFile      string
-	tracePath      string
+	address       string
+	componentName string
+	audioFile     string
+	tracePath     string
 }
 
 func runIBusEngine(ctx *Context, options engineRunOptions) error {
-	address, commitOnEnable, componentName := options.address, options.commitOnEnable, options.componentName
+	address, componentName := options.address, options.componentName
 	audioFile, tracePath := options.audioFile, options.tracePath
 	if address == "" {
 		resolved, err := ibus.ResolveAddress(ibus.Ping)
@@ -241,21 +236,15 @@ func runIBusEngine(ctx *Context, options engineRunOptions) error {
 		}
 	}
 
-	var handler ibus.Handler
-	switch {
-	case commitOnEnable != "":
-		// Diagnostic: commit a fixed string, no audio pipeline.
-		ctx.Print("engine started on %s (diagnostic commit only)", address)
-		handler = &diagnosticHandler{text: commitOnEnable, out: ctx.Stdout}
-	default:
-		pipeline, err := newPushToTalk(ctx, logf, audioFile)
-		if err != nil {
-			return err
-		}
-		ctx.Print("engine started on %s; hold %s to dictate", address, pipeline.TriggerSpec())
-		handler = pipeline
+	// One pipeline, whether the audio comes from the microphone or from a file: the
+	// diagnostic run is the real path with a different source, not a shorter path that
+	// proves less.
+	pipeline, err := newPushToTalk(ctx, logf, audioFile)
+	if err != nil {
+		return err
 	}
-	engineErr := ibus.Run(runCtx, component, handler, address)
+	ctx.Print("engine started on %s; hold %s to dictate", address, pipeline.TriggerSpec())
+	engineErr := ibus.Run(runCtx, component, pipeline, address)
 	if engineErr != nil {
 		// The last line this session's log gets, and the one that says why the engine
 		// ended: an engine that is not running is an input method that answers nothing, and
@@ -325,25 +314,3 @@ func rotateLog(path string) {
 	}
 	_ = os.Truncate(path, 0)
 }
-
-// diagnosticHandler commits a fixed string when activated, so that the delivery
-// path can be verified without any audio at all.
-type diagnosticHandler struct {
-	text string
-	out  interface{ Write([]byte) (int, error) }
-}
-
-func (h *diagnosticHandler) Enable(control ibus.Control) {
-	fmt.Fprintf(h.out, "engine enabled; committing %q\n", h.text)
-	if err := control.Commit(h.text); err != nil {
-		fmt.Fprintf(h.out, "commit failed: %v\n", err)
-		return
-	}
-	fmt.Fprintf(h.out, "committed\n")
-}
-
-func (h *diagnosticHandler) Disable() {
-	fmt.Fprintln(h.out, "engine disabled")
-}
-
-func (h *diagnosticHandler) KeyEvent(keyval, keycode, state uint32) bool { return false }

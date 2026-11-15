@@ -130,11 +130,9 @@ type Handler interface {
 // instances the daemon asks for.
 type Service struct {
 	Component Component
-	Handler   Handler
-	// EnableText, when non-empty, is committed by the default handler on Enable.
-	// It exists so injection can be verified without speaking into a microphone,
-	// which is what made the protocol investigation possible.
-	EnableText string
+	// Handler is the pipeline this engine delivers text through. Required: an engine
+	// with no handler is a name on the bus that answers nothing.
+	Handler Handler
 
 	conn *dbus.Conn
 
@@ -173,6 +171,9 @@ func Ping(address string) error {
 
 // Run connects, registers the name and factory, and serves until ctx is done.
 func Run(ctx context.Context, component Component, handler Handler, address string) error {
+	if handler == nil {
+		return fmt.Errorf("no handler: an engine with nothing to enable would answer no keys at all")
+	}
 	service := &Service{
 		Component: component,
 		Handler:   handler,
@@ -392,22 +393,12 @@ func (e *engineObject) Enable() *dbus.Error {
 	e.mu.Lock()
 	repeated := e.active
 	e.active = true
-	handler, testText := e.service.Handler, e.service.EnableText
+	handler := e.service.Handler
 	e.mu.Unlock()
 	if repeated {
 		return nil
 	}
-
-	switch {
-	case handler != nil:
-		handler.Enable(e.control())
-	case testText != "":
-		// No pipeline attached: this is a diagnostic run, whose only purpose is to
-		// prove text reaches an application.
-		if err := e.control().Commit(testText); err != nil {
-			return dbus.MakeFailedError(err)
-		}
-	}
+	handler.Enable(e.control())
 	return nil
 }
 
@@ -419,7 +410,7 @@ func (e *engineObject) Disable() *dbus.Error {
 	handler := e.service.Handler
 	e.mu.Unlock()
 	// Only a context that was enabled is one the handler is counting.
-	if handler != nil && wasActive {
+	if wasActive {
 		handler.Disable()
 	}
 	return nil
@@ -430,9 +421,6 @@ func (e *engineObject) ProcessKeyEvent(keyval, keycode, state uint32) (bool, *db
 	e.mu.Lock()
 	handler := e.service.Handler
 	e.mu.Unlock()
-	if handler == nil {
-		return false, nil
-	}
 	return handler.KeyEvent(keyval, keycode, state), nil
 }
 
@@ -477,7 +465,7 @@ func (e *engineObject) shutdown() {
 	active, handler := e.active, e.service.Handler
 	e.active = false
 	e.mu.Unlock()
-	if active && handler != nil {
+	if active {
 		handler.Disable()
 	}
 }

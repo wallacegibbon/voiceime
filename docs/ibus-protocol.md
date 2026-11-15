@@ -218,14 +218,14 @@ Two consequences shape voiceime's use of it :
   its release would leave that modifier latched in the application - the failure measured
   with the daemon's global shortcut (D13) - so modifiers are watched and always passed
   through.
-* **A lost release is a real failure, and it is recoverable.** A release can go to a
-  different input context than the one that took the press, and the engine cannot tell
-  which. What it can tell is time: `xset q` on this desktop reports a repeat delay of 500ms
-  and a rate of 33/s, so the repeats of one press arrive 30ms apart (measurements.md). A
-  press that arrives after that gap is a person pressing again, so it ends the recording the
-  missing release left open and starts the next one. The cap in `max_utterance_seconds`
-  still stands behind it: it is what keeps a key that is genuinely held down from holding a
-  microphone open forever.
+* **A lost release is a recoverable failure, not a dead input method.** A release can go to
+  a different input context than the one that took the press, and the engine cannot tell
+  which. What it can use is time: `xset q` on this desktop reports a repeat delay of 500ms
+  and a rate of 33/s, so a press that follows the last one by more than that delay cannot
+  be a repeat of it (measurements.md). Such a press ends the recording the missing release
+  left open and starts the next one. The cap in `max_utterance_seconds` still stands behind
+  it: it is what keeps a key that is genuinely held down from holding a microphone open
+  forever.
 
 ## The wire format of committed text
 

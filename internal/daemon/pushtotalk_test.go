@@ -418,6 +418,38 @@ func TestPushToTalkCapsAHeldRecording(t *testing.T) {
 	}
 }
 
+// The first repeat of a held key follows the press by 500ms on this desktop and looks
+// exactly like a fresh press of it. A hold longer than that stays one recording: with a
+// shorter gap the engine read that repeat as a press whose release had gone missing, and
+// every dictation over half a long was cut in two.
+func TestPushToTalkDoesNotSplitAHoldAtTheFirstRepeat(t *testing.T) {
+	handler, source, transcriber := newTestPushToTalk(t)
+	logs := &logCollector{}
+	handler.Log = logs.logf
+	control := &recordingControl{}
+	handler.Enable(control)
+
+	handler.KeyEvent(graveKeyval, 0, ibus.ModControl)
+	waitFor(t, "the capture to start", source.started)
+	time.Sleep(500 * time.Millisecond)
+	if !handler.KeyEvent(graveKeyval, 0, ibus.ModControl) {
+		t.Error("the first repeat of the held key was passed to the application")
+	}
+	source.publish(tone(0.8, 6000))
+	handler.KeyEvent(graveKeyval, 0, ibus.ModControl|ibus.ReleaseMask)
+
+	waitFor(t, "the hold to be decoded", func() bool { return len(transcriber.calls()) == 1 })
+	if got := source.recordings(); got != 1 {
+		t.Errorf("%d recordings were opened, want one hold to be one recording", got)
+	}
+	if text := logs.text(); strings.Contains(text, "never saw its release") {
+		t.Errorf("a held key was read as a lost release:\n%s", text)
+	}
+	if seconds := audio.DurationSeconds(transcriber.calls()[0]); seconds < 0.5 {
+		t.Errorf("the decode was asked to read %.2fs, want the whole hold", seconds)
+	}
+}
+
 // The repeats of a held key do not stop when its recording does: the cap ends the
 // recording, and the key is still down. Those repeats must not open a second recording,
 // and the release still has to clear the belief that the key is down.

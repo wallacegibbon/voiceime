@@ -61,13 +61,16 @@ type PushToTalk struct {
 	pressedAt time.Time
 }
 
-// autoRepeatGap separates the repeats of a held key from a press of it. Measured on this
-// desktop with xset q: the first repeat follows a press by 500ms and every repeat after
-// that by 30ms, so the repeats of one press are always closer together than this gap.
-// The gap is deliberately well below the 500ms delay: what it now protects against is not
-// a second recording so much as a trigger that stopped answering, and nobody presses
-// again, after seeing nothing happen, faster than a few times a second.
-const autoRepeatGap = 300 * time.Millisecond
+// autoRepeatGap separates the repeats of a held key from a press of it.
+//
+// It has to be larger than the repeat delay, because the first repeat of a held key is
+// indistinguishable from a fresh press: this desktop (xset q) sends it 500ms after the
+// press, and every repeat after that 30ms later. A gap of 300ms was tried and measured
+// against a person actually dictating: every hold longer than half a second split in two
+// at that first repeat. It also has to stay small enough to notice a trigger that stopped
+// answering, and a person who pressed and saw nothing happening pauses before pressing
+// again on purpose. 750ms sits between the two.
+const autoRepeatGap = 750 * time.Millisecond
 
 // hold is one recording in flight.
 type hold struct {

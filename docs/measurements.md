@@ -94,20 +94,26 @@ $ xset q | grep 'repeat delay'
   auto repeat delay:  500    repeat rate:  33
 ```
 
-so the first repeat follows a press by 500ms and every repeat after it by 30ms. Presses
-closer together than `autoRepeatGap` (300ms) are the same key.
+so the first repeat follows a press by 500ms and every repeat after it by 30ms.
 
-That gap exists because of what the engine used to do: it remembered "the trigger is down"
+That number sets a constant. The engine has to tell the repeats of one press from a press
+that follows a release which never arrived, and the first repeat looks exactly like the
+latter. A gap of 300ms was tried, and measured against a person dictating: every hold
+longer than half a second was cut in two at that first repeat, three times in one session,
+each one visible in the log as `the press before this one never saw its release`. So
+`autoRepeatGap` is 750ms: above the repeat delay, below the pause someone makes before
+pressing again on purpose after seeing nothing happen.
+
+The gap exists because of what the engine used to do: it remembered "the trigger is down"
 until it saw the release, and a release that never reached it left that belief standing for
 as long as the engine stayed selected. Every press after it was taken for a repeat, so the
 key did nothing at all - the failure reported by the user, which they cleared by switching
 to another input method and back (deselecting the engine drops the state). Nothing was
 logged, because a repeat is not interesting.
 
-The gap is what lets the engine notice that its belief is false: the repeats of one press
-are always closer together than it, so a press further away than it cannot be a repeat. The
-audio of the abandoned hold is decoded rather than dropped - it was spoken as part of the
-same dictation - and the log says so.
+With the gap, a press that cannot be a repeat ends the recording the missing release left
+open - that audio was spoken as part of the same dictation, so it is decoded rather than
+dropped - starts the next one, and writes the log line that says so.
 
 Not measured: which client swallowed the release. The engine has no way to know, and its log
 line reports only what it saw.

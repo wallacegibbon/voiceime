@@ -85,34 +85,22 @@ not applied at all.
 ```
 
 One command because the work is one decision: the installed machine should look like the
-configuration. The service is written when its unit is missing and restarted when it is not -
-the unit runs `voiceime server run`, which renders the audio.cpp configuration from the
-settings at every start, so changing `model` and running `apply` again is the whole update.
-Then `apply` waits until the model is actually resident, which is what makes "applied" a fact
-rather than a request; a service that is merely started has applied nothing.
+configuration. What it writes, and why each of those files is needed, is
+[AGENT.md](AGENT.md); the measurements behind the search path and the component registry
+cache are in [ibus-protocol.md](ibus-protocol.md). Three things about running it belong
+here:
 
-The engine half writes the component file naming this binary, appends `('ibus', 'voiceime')`
-to GNOME's input-source list, and records the component directory in
-`~/.config/environment.d/voiceime.conf`. That list is the user's: `apply` adds one entry and
-leaves the rest - their layouts, their other engines, their recent-use order - exactly as it
-found them. The input source is the half that is easy to miss: the desktop's switcher and
-indicator are drawn from that list, so without it the engine receives keystrokes but cannot be
-selected from the menu.
+* It waits until the configured checkpoint is resident. A service that is started but still
+  loading, or still serving the previous model, has not applied anything.
+* It restarts IBus, and that is asynchronous: `apply` waits for `ibus list-engine` to answer
+  before it reads or sets the session's engine, which is why the desktop assertion below is
+  worth running a second later rather than immediately.
+* It ends by dropping the engine processes, so that the next activation runs the new binary,
+  and selecting the input method again: an engine process that goes away takes the session's
+  input method with it, and nothing puts it back by itself.
 
-The `environment.d` file is there because the activation environment `apply` sets belongs to
-this session only. `environment.d` is read when a session starts, so the file is what makes
-the install survive the next login while the activation environment is what makes the engine
-work now. Without it the install looks finished and works until the next login: `ibus-daemon`
-starts without `IBUS_COMPONENT_PATH`, and the engine is not registered although nothing was
-uninstalled (`doctor` reports the same as `component_env`).
-
-`apply` ends by dropping the engine processes, so that the next activation runs the new
-binary, and selecting the input method again afterwards: an engine process that goes away
-takes the session's input method with it, and nothing puts it back by itself. The daemon
-restart above is asynchronous, so `apply` waits for `ibus list-engine` to answer again before
-it reads or sets the session's engine.
-
-Assert the desktop half from outside, once the daemon is back:
+The input-source list is the user's. `apply` adds one entry and leaves the rest - their
+layouts, their other engines, their recent-use order - exactly as it found them. Assert it:
 
 ```sh
 gsettings get org.gnome.desktop.input-sources sources

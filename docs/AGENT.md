@@ -6,8 +6,9 @@ configure and verify voiceime by reading this file and running commands.
 if the two disagree, the runtime wins.
 
 **Scope.** Commands and settings. The procedure for a new machine is
-[DEPLOY.md](DEPLOY.md); the recognition path is [asr.md](asr.md); measured numbers are in
-[measurements.md](measurements.md).
+[DEPLOY.md](DEPLOY.md); the recognition path is [asr.md](asr.md); what the engine sends over
+the bus, and what IBus does with it, is [ibus-protocol.md](ibus-protocol.md); measured
+numbers are in [measurements.md](measurements.md).
 
 ## Ground rules
 

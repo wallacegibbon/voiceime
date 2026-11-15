@@ -15,9 +15,9 @@ numbers are in [measurements.md](measurements.md).
 * **No prompts, no GUI.** A decision is a flag or a setting.
 * **`--json` may be placed anywhere** on the command line. It is the switch from a report a
   person reads to the contract above: `data` on stdout, the error object on stderr, and no
-  prose on either. `--pretty` only indents that object - it does nothing on its own, and
-  unindented output is what the `grep` assertions in DEPLOY.md rely on, so both modes are
-  kept on purpose.
+  prose on either. One line, always: the object an agent parses and the line a shell greps
+  for are the same thing, and `grep '"id":"asr_server","status":"ok"'` only works when a
+  record does not span lines.
 * **One JSON object per invocation**: `{"command":…,"ok":true,"data":{…}}` on stdout, or
   `{"command":…,"ok":false,"error":{"kind":…,"message":…,"fix":…},"exit_code":N}` on stderr.
 

@@ -56,7 +56,6 @@ type Context struct {
 	Config     *config.Config
 	ConfigPath string
 	JSON       bool
-	Pretty     bool
 	Stdout     io.Writer
 	Stderr     io.Writer
 }
@@ -87,10 +86,9 @@ func (c *Context) Emit(command string, data any) error {
 }
 
 func (c *Context) writeEnvelope(envelope map[string]any) error {
+	// One line, deliberately: the shape an agent parses and the shape a shell greps
+	// for are the same one, and nothing here is meant to be read at length by eye.
 	encoder := json.NewEncoder(c.Stdout)
-	if c.Pretty {
-		encoder.SetIndent("", "  ")
-	}
 	return encoder.Encode(envelope)
 }
 
@@ -203,7 +201,6 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		Config:     cfg,
 		ConfigPath: globals.configPath,
 		JSON:       globals.json,
-		Pretty:     globals.pretty,
 		Stdout:     stdout,
 		Stderr:     stderr,
 	}
@@ -287,7 +284,6 @@ func find(name string) *Command {
 
 type globalOptions struct {
 	json       bool
-	pretty     bool
 	configPath string
 }
 
@@ -298,8 +294,6 @@ func splitGlobals(args []string) (globalOptions, []string, error) {
 		switch arg := args[i]; {
 		case arg == "--json":
 			options.json = true
-		case arg == "--pretty":
-			options.pretty = true
 		case arg == "--config":
 			if i+1 >= len(args) {
 				return options, nil, errors.New("--config needs a path")
@@ -341,9 +335,6 @@ func writeError(stderr io.Writer, command string, globals globalOptions, err err
 			payload["error"].(map[string]any)["fix"] = fix
 		}
 		encoder := json.NewEncoder(stderr)
-		if globals.pretty {
-			encoder.SetIndent("", "  ")
-		}
 		_ = encoder.Encode(payload)
 		return
 	}
@@ -364,7 +355,6 @@ func writeHelp(w io.Writer) {
 	}
 	fmt.Fprint(w, "\nGlobal flags (accepted before or after the command):\n")
 	fmt.Fprint(w, "  --json           one JSON object on stdout (errors on stderr); no human lines\n")
-	fmt.Fprint(w, "  --pretty         indent that JSON (it changes nothing without --json)\n")
 	fmt.Fprint(w, "  --config <path>  configuration file (default "+config.DefaultPath()+")\n")
 	fmt.Fprint(w, "\n`ibus-engine` is started by ibus-daemon and `server run` by the service unit: they are\nentry points, not commands to run by hand.\n")
 	fmt.Fprint(w, "\nEvery command is non-interactive and idempotent; docs/AGENT.md has recipes.\n")

@@ -195,7 +195,7 @@ doctor: build ## Check this machine against the built binary
 
 .PHONY: capabilities
 capabilities: build ## Print the machine-readable command and config surface
-	$(BIN_DIR)/$(BINARY) capabilities --pretty
+	$(BIN_DIR)/$(BINARY) capabilities --json
 
 .PHONY: verify
 verify: check doctor ## Run the tests and then check the machine

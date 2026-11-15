@@ -418,6 +418,84 @@ func TestPushToTalkCapsAHeldRecording(t *testing.T) {
 	}
 }
 
+// The repeats of a held key do not stop when its recording does: the cap ends the
+// recording, and the key is still down. Those repeats must not open a second recording,
+// and the release still has to clear the belief that the key is down.
+func TestPushToTalkIgnoresTheRepeatsOfAKeyWhoseRecordingWasCapped(t *testing.T) {
+	handler, source, transcriber := newTestPushToTalk(t)
+	handler.Config.MaxUtteranceSeconds = 0.5
+	logs := &logCollector{}
+	handler.Log = logs.logf
+	control := &recordingControl{}
+	handler.Enable(control)
+
+	handler.KeyEvent(graveKeyval, 0, ibus.ModControl)
+	waitFor(t, "the capture to start", source.started)
+	source.publish(tone(0.8, 6000))
+	waitFor(t, "the capped recording to end", func() bool {
+		return strings.Contains(logs.text(), "max_utterance_seconds")
+	})
+
+	// This desktop repeats a held key 33 times a second; a few of those ticks stand in
+	// for all of them.
+	for range 5 {
+		if !handler.KeyEvent(graveKeyval, 0, ibus.ModControl) {
+			t.Error("a repeat of the held key was passed to the application")
+		}
+	}
+	if got := source.recordings(); got != 1 {
+		t.Errorf("%d recordings were opened, want the repeats of a held key to open none", got)
+	}
+
+	handler.KeyEvent(graveKeyval, 0, ibus.ModControl|ibus.ReleaseMask)
+	handler.KeyEvent(graveKeyval, 0, ibus.ModControl)
+	waitFor(t, "a recording opened by the press after the release", func() bool {
+		return source.recordings() == 2
+	})
+	source.publish(tone(0.2, 6000))
+	handler.KeyEvent(graveKeyval, 0, ibus.ModControl|ibus.ReleaseMask)
+	waitFor(t, "the second recording to be decoded", func() bool { return len(transcriber.calls()) == 2 })
+}
+
+// A press whose release never arrived used to leave the trigger dead: every press after it
+// was taken for the repeat of a key still held down, and only deselecting the input method
+// put the engine back. The press that arrives after the repeat gap is a person pressing
+// again, so it ends the recording the lost release left open and starts the next one.
+func TestPushToTalkRecoversFromAPressWithNoRelease(t *testing.T) {
+	handler, source, transcriber := newTestPushToTalk(t)
+	logs := &logCollector{}
+	handler.Log = logs.logf
+	control := &recordingControl{}
+	handler.Enable(control)
+
+	handler.KeyEvent(graveKeyval, 0, ibus.ModControl)
+	waitFor(t, "the capture to start", source.started)
+	source.publish(tone(0.5, 6000))
+
+	// Nothing arrives for this hold: the input context that received the key's release
+	// was not ours. A moment later the user presses the trigger again.
+	time.Sleep(autoRepeatGap + 300*time.Millisecond)
+	if !handler.KeyEvent(graveKeyval, 0, ibus.ModControl) {
+		t.Fatal("the press after the lost release was not consumed")
+	}
+	if got := source.recordings(); got != 2 {
+		t.Fatalf("%d recordings were open, want the abandoned one ended and a new one started", got)
+	}
+	// What was dictated before the release went missing is speech, not garbage: it is
+	// decoded rather than dropped.
+	waitFor(t, "the abandoned recording to be decoded", func() bool { return len(transcriber.calls()) == 1 })
+	if text := logs.text(); !strings.Contains(text, "never saw its release") {
+		t.Errorf("the log does not say what happened:\n%s", text)
+	}
+
+	source.publish(tone(0.5, 6000))
+	handler.KeyEvent(graveKeyval, 0, ibus.ModControl|ibus.ReleaseMask)
+	waitFor(t, "the second recording to be decoded", func() bool { return len(transcriber.calls()) == 2 })
+	if got := control.delivered(); len(got) != 2 {
+		t.Errorf("the application received %d sentences, want both dictations", len(got))
+	}
+}
+
 // Leaving the engine while the key is down drops the recording: the caret it was dictated
 // for is being torn down.
 func TestPushToTalkDiscardsTheRecordingWhenDeselected(t *testing.T) {

@@ -52,12 +52,22 @@ type PushToTalk struct {
 	sink     *switchableSink
 	contexts int
 	// holding is the recording in flight, or nil. It is what a press starts and a
-	// release ends; a second press while it exists is auto-repeat.
+	// release ends.
 	holding *hold
-	// consuming says the trigger key's press was consumed, so its release has to be
-	// consumed too - the application must not receive half a keystroke.
-	consuming bool
+	// pressedAt is when the trigger's press was last seen, or the zero time when no
+	// press is waiting for its release. Two things depend on it: a press the
+	// application never saw must have its release swallowed too, and the gap between
+	// two presses is what tells the repeats of a held key from a fresh press.
+	pressedAt time.Time
 }
+
+// autoRepeatGap separates the repeats of a held key from a press of it. Measured on this
+// desktop with xset q: the first repeat follows a press by 500ms and every repeat after
+// that by 30ms, so the repeats of one press are always closer together than this gap.
+// The gap is deliberately well below the 500ms delay: what it now protects against is not
+// a second recording so much as a trigger that stopped answering, and nobody presses
+// again, after seeing nothing happen, faster than a few times a second.
+const autoRepeatGap = 300 * time.Millisecond
 
 // hold is one recording in flight.
 type hold struct {
@@ -146,7 +156,7 @@ func (h *PushToTalk) Disable() {
 	last := h.contexts == 0
 	recording := h.holding
 	if last {
-		h.holding, h.consuming = nil, false
+		h.holding, h.pressedAt = nil, time.Time{}
 	}
 	h.mu.Unlock()
 
@@ -173,30 +183,48 @@ func (h *PushToTalk) keyDown(keyval, mods uint32, trigger ibus.Key) bool {
 	if keyval != trigger.Keyval || !trigger.Held(mods) {
 		return false
 	}
+	pressed := time.Now()
 	h.mu.Lock()
-	if h.consuming {
-		// Auto-repeat: the daemon reports every repeat of a held key as another press
-		// (roughly 200 per second of hold), and one recording per tick is nonsense.
-		h.mu.Unlock()
-		return true
-	}
-	h.consuming = true
+	waiting, recording := h.pressedAt, h.holding
+	// Every press of the trigger refreshes the timestamp, which is what keeps a held key
+	// from being mistaken for a new one for as long as it is held.
+	repeat := !waiting.IsZero() && pressed.Sub(waiting) < autoRepeatGap
+	h.pressedAt = pressed
 	h.mu.Unlock()
 
+	switch {
+	case repeat:
+		// Auto-repeat: the daemon reports every repeat of a held key as another press,
+		// and one recording per tick is nonsense.
+		return true
+	case recording != nil:
+		// A press with a recording open, but not close enough to the last one to be its
+		// repeat: the key came up and went down again, and the release in between never
+		// reached us. The audio up to here was spoken as part of the same dictation, so
+		// it is decoded rather than thrown away.
+		h.logf("the press before this one never saw its release; ending that recording and starting a new one")
+		h.stop()
+	case !waiting.IsZero():
+		// Same lost release, and the recording it opened had already ended - at the
+		// cap, or because the source could not be opened.
+		h.logf("the press before this one never saw its release")
+	}
 	h.record()
 	return true
 }
 
 func (h *PushToTalk) keyUp(keyval uint32, trigger ibus.Key) bool {
 	h.mu.Lock()
-	consuming := h.consuming
+	waiting := !h.pressedAt.IsZero()
 	h.mu.Unlock()
 
 	switch {
-	case consuming && keyval == trigger.Keyval:
+	case waiting && keyval == trigger.Keyval:
+		h.sawRelease()
 		h.stop()
 		return true
-	case consuming && trigger.State&ibus.ModifierMaskOf(keyval) != 0:
+	case waiting && trigger.State&ibus.ModifierMaskOf(keyval) != 0:
+		h.sawRelease()
 		h.stop()
 	}
 	return false
@@ -236,7 +264,7 @@ func (h *PushToTalk) begin(capture audio.Capture, keyed bool) {
 		h.logf("discarded the recording: the engine is no longer selected")
 		go capture.Stop()
 		return
-	case keyed && !h.consuming:
+	case keyed && h.pressedAt.IsZero():
 		h.mu.Unlock()
 		h.logf("discarded the recording: the key was released before it started")
 		go capture.Stop()
@@ -249,16 +277,26 @@ func (h *PushToTalk) begin(capture audio.Capture, keyed bool) {
 	go h.collect(recording)
 }
 
-// stop ends the hold in flight.
+// stop ends the hold in flight. It deliberately does not touch what the engine believes
+// about the trigger key: one caller has just seen a press, and the belief that the key is
+// down is what keeps its repeats from opening a third recording.
 func (h *PushToTalk) stop() {
 	h.mu.Lock()
 	recording := h.holding
-	h.holding, h.consuming = nil, false
+	h.holding = nil
 	h.mu.Unlock()
 	if recording == nil {
 		return
 	}
 	go recording.capture.Stop()
+}
+
+// sawRelease records that the trigger is up, which is what makes the next press of it a
+// new hold rather than a repeat of this one.
+func (h *PushToTalk) sawRelease() {
+	h.mu.Lock()
+	h.pressedAt = time.Time{}
+	h.mu.Unlock()
 }
 
 // collect reads the capture to its end and hands the audio to the decoder.

@@ -84,6 +84,34 @@ ProcessKeyEvent(65507,29,0)            ← Ctrl pressed
 `1073741824` is `1 << 30` (`IBUS_RELEASE_MASK`). Not measured: a human holding the trigger —
 the presses above are a client's typing, not a test of the chord.
 
+## A held key repeats; a pressed-again key does not
+
+The hold is read from key events, and the repeats of a held key arrive as more presses.
+Measured on this desktop:
+
+```
+$ xset q | grep 'repeat delay'
+  auto repeat delay:  500    repeat rate:  33
+```
+
+so the first repeat follows a press by 500ms and every repeat after it by 30ms. Presses
+closer together than `autoRepeatGap` (300ms) are the same key.
+
+That gap exists because of what the engine used to do: it remembered "the trigger is down"
+until it saw the release, and a release that never reached it left that belief standing for
+as long as the engine stayed selected. Every press after it was taken for a repeat, so the
+key did nothing at all - the failure reported by the user, which they cleared by switching
+to another input method and back (deselecting the engine drops the state). Nothing was
+logged, because a repeat is not interesting.
+
+The gap is what lets the engine notice that its belief is false: the repeats of one press
+are always closer together than it, so a press further away than it cannot be a repeat. The
+audio of the abandoned hold is decoded rather than dropped - it was spoken as part of the
+same dictation - and the log says so.
+
+Not measured: which client swallowed the release. The engine has no way to know, and its log
+line reports only what it saw.
+
 ## The desktop's input-source list
 
 After an install that used `ibus engine` only:

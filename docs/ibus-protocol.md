@@ -204,9 +204,10 @@ ProcessKeyEvent(65507,29,0)            ← Ctrl pressed          (65507 = XK_Con
 ```
 
 `1073741824` is `1 << 30`. So the release edge is not an inference from the header: the
-daemon routes it, and a hold can be read from it. Two things were *not* observed, and are
-not claimed: a human holding the trigger (the presses in the trace above are a real
-client's typing, not ours), and a client that withholds a release. The end-to-end run -
+daemon routes it, and a hold can be read from it. Two things were *not* observed on the
+wire, and are not claimed: a human holding the trigger (the presses in the trace above are
+a real client's typing, not ours), and a release that fails to arrive - the second is
+inferred from what the user described, not captured. The end-to-end run -
 one recording opened by a press of the trigger and decoded after its release - is in
 [measurements.md](measurements.md#hold-to-talk-end-to-end).
 
@@ -217,9 +218,14 @@ Two consequences shape voiceime's use of it :
   its release would leave that modifier latched in the application - the failure measured
   with the daemon's global shortcut (D13) - so modifiers are watched and always passed
   through.
-* **A lost release ends nothing**, so the recording is capped by
-  `max_utterance_seconds` regardless: the cap is what keeps a missed key event from
-  holding a microphone open.
+* **A lost release is a real failure, and it is recoverable.** A release can go to a
+  different input context than the one that took the press, and the engine cannot tell
+  which. What it can tell is time: `xset q` on this desktop reports a repeat delay of 500ms
+  and a rate of 33/s, so the repeats of one press arrive 30ms apart (measurements.md). A
+  press that arrives after that gap is a person pressing again, so it ends the recording the
+  missing release left open and starts the next one. The cap in `max_utterance_seconds`
+  still stands behind it: it is what keeps a key that is genuinely held down from holding a
+  microphone open forever.
 
 ## The wire format of committed text
 

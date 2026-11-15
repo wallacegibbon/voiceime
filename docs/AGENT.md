@@ -103,13 +103,13 @@ systemctl --user cat voiceime-asr-server.service      # which audio.cpp runs, an
 voiceime doctor --json                                # and whether that file and that binary are still there
 ```
 
-A settings file with only what a person owns is a settings file an agent can write by hand.
-
 Things every setting shares: `voiceime config set` writes the file atomically, validates
 it, and names the command that puts it in force (`voiceime apply`). Hand-editing is
-supported and needs the same command. Neither creates a step first: the file appears with the
+supported and needs the same command. No step comes first: the file appears with the
 first value written, and `voiceime config show` prints what is on record (or the defaults,
 with `exists: false`, when there is no file).
+
+A settings file holding only what a person owns is a settings file an agent can write by hand.
 
 ## Verifying
 

@@ -147,7 +147,10 @@ make install
 ```
 
 A running process keeps the binary it was started from, so `doctor` reports a stale one as a
-`warn` until it is restarted. `config apply` is what restarts them.
+`warn` until it is restarted. `config apply` is what restarts them, and it selects the input
+method again afterwards: an engine process that goes away takes the session's input method
+with it, so without that the person at the keyboard is left unable to type until they pick an
+input method themselves.
 
 ## Recovery
 
@@ -156,6 +159,7 @@ A running process keeps the binary it was started from, so `doctor` reports a st
 | `doctor` says there is no audio.cpp CLI, or that `asr_bin` names a file that cannot run | audio.cpp was never built, or the build tree moved or was cleaned | `"$BIN" config set asr_bin <path to audiocpp_cli>` (or build it and run `config init --force`), then `config apply` |
 | no text, log shows `no audio was recorded` | the sound server is not giving the microphone | `"$BIN" doctor`, then `config set capture_source` |
 | no text, log shows `transcribe …: …` | the service refused or timed out | `server status --json`, then `config apply` |
+| the desktop still shows the input method, but no application receives any key at all | no engine is selected for the session: an engine process ended, and the daemon clears the global engine when its bus name disappears (`ibus engine` answers `No engine is set.`) | `ibus engine voiceime`, which also starts the engine process (`doctor` reports `session_engine`; `config apply` selects it again too) |
 | the menu does not list Voiceime | not in the input-source list | `"$BIN" engine install --apply` |
 | `engine status` says not registered | the daemon has not read the component | `"$BIN" engine install --apply`, then re-check after a few seconds |
 | the engine disappears after every login | `IBUS_COMPONENT_PATH` was set for one session only, not written to `~/.config/environment.d/voiceime.conf` | `"$BIN" engine install --apply` (`doctor` reports `component_env`) |

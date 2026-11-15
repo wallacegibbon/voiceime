@@ -146,6 +146,9 @@ type Service struct {
 	mu           sync.Mutex
 	engines      map[dbus.ObjectPath]*engineObject
 	nextEngineID int
+	// left records that the daemon released this component's engines, so the reason the
+	// process is ending can be told apart from the daemon going away.
+	left bool
 
 	closed    chan struct{}
 	closeOnce sync.Once
@@ -190,8 +193,22 @@ func Run(ctx context.Context, component Component, handler Handler, address stri
 	case <-ctx.Done():
 		return nil
 	case <-service.closed:
-		return fmt.Errorf("IBus daemon closed the connection")
+		if service.askedToLeave() {
+			// A different ending, with a different consequence: the daemon released this
+			// component's engines and asked it to go away, which also clears the session's
+			// input method until an engine is selected again.
+			return fmt.Errorf("the IBus daemon asked this engine to leave")
+		}
+		return fmt.Errorf("the IBus daemon closed the connection")
 	}
+}
+
+// askedToLeave reports whether the daemon released this component's engines, which is the
+// difference between being told to go and being left behind.
+func (s *Service) askedToLeave() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.left
 }
 
 func (s *Service) connect(address string) error {
@@ -321,6 +338,7 @@ func (f *factoryObject) CreateEngine(name string) (dbus.ObjectPath, *dbus.Error)
 func (f *factoryObject) Destroy() *dbus.Error {
 	f.service.mu.Lock()
 	empty := len(f.service.engines) == 0
+	f.service.left = true
 	f.service.mu.Unlock()
 	if empty {
 		f.service.shutdown()

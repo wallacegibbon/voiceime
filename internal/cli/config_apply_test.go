@@ -10,6 +10,29 @@ import (
 	"github.com/wallacegibbon/voiceime/internal/ibus"
 )
 
+// Stopping the engine processes leaves the session with no input method at all, so the
+// engine is selected again afterwards - but only when it was ours, or when nothing is
+// selected. Another engine is the user's choice.
+func TestReselectsEngineOnlyWhenItWasOursOrNone(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		current string
+		known   bool
+		want    bool
+	}{
+		{"ours is selected", ibus.EngineName, true, true},
+		{"nothing is selected", "", true, true},
+		{"another engine is selected", "pinyin", true, false},
+		{"the daemon could not be asked", "", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := reselectsEngine(tc.current, tc.known); got != tc.want {
+				t.Errorf("reselectsEngine(%q, %v) = %v, want %v", tc.current, tc.known, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestConfigApplyRefusesAConfigThatNamesAMissingModel(t *testing.T) {
 	configPath := bareConfig(t)
 	missing := filepath.Join(filepath.Dir(configPath), "absent.gguf")

@@ -92,8 +92,10 @@ The engine's own log is `~/.cache/voiceime/engine.log` (ibus-daemon discards the
 stdout). `ready: hold … to dictate` on selection, then `recording`, `decoded …` and
 `committed N character(s)` per hold. The lines that are not routine are the ones worth
 reading: `the press before this one never saw its release` (a key event went to another
-input context), `discarded the recording in progress` (the engine was deselected mid-hold)
-and `recording stopped at the …s limit` (the key was never released).
+input context), `discarded the recording in progress` (the engine was deselected mid-hold),
+`recording stopped at the …s limit` (the key was never released) and `engine process ending`
+(how this engine stopped, which matters because no engine process means no input method for
+the session).
 
 `voiceime ibus-engine --ibus --audio-file speech.wav --trace /tmp/engine.log` runs the real
 path over a file, with no microphone and no keyboard.

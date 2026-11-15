@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,50 @@ import (
 
 	"github.com/wallacegibbon/voiceime/internal/config"
 )
+
+// `ibus engine` answers in words rather than exit codes: an unselected engine is a failed
+// command with a library warning in front of the sentence, and that state means something
+// different from having no daemon to ask at all.
+func TestParseEngineAnswerSeparatesNoEngineFromNoAnswer(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		answer string
+		err    error
+		want   string
+		known  bool
+	}{
+		{
+			name:   "the selected engine, with a warning above it",
+			answer: "(process:58450): IBUS-WARNING **: 19:03:28: something happened\nvoiceime",
+			want:   "voiceime", known: true,
+		},
+		{
+			name:   "no engine is selected",
+			answer: "(process:58450): IBUS-WARNING **: 19:03:28: org.freedesktop.DBus.Error.Failed: No global engine.\nNo engine is set.",
+			err:    errors.New("exit status 1"),
+			want:   "", known: true,
+		},
+		{
+			name:   "no daemon to ask",
+			answer: "",
+			err:    errors.New("exec: \"ibus\": not found"),
+			want:   "", known: false,
+		},
+		{
+			name:   "an empty answer with no error",
+			answer: "",
+			want:   "", known: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, known := parseEngineAnswer(tc.answer, tc.err)
+			if got != tc.want || known != tc.known {
+				t.Errorf("parseEngineAnswer(%q, %v) = (%q, %v), want (%q, %v)",
+					tc.answer, tc.err, got, known, tc.want, tc.known)
+			}
+		})
+	}
+}
 
 func TestEngineLogPathIsInTheCacheDir(t *testing.T) {
 	if got, want := engineLogPath(), filepath.Join(config.CacheDir(), "engine.log"); got != want {

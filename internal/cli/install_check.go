@@ -6,12 +6,14 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/wallacegibbon/voiceime/internal/gnome"
 	"github.com/wallacegibbon/voiceime/internal/ibus"
 )
 
 func installChecks(ctx *Context, report func(Check)) {
 	componentExecCheck(ctx, report)
 	componentEnvironmentCheck(ctx, report)
+	sessionEngineCheck(ctx, report)
 	runningBuildCheck(ctx, report)
 }
 
@@ -64,6 +66,44 @@ func componentEnvironmentCheck(ctx *Context, report func(Check)) {
 		check.Fix = "voiceime engine install --apply"
 	}
 	report(check)
+}
+
+// sessionEngineCheck answers "I chose the voice input method and nothing happens".
+//
+// The engine process is spawned by the daemon, and an engine process that goes away takes
+// the session's input method with it: when its bus name disappears the daemon clears the
+// global engine, and every application then keeps showing the input method in the desktop's
+// switcher while receiving no keys at all (measured: `ibus engine` answers "No engine is
+// set." afterwards). Nothing puts it back but selecting an input method again, which is the
+// gesture a person discovers for themselves and mistakes for a broken engine.
+func sessionEngineCheck(ctx *Context, report func(Check)) {
+	if !ibus.Installed() {
+		// component_exec already reports an install that has no way into applications.
+		return
+	}
+	name, err := currentEngine()
+	switch {
+	case err != nil:
+		report(Check{ID: "session_engine", Status: "warn", Detail: err.Error(), Fix: "ibus restart"})
+		return
+	case name == ibus.EngineName:
+		report(Check{ID: "session_engine", Status: "ok", Detail: "keys reach " + name})
+		return
+	case name != "":
+		// A different input method is selected. That is the person's choice, not a finding.
+		return
+	}
+	listed, listErr := gnome.HasInputSource(engineInputSource(ibus.EngineName))
+	if listErr != nil || !listed {
+		// The desktop is not asking for voiceime, so nothing is missing.
+		return
+	}
+	report(Check{
+		ID:     "session_engine",
+		Status: "warn",
+		Detail: "no engine is selected for this session, though the desktop lists voiceime: applications show the input method and receive no keys",
+		Fix:    "ibus engine " + ibus.EngineName,
+	})
 }
 
 // componentEnvironmentVerdict is the decision without the machine, so every case can be

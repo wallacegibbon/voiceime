@@ -276,8 +276,10 @@ func runEngineStatus(ctx *Context) error {
 	if listing, err := probe("ibus", "list-engine"); err == nil {
 		state["engine_visible"] = listEngineContains(listing, ibus.EngineName)
 	}
-	if current, err := probe("ibus", "engine"); err == nil {
-		state["current_engine"] = firstLine(current)
+	if current, err := currentEngine(); err == nil {
+		state["current_engine"] = current
+	} else {
+		state["current_engine_error"] = err.Error()
 	}
 	listed, listErr := gnome.HasInputSource(engineInputSource(ibus.EngineName))
 	switch {
@@ -290,6 +292,17 @@ func runEngineStatus(ctx *Context) error {
 	}
 	ctx.Print("component: %s (installed: %v)", ibus.ComponentPath(), ibus.Installed())
 	ctx.Print("engine %s registered: %v", ibus.EngineName, registered)
+	// Registered and in use are different things. An engine process that goes away leaves
+	// the desktop's switcher still showing the input method while every application receives
+	// no keys at all, and this is the line that answers "I selected it and nothing happens".
+	switch current, err := currentEngine(); {
+	case err != nil:
+		ctx.Print("session engine: cannot ask the daemon: %v", err)
+	case current == "":
+		ctx.Print("session engine: none, so applications receive no keys; fix: ibus engine %s", ibus.EngineName)
+	default:
+		ctx.Print("session engine: %s", current)
+	}
 	// The component directory is only scanned because a variable names it, and that
 	// variable lives in the session unless something writes it down. This is the line
 	// that answers "it worked before I rebooted".
@@ -328,6 +341,46 @@ func engineRegistered(ctx *Context) (bool, string) {
 		return true, ""
 	}
 	return false, "not listed by ibus: run `voiceime engine install --apply`"
+}
+
+// currentEngine is the engine the daemon routes this session's keys through. An empty name
+// with no error is the state where no engine is selected, which is a different thing from
+// not being able to ask.
+func currentEngine() (string, error) {
+	answer, err := probe("ibus", "engine")
+	name, known := parseEngineAnswer(answer, err)
+	if !known {
+		return "", fmt.Errorf("ibus engine: %v: %s", err, firstLine(answer))
+	}
+	return name, nil
+}
+
+// parseEngineAnswer reads the answer to `ibus engine`. "Nothing is selected" comes back as a
+// failed command whose output is a library warning plus a sentence, so it is recognised by
+// what it says: the exit status alone cannot tell an unselected engine from an absent
+// daemon, and the two have different meanings.
+func parseEngineAnswer(answer string, err error) (name string, known bool) {
+	for _, line := range strings.Split(answer, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case line == "", strings.Contains(line, "IBUS-WARNING"), strings.Contains(line, "IBUS-CRITICAL"):
+			continue
+		case strings.Contains(line, "No engine is set"), strings.Contains(line, "No global engine"):
+			return "", true
+		default:
+			return line, true
+		}
+	}
+	if err != nil {
+		return "", false
+	}
+	return "", true
+}
+
+// selectEngine makes the daemon route this session's keys through our engine, which is what
+// also starts the engine process if it is not running.
+func selectEngine() error {
+	return runCommand("ibus engine " + ibus.EngineName)
 }
 
 func runCommand(line string) error {
@@ -445,8 +498,15 @@ func runIBusEngine(ctx *Context, options engineRunOptions) error {
 	}
 	engineErr := ibus.Run(runCtx, component, handler, address)
 	if engineErr != nil {
+		// The last line this session's log gets, and the one that says why the engine
+		// ended: an engine that is not running is an input method that answers nothing, and
+		// the ways it can end have different causes.
+		logf("engine process ending: %v", engineErr)
 		return FailureError("%v", engineErr)
 	}
+	// Run returns nil only when a signal ended it, which is `voiceime config apply`
+	// releasing the process, or the session closing.
+	logf("engine process ending: a signal ended it")
 	return ctx.Emit("ibus-engine", map[string]any{"address": address, "stopped": true})
 }
 

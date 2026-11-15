@@ -124,17 +124,46 @@ func applyService(ctx *Context) (status string, served []string, err error) {
 	return "restarted", served, nil
 }
 
-// dropEngines names what happened to the engine processes, for the report.
+// dropEngines stops the engine processes, and puts the session's input method back.
+//
+// Stopping them is what makes a rebuilt binary take effect. It also does more than stop a
+// process: the daemon clears the global engine when the bus name disappears, which leaves
+// every application in the session showing the input method in the desktop's switcher while
+// receiving no keys at all (measured: `ibus engine` answers "No engine is set." afterwards).
+// Nothing puts it back by itself - the process is not respawned until an input method is
+// selected again - so the person at the keyboard finds the workaround on their own, switches
+// to another input method and back, and reasonably blames the engine for it.
 func dropEngines() string {
-	stopped, forced := stopEngines()
-	switch {
-	case stopped == 0:
-		return "was not running"
-	case forced:
-		return fmt.Sprintf("%d dropped (one had to be killed); they restart on the next activation", stopped)
-	default:
-		return fmt.Sprintf("%d dropped; they restart on the next activation", stopped)
+	// What the session is using has to be read before anything is stopped: afterwards there
+	// is nothing left to read.
+	current, known := "", false
+	if name, err := currentEngine(); err == nil {
+		current, known = name, true
 	}
+	stopped, forced := stopEngines()
+
+	outcome := "was not running"
+	if stopped > 0 {
+		outcome = fmt.Sprintf("%d dropped", stopped)
+		if forced {
+			outcome += " (one had to be killed)"
+		}
+	}
+	if !reselectsEngine(current, known) {
+		return outcome
+	}
+	if err := selectEngine(); err != nil {
+		return outcome + "; the input method could not be selected again (" + err.Error() +
+			"), so no application will receive keys until one is: ibus engine " + ibus.EngineName
+	}
+	return outcome + "; the input method was selected again"
+}
+
+// reselectsEngine says whether the session's input method should be put back after the
+// engine processes are stopped: ours, or none at all, which is what stopping one leaves
+// behind. Any other engine is the user's choice and is left alone.
+func reselectsEngine(current string, known bool) bool {
+	return known && (current == ibus.EngineName || current == "")
 }
 
 func withConfiguredEngine(installed ibus.Component, cfg *config.Config) ibus.Component {

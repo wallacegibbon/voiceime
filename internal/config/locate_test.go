@@ -7,108 +7,104 @@ import (
 	"testing"
 )
 
-// A built audio.cpp CLI is something to find once, when the settings are written, and to
-// name afterwards. Nothing here is consulted while dictating: adding a second build tree
-// must not change which inference a running service performs.
+// Which audio.cpp runs is asked once, by `voiceime apply`, and the answer goes into the
+// service unit. Nothing here is consulted while dictating: adding a second build tree must
+// not change which inference a running service performs.
 
-// buildTree writes an audio.cpp build tree under root and returns the CLI path.
+// buildTree writes an audio.cpp build tree under root and returns the server path. The CLI
+// beside it is written too, because a real build has both and the server must be the one
+// found.
 func buildTree(t *testing.T, root, profile string, executable bool) string {
 	t.Helper()
-	cli := filepath.Join(root, "build", profile, "bin", "audiocpp_cli")
-	if err := os.MkdirAll(filepath.Dir(cli), 0o755); err != nil {
+	bin := filepath.Join(root, "build", profile, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	mode := os.FileMode(0o644)
 	if executable {
 		mode = 0o755
 	}
-	if err := os.WriteFile(cli, []byte("#!/bin/sh\n"), mode); err != nil {
-		t.Fatal(err)
-	}
-	if executable {
-		sibling := filepath.Join(filepath.Dir(cli), serverBinaryName)
-		if err := os.WriteFile(sibling, []byte("#!/bin/sh\n"), 0o755); err != nil {
+	for _, name := range []string{"audiocpp_cli", ASRServerName} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"), mode); err != nil {
 			t.Fatal(err)
 		}
 	}
-	return cli
+	return filepath.Join(bin, ASRServerName)
 }
 
-// clearPATH makes sure nothing on the real PATH can answer, so the only possible source is
-// what the settings name.
+// clearPATH makes sure nothing on the real PATH can answer, so the only possible sources are
+// the build trees this test creates.
 func clearPATH(t *testing.T) {
 	t.Helper()
 	t.Setenv("PATH", t.TempDir())
 }
 
-func TestFindASRBinaryRefusesToGuess(t *testing.T) {
+func TestASRServerRefusesToGuessWhenThereIsNoAudioCPP(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	clearPATH(t)
+	if _, _, err := ASRServer(); err == nil {
+		t.Fatal("ASRServer answered on a machine without audio.cpp")
+	} else if !strings.Contains(err.Error(), ASRServerName) || !strings.Contains(err.Error(), "cmake") {
+		t.Errorf("error = %q, want it to name the binary and how to build it", err)
+	}
+}
+
+func TestASRServerFindsABuildBeforePATH(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	built := buildTree(t, filepath.Join(home, "audio.cpp"), "linux-cpu-release", true)
+	checkout := filepath.Join(home, "playground", "audio.cpp")
+	built := buildTree(t, checkout, "linux-cpu-release", true)
 
-	// A CLI sitting in the most obvious place on the machine is still not an answer:
-	// discovery belongs to `voiceime apply`, which writes it into asr_bin and says so.
-	cfg := Default()
-	clearPATH(t)
-	if _, err := cfg.FindASRBinary(); err == nil {
-		t.Errorf("FindASRBinary found %s with asr_bin empty; a build tree added after the settings were written changed the answer", built)
-	} else if !strings.Contains(err.Error(), "asr_bin") {
-		t.Errorf("error = %q, want it to name the setting to set", err)
-	}
-
-	// Named: that exact file.
-	cfg.ASRBin = built
-	found, err := cfg.FindASRBinary()
-	if err != nil || found != built {
-		t.Errorf("FindASRBinary = %q, %v, want %q", found, err, built)
-	}
-
-	// Named and not there: the answer names the path that was configured, because the
-	// settings being wrong is a different problem from audio.cpp not existing.
-	cfg.ASRBin = filepath.Join(home, "audio.cpp", "build", "gone-release", "bin", "audiocpp_cli")
-	if _, err := cfg.FindASRBinary(); err == nil {
-		t.Error("FindASRBinary accepted an asr_bin that is not a file")
-	}
-
-	// A file that is there but not runnable (a source tree copy, a directory) is the same
-	// answer: the settings name something that cannot run.
-	notRunnable := filepath.Join(home, "audiocpp_cli")
-	if err := os.WriteFile(notRunnable, []byte("text"), 0o644); err != nil {
+	// The reference machine has both: an installed ~/.local/bin/audiocpp_server and a build
+	// tree, same day, different builds. A checkout is the more specific answer, and the one
+	// that is being developed.
+	installed := filepath.Join(t.TempDir(), ASRServerName)
+	if err := os.WriteFile(installed, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cfg.ASRBin = notRunnable
-	if _, err := cfg.FindASRBinary(); err == nil {
-		t.Error("FindASRBinary accepted a file that is not runnable")
+	t.Setenv("PATH", filepath.Dir(installed))
+
+	found, source, err := ASRServer()
+	if err != nil {
+		t.Fatalf("ASRServer: %v", err)
+	}
+	if found != built {
+		t.Errorf("ASRServer = %q, want the build tree's %q", found, built)
+	}
+	if source == "" {
+		t.Error("ASRServer gave no source for its answer, so `apply` cannot say where it came from")
+	}
+
+	// With no checkout, PATH is the answer.
+	os.RemoveAll(checkout)
+	found, source, err = ASRServer()
+	if err != nil {
+		t.Fatalf("ASRServer with only an installed server: %v", err)
+	}
+	if found != installed || source != "PATH" {
+		t.Errorf("ASRServer = %q from %q, want %q from PATH", found, source, installed)
 	}
 }
 
-// The server is not a second thing to locate: audio.cpp builds it beside the CLI, so one
-// recorded path covers both.
-func TestFindServerBinaryIsTheSiblingOfTheNamedCLI(t *testing.T) {
-	root := t.TempDir()
-	cli := buildTree(t, root, "linux-cpu-release", true)
-	cfg := Default()
-	cfg.ASRBin = cli
-
-	want := filepath.Join(filepath.Dir(cli), serverBinaryName)
-	found, err := cfg.FindServerBinary()
-	if err != nil || found != want {
-		t.Errorf("FindServerBinary = %q, %v, want %q", found, err, want)
+// A build directory that was configured but never built is not an answer: it is what the first
+// `voiceime apply` on a fresh checkout looks like, and the caller has to be told to build it
+// rather than handed a file systemd cannot start.
+func TestASRServerIgnoresWhatCannotRun(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	clearPATH(t)
+	buildTree(t, filepath.Join(home, "audio.cpp"), "linux-notbuilt-release", false)
+	if _, _, err := ASRServer(); err == nil {
+		t.Error("ASRServer accepted a build directory that was never built")
 	}
-
-	// A build of the CLI without the server beside it is called out as such.
-	orphan := buildTree(t, t.TempDir(), "linux-cpu-release", false)
-	cfg.ASRBin = orphan
-	if _, err := cfg.FindServerBinary(); err == nil {
-		t.Error("FindServerBinary accepted a build with no server beside it")
-	} else if !strings.Contains(err.Error(), "beside") {
-		t.Errorf("error = %q, want it to say the server is not beside the CLI", err)
+	if found := DiscoverASRServers(); len(found) != 0 {
+		t.Errorf("DiscoverASRServers = %v, want only what can be run", found)
 	}
 }
 
-// What `voiceime apply` searches for: built CLIs under the plausible checkout
-// locations.
-func TestDiscoverASRBinariesFindsBuiltCLIs(t *testing.T) {
+// What `voiceime apply` searches for: built servers under the plausible checkout locations,
+// in an order that does not change between runs.
+func TestDiscoverASRServersFindsBuiltServers(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	checkout := filepath.Join(home, "playground", "audio.cpp")
@@ -117,34 +113,41 @@ func TestDiscoverASRBinariesFindsBuiltCLIs(t *testing.T) {
 	buildTree(t, checkout, "linux-notbuilt-release", false) // configured but never built
 	buildTree(t, filepath.Join(home, "audio.cpp"), "build-me", true)
 
-	found := DiscoverASRBinaries()
+	found := DiscoverASRServers()
 	if len(found) != 3 {
-		t.Fatalf("DiscoverASRBinaries = %v, want the three runnable CLIs", found)
+		t.Fatalf("DiscoverASRServers = %v, want the three runnable servers", found)
 	}
-	// The order is the candidate list's, and within one checkout the build profiles in
-	// name order: stable, so two runs of the search point asr_bin at the same file.
-	// A checkout with several build trees returns all of them, because that is a decision
-	// for the person writing the settings, not a guess for this function.
+	// The candidate list's order first, and within one checkout the build profiles in name
+	// order: stable, so two runs of the search name the same server and report the same
+	// others. Several build trees in one checkout are all reported, because choosing between
+	// them is not this function's guess to make.
 	want := []string{
-		filepath.Join(home, "audio.cpp", "build", "build-me", "bin", "audiocpp_cli"),
-		filepath.Join(checkout, "build", "linux-cpu-release", "bin", "audiocpp_cli"),
-		filepath.Join(checkout, "build", "linux-cuda-release", "bin", "audiocpp_cli"),
+		filepath.Join(home, "audio.cpp", "build", "build-me", "bin", ASRServerName),
+		filepath.Join(checkout, "build", "linux-cpu-release", "bin", ASRServerName),
+		filepath.Join(checkout, "build", "linux-cuda-release", "bin", ASRServerName),
 	}
 	for i := range want {
 		if found[i] != want[i] {
-			t.Errorf("DiscoverASRBinaries[%d] = %s, want %s", i, found[i], want[i])
+			t.Errorf("DiscoverASRServers[%d] = %s, want %s", i, found[i], want[i])
 		}
 	}
 	for _, path := range found {
 		if strings.Contains(path, "notbuilt") {
-			t.Errorf("DiscoverASRBinaries returned %s, which is not runnable", path)
+			t.Errorf("DiscoverASRServers returned %s, which is not runnable", path)
+		}
+	}
+	// The CLI in the same directory is never returned: inference goes over HTTP, so the only
+	// audio.cpp that matters is the one that can serve.
+	for _, path := range found {
+		if strings.HasSuffix(path, "_cli") {
+			t.Errorf("DiscoverASRServers returned %q, which is not the server", path)
 		}
 	}
 }
 
-func TestDiscoverASRBinariesSaysNothingWhenThereIsNothing(t *testing.T) {
+func TestDiscoverASRServersSaysNothingWhenThereIsNothing(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	if found := DiscoverASRBinaries(); len(found) != 0 {
-		t.Errorf("DiscoverASRBinaries = %v, want nothing on a machine without audio.cpp", found)
+	if found := DiscoverASRServers(); len(found) != 0 {
+		t.Errorf("DiscoverASRServers = %v, want nothing on a machine without audio.cpp", found)
 	}
 }

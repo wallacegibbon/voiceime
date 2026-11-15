@@ -54,15 +54,15 @@ func cmdRemove() *Command {
 
 // applyReport is one line per thing that reads the configuration.
 type applyReport struct {
-	// ASRBin, ASRBinFrom and OtherBuilds are present only on a machine that had no
-	// audio.cpp recorded: apply writes one down, says where the answer came from, and names
-	// the builds it did not choose. An install that already names a runnable file never
-	// sees these keys.
-	ASRBin      string   `json:"asr_bin,omitempty"`
-	ASRBinFrom  string   `json:"asr_bin_from,omitempty"`
-	OtherBuilds []string `json:"other_builds,omitempty"`
-	Service     string   `json:"service"`
-	Served      []string `json:"served,omitempty"`
+	Service string   `json:"service"`
+	Served  []string `json:"served,omitempty"`
+	// AudioCPP, Backend and Threads are what deployment settled for this machine. They are
+	// reported because they are not in the settings any more, and a caller is entitled to
+	// know which binary answers its requests.
+	AudioCPP    string   `json:"audio_cpp,omitempty"`
+	Backend     string   `json:"backend,omitempty"`
+	Threads     int      `json:"threads,omitempty"`
+	OtherBuilds []string `json:"other_audio_cpp,omitempty"`
 	Component   string   `json:"component"`
 	// Desktop is the input-source list the desktop's own switcher reads. The entry the
 	// engine needs there belongs to its name, so it is converged with everything else.
@@ -79,12 +79,8 @@ func runApply(ctx *Context) error {
 		return PreconditionError(issue.Fix, "cannot apply the configuration: %s: %s", issue.Key, issue.Message)
 	}
 
-	var report applyReport
-	if err := pointAtASRBuild(ctx, &report); err != nil {
-		return err
-	}
-	var err error
-	if report.Service, report.Served, err = applyService(ctx); err != nil {
+	report, err := applyService(ctx)
+	if err != nil {
 		return err
 	}
 	if report.Component, err = applyComponent(ctx); err != nil {
@@ -96,16 +92,16 @@ func runApply(ctx *Context) error {
 	report.Engine = dropEngines()
 
 	if !ctx.JSON {
-		if report.ASRBin != "" {
-			ctx.Print("asr_bin:   recorded %s (%s)", report.ASRBin, report.ASRBinFrom)
-			for _, other := range report.OtherBuilds {
-				ctx.Print("           %s is also built here: choose it with", other)
-				ctx.Print("           `voiceime config set asr_bin %s`", other)
-			}
-		}
 		ctx.Print("service:   %v", report.Service)
 		if len(report.Served) > 0 {
-			ctx.Print("serving:   %s", strings.Join(report.Served, " and "))
+			ctx.Print("serving:   %s (%s, %d threads)", strings.Join(report.Served, " and "),
+				report.Backend, report.Threads)
+		}
+		if report.AudioCPP != "" {
+			ctx.Print("audio.cpp: %s", report.AudioCPP)
+		}
+		for _, other := range report.OtherBuilds {
+			ctx.Print("           another build is here: %s", other)
 		}
 		ctx.Print("component: %v", report.Component)
 		ctx.Print("desktop:   %v", report.Desktop)
@@ -116,138 +112,151 @@ func runApply(ctx *Context) error {
 	return ctx.Emit("apply", report)
 }
 
-// pointAtASRBuild settles the one fact a new machine's settings cannot know: which
-// audio.cpp to run. It used to be a step of its own (`config init`), which meant a fresh
-// machine needed two commands in the right order and every later command silently did
-// nothing if the first was skipped. It belongs here because this is the command that makes a
-// machine ready: the answer is settled once, written into the settings apply is about to act
-// on, and reported in the same document as everything else it changed. Afterwards every
-// command reads that recorded path, so a build tree appearing, moving or gaining a second
-// sibling cannot change what a running machine does - see FindASRBinary.
+// applyService fills the part of the report that describes the recognition service, and
+// returns it whether or not it succeeded: what was settled before a failure is worth knowing.
 //
-// Nothing is looked for when the settings already name a runnable file: finding a build is
-// not overwriting a decision. When the settings name nothing and `PATH` answers, that answer
-// is recorded too. Measured on the reference machine: ~/.local/bin holds an audiocpp_cli
-// that is not the build tree's - 34 MB against 865 MB, different md5s, both files dated the
-// same day - so "ask PATH" is a second choice about which inference runs, made invisibly and
-// changeable by anyone who edits a PATH. An `apply` after such an edit changed which binary
-// served dictation while every command still reported success.
+// Everything machine-shaped is settled here, once, and written where it is used: which
+// audio.cpp to run goes into the unit's ExecStart, and the backend and worker count go into
+// the audio.cpp config that unit names. Nothing at start-up or run time looks any of it up
+// again, so a service started at login cannot fail for a reason only another install could
+// fix. Rewriting the unit when its contents differ is what heals a moved checkout or a new
+// binary, which is what `doctor`'s stale findings used to be about.
 //
-// Where there is more than one build, the first is chosen and the rest are reported rather
-// than kept to itself: which one to run is a decision about the machine, and the caller is
-// the one who knows it.
-func pointAtASRBuild(ctx *Context, report *applyReport) error {
-	if binary, err := ctx.Config.FindASRBinary(); err == nil {
-		if strings.TrimSpace(ctx.Config.ASRBin) != "" {
-			return nil
-		}
-		return recordASRBin(ctx, report, binary, nil, "what PATH names; set it to a build tree's binary to choose explicitly")
-	}
-	found := config.DiscoverASRBinaries()
-	if len(found) == 0 {
-		return nil
-	}
-	return recordASRBin(ctx, report, found[0], found[1:], "searched the usual checkout places")
-}
-
-// recordASRBin writes the answer down and says how it was arrived at, because "which
-// audio.cpp" is the one setting whose value a reader cannot check from the settings alone.
-func recordASRBin(ctx *Context, report *applyReport, path string, others []string, how string) error {
-	ctx.Config.ASRBin = path
-	report.ASRBin, report.OtherBuilds, report.ASRBinFrom = path, others, how
-	if err := config.Save(ctx.Config, ctx.ConfigPath); err != nil {
-		return FailureError("cannot record the audio.cpp build in %s: %v", ctx.ConfigPath, err)
-	}
-	return nil
-}
-
-// applyService makes the recognition service exist and run what the settings say.
-//
-// "Installing" it is not a separate step: the unit runs `voiceime server run`, which renders
-// audio.cpp's configuration from the settings at every start, so writing the unit when it is
-// missing and restarting it when it is not are the same operation. The wait at the end is
-// what makes "applied" a fact rather than a request: a service that is started but still
-// loading, or still serving the previous model, has not applied anything.
-func applyService(ctx *Context) (status string, served []string, err error) {
+// The wait at the end is what makes "applied" a fact rather than a request: a service that is
+// started but still loading, or still serving the previous model, has not applied anything.
+func applyService(ctx *Context) (applyReport, error) {
+	var report applyReport
 	cfg := ctx.Config
 	baseURL := strings.TrimSpace(cfg.ASRServerURL)
 	host, port := "127.0.0.1", server.DefaultPort
 	if baseURL != "" {
+		var err error
 		if host, port, err = server.ParseURL(baseURL); err != nil {
-			return "", nil, FailureError("%v", err)
+			return report, FailureError("%v", err)
 		}
 		if !server.IsLocalHost(host) {
 			// The settings name a server somewhere else: running one here would contradict
 			// them, not complete them.
-			return fmt.Sprintf("%s is served elsewhere, so nothing runs here", baseURL), nil, nil
+			report.Service = fmt.Sprintf("%s is served elsewhere, so nothing runs here", baseURL)
+			return report, nil
 		}
 	}
 
-	unitPath := serverUnitPath()
-
-	spec, err := buildServerSpec(cfg, port)
+	asrBinary, _, err := config.ASRServer()
 	if err != nil {
-		return "", nil, err
+		return report, PreconditionError(
+			"build audio.cpp (cmake -B build && cmake --build build), then `voiceime apply`", "%v", err)
 	}
-	if _, err := cfg.FindServerBinary(); err != nil {
-		// asr_bin names the CLI, and the server is found beside it: advice that told the
-		// caller to point asr_bin at audiocpp_server would break the CLI lookup.
-		return "", nil, PreconditionError("voiceime config set asr_bin /path/to/audio.cpp/build/<backend>/bin/audiocpp_cli",
-			"the recognition server binary is not reachable: %v", err)
+	report.AudioCPP = asrBinary
+	report.Backend, report.Threads, err = resolveEngine(asrBinary)
+	if err != nil {
+		return report, err
+	}
+	// A machine holding more than one build is reported rather than decided silently: the two
+	// can be different binaries with the same banner (docs/measurements.md).
+	if builds := config.DiscoverASRServers(); len(builds) > 1 {
+		report.OtherBuilds = builds[1:]
 	}
 
-	// Settings first, and before anything is started: a saved configuration must never
-	// point at a unit that was never written, and the values below are what a machine
-	// without a systemd user session needs in order to run the server some other way.
+	spec, err := buildServerSpec(cfg, port, report.Backend, report.Threads)
+	if err != nil {
+		return report, err
+	}
+
+	// The address and the checkpoint go into the settings first, because that is where the
+	// engine reads them: the file has to describe the service that is running, not the one
+	// intended. Writing them before the generated config and the unit is what keeps a failed
+	// apply from leaving a unit that names a settings file which never named it.
 	for _, change := range []struct{ key, value string }{
 		{"asr_server_url", spec.BaseURL()},
 		{"model", spec.Model},
 	} {
 		if err := cfg.Set(change.key, change.value); err != nil {
-			return "", nil, FailureError("config set %s: %v", change.key, err)
+			return report, FailureError("config set %s: %v", change.key, err)
 		}
 	}
 	if err := config.Save(cfg, ctx.ConfigPath); err != nil {
-		return "", nil, FailureError("write %s: %v", ctx.ConfigPath, err)
+		return report, FailureError("write %s: %v", ctx.ConfigPath, err)
 	}
 
+	generated, err := writeServerConfig(spec)
+	if err != nil {
+		return report, FailureError("%v", err)
+	}
+	report.Served = []string{filepath.Base(spec.Model)}
+
+	unitPath := serverUnitPath()
+	unit := serverUnit(asrBinary, generated)
+	start := fmt.Sprintf("%s --config %s --log", asrBinary, generated)
 	if _, lookupErr := exec.LookPath("systemctl"); lookupErr != nil {
-		return "no systemd user session: start it with `voiceime server run`", nil, nil
+		report.Service = "no systemd user session: start it with `" + start + "`"
+		return report, nil
 	}
 	if unitPath == "" {
-		return "no place to write a service unit (XDG_CONFIG_HOME is unset): start it with `voiceime server run`", nil, nil
+		report.Service = "no place to write a service unit (XDG_CONFIG_HOME is unset): start it with `" +
+			start + "`"
+		return report, nil
 	}
 
-	wroteUnit := !fileExists(unitPath)
-	if wroteUnit {
+	wroteUnit := false
+	if current, readErr := os.ReadFile(unitPath); readErr != nil || string(current) != unit {
+		wroteUnit = true
 		if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
-			return "", nil, FailureError("%v", err)
+			return report, FailureError("%v", err)
 		}
-		if err := os.WriteFile(unitPath, []byte(serverUnit(absoluteConfigPath(ctx))), 0o644); err != nil {
-			return "", nil, FailureError("%v", err)
+		if err := os.WriteFile(unitPath, []byte(unit), 0o644); err != nil {
+			return report, FailureError("%v", err)
 		}
 		if err := runCommand("systemctl --user daemon-reload"); err != nil {
-			return "", nil, FailureError("%v", err)
+			return report, FailureError("%v", err)
 		}
 		// Enabled so a login starts the model resident, whether or not anyone dictates.
 		if err := runCommand("systemctl --user enable " + serverUnitName); err != nil {
-			return "", nil, FailureError("%v", err)
+			return report, FailureError("%v", err)
 		}
 	}
 	if err := runCommand("systemctl --user restart " + serverUnitName); err != nil {
-		return "", nil, FailureError("systemctl --user restart %s: %v", serverUnitName, err)
+		return report, FailureError("systemctl --user restart %s: %v", serverUnitName, err)
 	}
 
 	probeCtx, cancel := context.WithTimeout(context.Background(), modelLoadTimeout)
 	defer cancel()
 	if err := waitForModel(probeCtx, spec.BaseURL(), spec); err != nil {
-		return "", nil, FailureError("the service was started but is not serving %s: %v (see `systemctl --user status %s`)",
+		return report, FailureError("the service was started but is not serving %s: %v (see `systemctl --user status %s`)",
 			filepath.Base(spec.Model), err, serverUnitName)
 	}
 	if wroteUnit {
-		return fmt.Sprintf("installed and started (%s)", serverUnitName), []string{filepath.Base(spec.Model)}, nil
+		report.Service = fmt.Sprintf("installed and started (%s)", serverUnitName)
+		return report, nil
 	}
-	return "restarted", []string{filepath.Base(spec.Model)}, nil
+	report.Service = "restarted"
+	return report, nil
+}
+
+// resolveEngine asks the binary what it supports and the machine how much room it has. A
+// backend is not a preference: an audio.cpp built without cuda cannot do cuda, and the build's
+// own banner is the only authority on that. cpu is preferred when a build offers it because
+// cpu is the only backend measured for this project (docs/measurements.md); the others stay
+// unavailable rather than becoming an unmeasured default.
+func resolveEngine(binary string) (backend string, threads int, err error) {
+	supported := supportedBackends(binary)
+	if len(supported) == 0 {
+		return "", 0, PreconditionError("voiceime apply with a working audio.cpp build",
+			"%s did not report any backend it supports", binary)
+	}
+	backend = supported[0]
+	for _, candidate := range supported {
+		if candidate == "cpu" {
+			backend = "cpu"
+			break
+		}
+	}
+	// One worker per physical core: the streaming decoder and the repair pass share them, so
+	// more contend than help.
+	if threads = physicalCores(); threads <= 0 {
+		threads = 4
+	}
+	return backend, threads, nil
 }
 
 // modelLoadTimeout bounds waiting for a model to become resident. Measured: the small

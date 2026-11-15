@@ -29,7 +29,7 @@ func freshConfig(t *testing.T) string {
 	dir := t.TempDir()
 	writeGGUF(t, filepath.Join(dir, "test.gguf"), "sense_asr", []string{"asr"})
 	configPath := filepath.Join(dir, "config.toml")
-	body := fmt.Sprintf("model = %q\nbackend = \"cpu\"\n", filepath.Join(dir, "test.gguf"))
+	body := fmt.Sprintf("model = %q\n", filepath.Join(dir, "test.gguf"))
 	if err := os.WriteFile(configPath, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func freshConfig(t *testing.T) string {
 func bareConfig(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(path, []byte("backend = \"cpu\"\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(""), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -173,7 +173,7 @@ func TestUnknownCommandIsAUsageError(t *testing.T) {
 func TestConfigSetFailsWhenTheValueBreaksTheConfig(t *testing.T) {
 	configPath := freshConfig(t)
 
-	code, stdout, stderr := runForTest(t, "config", "set", "threads", "0", "--json", "--config", configPath)
+	code, stdout, stderr := runForTest(t, "config", "set", "max_utterance_seconds", "0", "--json", "--config", configPath)
 	if code != ExitPrecondition {
 		t.Fatalf("exit %d, want %d (precondition) for a value that makes the config unusable", code, ExitPrecondition)
 	}
@@ -190,7 +190,7 @@ func TestConfigSetFailsWhenTheValueBreaksTheConfig(t *testing.T) {
 	// And the failure carries the fix, like every other precondition failure.
 	failure := decodeOne(t, stderr)["error"].(map[string]any)
 	fix, _ := failure["fix"].(string)
-	if !strings.Contains(fix, "config set threads") {
+	if !strings.Contains(fix, "config set max_utterance_seconds") {
 		t.Errorf("fix = %q, want the command that repairs the value", fix)
 	}
 
@@ -199,12 +199,12 @@ func TestConfigSetFailsWhenTheValueBreaksTheConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(loaded), "threads = 0") {
+	if !strings.Contains(string(loaded), "max_utterance_seconds = 0") {
 		t.Error("the value the report says was written is not in the file")
 	}
 
 	// A usable value is a success, with the command that applies it named.
-	code, stdout, stderr = runForTest(t, "config", "set", "threads", "4", "--json", "--config", configPath)
+	code, stdout, stderr = runForTest(t, "config", "set", "max_utterance_seconds", "45", "--json", "--config", configPath)
 	if code != ExitOK {
 		t.Fatalf("setting a valid value: exit %d, stderr %s", code, stderr)
 	}

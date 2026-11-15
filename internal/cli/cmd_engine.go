@@ -78,7 +78,7 @@ func engineRegistered() (bool, string) {
 }
 
 func stopEngines() (stopped int, forced bool) {
-	engines := processesRunning("ibus-engine")
+	engines := processesRunning("ibus-engine", "voiceime")
 	for _, engine := range engines {
 		if process, err := os.FindProcess(engine.PID); err == nil {
 			_ = process.Signal(syscall.SIGTERM)
@@ -88,12 +88,12 @@ func stopEngines() (stopped int, forced bool) {
 	// progress; the drain budget is 5s (D25), so six is enough.
 	deadline := time.Now().Add(6 * time.Second)
 	for time.Now().Before(deadline) {
-		if len(processesRunning("ibus-engine")) == 0 {
+		if len(processesRunning("ibus-engine", "voiceime")) == 0 {
 			return len(engines), false
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	for _, engine := range processesRunning("ibus-engine") {
+	for _, engine := range processesRunning("ibus-engine", "voiceime") {
 		if process, err := os.FindProcess(engine.PID); err == nil {
 			_ = process.Kill()
 			forced = true

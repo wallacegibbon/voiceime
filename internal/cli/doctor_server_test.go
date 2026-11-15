@@ -5,6 +5,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -152,13 +154,24 @@ func deadURL(t *testing.T) string {
 	return "http://" + address
 }
 
-func TestServerUnitRunsVoiceimeWithSubcommand(t *testing.T) {
-	unit := serverUnit("/home/u/.config/voiceime/config.toml")
-	if !strings.Contains(unit, " server run") {
-		t.Errorf("unit does not run the server subcommand:\n%s", unit)
+// The unit is the record of a deployment decision: it names the audio.cpp binary and the
+// config file `voiceime apply` resolved. Nothing at start-up looks either of them up again.
+func TestServerUnitNamesTheAudioCPPAndTheConfigItWasGiven(t *testing.T) {
+	unit := serverUnit("/home/u/playground/audio.cpp/build/linux-cpu-release/bin/audiocpp_server",
+		"/home/u/.local/share/voiceime/asr-server.json")
+	want := "ExecStart=/home/u/playground/audio.cpp/build/linux-cpu-release/bin/audiocpp_server " +
+		"--config /home/u/.local/share/voiceime/asr-server.json --log"
+	if !strings.Contains(unit, want) {
+		t.Errorf("unit does not name what deployment resolved:\n%s", unit)
 	}
-	if strings.Contains(unit, "audiocpp_server --config") {
-		t.Error("unit starts audio.cpp directly, so a changed setting would need the config rewritten by hand")
+	// This tool is not in the service's command line: it resolved the answer once, and
+	// re-deriving it at every start is what made a start at login able to fail.
+	fields, err := unitExecStart(writeUnitForTest(t, unit))
+	if err != nil {
+		t.Fatalf("the unit cannot be read back: %v", err)
+	}
+	if firstField(fields) != "/home/u/playground/audio.cpp/build/linux-cpu-release/bin/audiocpp_server" {
+		t.Errorf("ExecStart runs %q, not the audio.cpp deployment chose", firstField(fields))
 	}
 	if !strings.Contains(unit, "Restart=on-failure") {
 		t.Error("unit does not restart a server that dies")
@@ -171,12 +184,32 @@ func TestServerUnitRunsVoiceimeWithSubcommand(t *testing.T) {
 	if strings.Contains(unit, "Documentation=") {
 		t.Errorf("unit cites a manual that is not installed:\n%s", unit)
 	}
-	// The settings file has to be named. Without it the service reads the default path,
-	// so an `apply --config <file>` would install a service that serves something other
-	// than the file it was given.
-	if !strings.Contains(unit, "--config /home/u/.config/voiceime/config.toml") {
-		t.Errorf("unit does not name the configuration file:\n%s", unit)
+	// A path with a space in it survives being read back: `doctor` parses this line to
+	// report what runs, and an unquoted space would be two words.
+	spaced := serverUnit("/home/u/my audio.cpp/bin/audiocpp_server", "/home/u/asr server.json")
+	if !strings.Contains(spaced, "'/home/u/my audio.cpp/bin/audiocpp_server'") {
+		t.Errorf("paths with spaces are not quoted:\n%s", spaced)
 	}
+	spacedFields, err := unitExecStart(writeUnitForTest(t, spaced))
+	if err != nil {
+		t.Fatalf("a unit with spaces in its paths cannot be read back: %v", err)
+	}
+	if firstField(spacedFields) != "/home/u/my audio.cpp/bin/audiocpp_server" {
+		t.Errorf("the binary reads back as %q", firstField(spacedFields))
+	}
+	if got := unitArgument(spacedFields, "--config"); got != "/home/u/asr server.json" {
+		t.Errorf("the config reads back as %q", got)
+	}
+}
+
+// writeUnitForTest puts a rendered unit where the check can read it back.
+func writeUnitForTest(t *testing.T, unit string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), serverUnitName)
+	if err := os.WriteFile(path, []byte(unit), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 // Every setting is applied by one command, and `config set` says so - for every key.
@@ -184,10 +217,7 @@ func TestConfigSetNamesHowToApplyEverySetting(t *testing.T) {
 	configPath := freshConfig(t)
 	for _, field := range config.Default().Fields() {
 		value := fmt.Sprint(field.Value)
-		switch field.Type {
-		case "map[string]string":
-			value = "audio_chunk_mode=none"
-		case "string":
+		if field.Type == "string" {
 			// A checkpoint is a file that exists; the default is empty because no
 			// default can know where the user put one.
 			if field.Key == "model" {

@@ -7,17 +7,16 @@ import (
 	"testing"
 )
 
-// The generated config is the contract with audio.cpp: one entry, offline mode, the
-// model's own name as its id, and the request options a multipart upload cannot carry.
+// The generated config is the contract with audio.cpp: one entry, offline mode, the model's
+// own name as its id, and the request options a multipart upload cannot carry.
 func TestWriteConfigDescribesOneModel(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "asr-server.json")
 	spec := Spec{
-		Model:          "/models/Qwen3-ASR-0.6B-GGUF/qwen3-asr-0.6b-q8_0.gguf",
-		Family:         "qwen3_asr",
-		Port:           18080,
-		Backend:        "cpu",
-		Threads:        4,
-		RequestOptions: map[string]string{"audio_chunk_mode": "none"},
+		Model:   "/models/Qwen3-ASR-0.6B-GGUF/qwen3-asr-0.6b-q8_0.gguf",
+		Family:  "qwen3_asr",
+		Port:    18080,
+		Backend: "cpu",
+		Threads: 4,
 	}
 	if err := WriteConfig(spec, path); err != nil {
 		t.Fatalf("WriteConfig: %v", err)

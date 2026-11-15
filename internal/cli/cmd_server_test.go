@@ -19,13 +19,14 @@ func ggufFixture(t *testing.T, family string) string {
 }
 
 // Test that the family comes out of the file rather than out of anything the tool remembers
-// about a directory: the settings name one path, and the answer follows it.
+// about a directory: the settings name one path, and the answer follows it. The backend and
+// thread count are arguments because they are what deployment resolved, not settings.
 func TestServerSpecServesTheConfiguredModelWithTheFamilyItCarries(t *testing.T) {
 	chosen := writeGGUF(t, filepath.Join(t.TempDir(), "chosen.gguf"), "qwen3_asr", []string{"asr"})
 
 	cfg := config.Default()
 	cfg.Model = chosen
-	spec, err := buildServerSpec(cfg, 18080)
+	spec, err := buildServerSpec(cfg, 18080, "cpu", 8)
 	if err != nil {
 		t.Fatalf("buildServerSpec: %v", err)
 	}
@@ -35,12 +36,15 @@ func TestServerSpecServesTheConfiguredModelWithTheFamilyItCarries(t *testing.T) 
 	if spec.Family != "qwen3_asr" {
 		t.Errorf("family = %q, want the family the file names", spec.Family)
 	}
+	if spec.Backend != "cpu" || spec.Threads != 8 {
+		t.Errorf("spec = %s/%d, want what deployment resolved", spec.Backend, spec.Threads)
+	}
 }
 
 // Nothing named: the answer is what to fetch and the command that names it afterwards. voiceime
 // fetches nothing and scans nothing, so "install a model" is not a thing to say here.
 func TestServerSpecWithoutANamedCheckpointGivesTheAdvice(t *testing.T) {
-	_, err := buildServerSpec(config.Default(), 18080)
+	_, err := buildServerSpec(config.Default(), 18080, "cpu", 4)
 	if err == nil {
 		t.Fatal("buildServerSpec succeeded with nothing named")
 	}
@@ -62,33 +66,12 @@ func TestServerSpecRejectsAFileWithoutAModelSpec(t *testing.T) {
 	}
 	cfg := config.Default()
 	cfg.Model = notACheckpoint
-	_, err := buildServerSpec(cfg, 18080)
+	_, err := buildServerSpec(cfg, 18080, "cpu", 4)
 	if err == nil {
 		t.Fatal("a text file was accepted as a checkpoint")
 	}
 	if !strings.Contains(err.Error(), "not a GGUF") {
 		t.Errorf("error %q does not say the file is not a GGUF", err)
-	}
-}
-
-// With nothing named, `server run` refuses before it starts anything, and the fix it names is
-// the setting, not the command that just failed.
-func TestServerRunNamesTheModelSettingWhenNothingIsNamed(t *testing.T) {
-	configPath := bareConfig(t)
-
-	code, _, stderr := runForTest(t, "--config", configPath, "server", "run")
-	if code != ExitPrecondition {
-		t.Fatalf("exit %d, want %d\nstderr: %s", code, ExitPrecondition, stderr)
-	}
-	if !strings.Contains(stderr, "config set model ") {
-		t.Errorf("the fix is not the command that names a checkpoint:\n%s", stderr)
-	}
-	if strings.Contains(stderr, "models list") || strings.Contains(stderr, "models install") {
-		t.Errorf("the fix runs a command that no longer exists:\n%s", stderr)
-	}
-	// "no model" alone cannot be acted on: the choices differ by 20x on disk.
-	if !strings.Contains(stderr, "sensevoice_small_q8") {
-		t.Errorf("the failure does not name a checkpoint to fetch:\n%s", stderr)
 	}
 }
 
@@ -123,17 +106,19 @@ func TestApplyLeavesNoUnitWhenTheSettingsCannotBeSaved(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 
+	// audio.cpp on PATH, and a build that says what it was compiled for: everything
+	// machine-shaped has to answer before the settings are reached.
+	t.Setenv("HOME", t.TempDir())
 	binDir := t.TempDir()
-	cli := filepath.Join(binDir, "audiocpp_cli")
-	for _, name := range []string{cli, filepath.Join(binDir, "audiocpp_server")} {
-		if err := os.WriteFile(name, []byte("#!/bin/sh\n"), 0o755); err != nil {
-			t.Fatal(err)
-		}
+	built := filepath.Join(binDir, "audiocpp_server")
+	script := "#!/bin/sh\nprintf 'audio.cpp dev\\nbackends: cpu\\n'\n"
+	if err := os.WriteFile(built, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
 	}
+	t.Setenv("PATH", binDir)
 
 	cfg := config.Default()
 	cfg.Model = ggufFixture(t, "sense_asr")
-	cfg.ASRBin = cli
 	ctx := &Context{
 		Config:     cfg,
 		ConfigPath: os.DevNull, // readable, never writable
@@ -141,18 +126,26 @@ func TestApplyLeavesNoUnitWhenTheSettingsCannotBeSaved(t *testing.T) {
 		Stderr:     io.Discard,
 	}
 
-	status, _, err := applyService(ctx)
+	report, err := applyService(ctx)
 	if err == nil {
 		t.Fatal("applying with an unwritable configuration reported success")
 	}
-	if status != "" {
-		t.Errorf("a failed apply reported %q", status)
+	if report.Service != "" {
+		t.Errorf("a failed apply reported %q", report.Service)
+	}
+	if report.AudioCPP != built {
+		t.Errorf("the report does not say which audio.cpp it had resolved: %q", report.AudioCPP)
 	}
 	if !strings.Contains(err.Error(), os.DevNull) {
 		t.Errorf("error %q does not name the configuration it could not write", err)
 	}
-	unit := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "systemd", "user", serverUnitName)
+	unit := serverUnitPath()
 	if _, statErr := os.Stat(unit); !os.IsNotExist(statErr) {
 		t.Errorf("a unit was written at %s even though apply failed", unit)
+	}
+	// The generated audio.cpp config is written with the settings, not after the unit: a
+	// unit that names a file this attempt never wrote would be worse than no unit at all.
+	if _, statErr := os.Stat(serverConfigFile()); !os.IsNotExist(statErr) {
+		t.Errorf("an audio.cpp config was written at %s for settings that were never saved", serverConfigFile())
 	}
 }

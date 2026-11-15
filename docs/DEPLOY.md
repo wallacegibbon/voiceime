@@ -30,20 +30,22 @@ fixes it. The rest of this page is those commands, in order.
 machine there is no file yet: it prints the defaults and says `exists: false`. Nothing needs
 to create it - the first `config set`, and `apply` below, write it.
 
-Six of those defaults are properties of the machine or of the person using it, not of
-voiceime: `asr_bin`, `backend`, `threads`, `language`, `text_script`, `push_to_talk`. What
-each one is for, and what it should be here, is the settings table in
-[AGENT.md](AGENT.md). Set what this machine needs:
+What is in that file belongs to the person using it: `language`, `text_script`,
+`push_to_talk`, and the safety limit on one recording. The defaults are one machine's answers
+- Simplified Chinese, `` Ctrl+` `` - so change what does not fit. What each one is for is the
+settings table in [AGENT.md](AGENT.md):
 
 ```sh
-"$BIN" config set threads 8
+"$BIN" config set language en
 ```
 
 A setting takes effect when the next `apply` (below) reads the file, so nothing else is run
-here. `apply` also settles `asr_bin`: it looks for an audio.cpp build once, records the path
-in the settings it is about to act on, and says which build it chose - so build audio.cpp
-before it, or name the build yourself. What a wrong setting would do is `doctor`'s `config`
-finding, which names the setting and the command that corrects it.
+here. Nothing else about this machine is asked: which audio.cpp to run, which backend it was
+built for and how many workers it deserves are worked out by `apply`, and recorded where they
+are used. So build audio.cpp first (`cmake -B build && cmake --build build`) - `apply` finds
+a build in a checkout, or an `audiocpp_server` on `PATH`, and says which one it chose. What a
+wrong setting would do is `doctor`'s `config` finding, which names the setting and the command
+that corrects it.
 
 ## 3. A model
 
@@ -80,16 +82,19 @@ not applied at all.
 
 ```sh
 "$BIN" apply
-# assert: asr_bin:   recorded /home/<user>/.local/bin/audiocpp_cli (what PATH names; …)
-#                    - this line appears once, on a machine that had no audio.cpp on record
-#         service:   installed and started (voiceime-asr-server.service)
-#         serving:   sensevoice-small-q8-audiocpp-v1.gguf
+# assert: service:   installed and started (voiceime-asr-server.service)
+#         serving:   sensevoice-small-q8-audiocpp-v1.gguf (cpu, 8 threads)
+#         audio.cpp: /home/<user>/playground/audio.cpp/build/linux-cpu-release/bin/audiocpp_server
 #         component: /home/<user>/.local/share/voiceime/component/voiceime.xml (written);
 #                    IBus restarted
 #         desktop:   appended ('ibus', 'voiceime') to the GNOME input sources; the sources
 #                    already configured are untouched
 #         engine:    was not running
 ```
+`audio.cpp:` names the binary the unit will run, and a line for each other build on the
+machine when there is more than one - which there often is. `serving:` names the backend and
+the worker count the service was started with. None of those three are settings: they are what
+this machine adds up to, and they are in the files that use them.
 
 One command because the work is one decision: the installed machine should look like the
 configuration. What it writes, and why each of those files is needed, is
@@ -97,11 +102,12 @@ configuration. What it writes, and why each of those files is needed, is
 cache are in [ibus-protocol.md](ibus-protocol.md). Four things about running it belong
 here:
 
-* It records which audio.cpp to run, on a machine that had not said. An empty `asr_bin` means
-  the answer comes from `PATH` or from a search of the usual checkout places, and either one
-  is written into the settings at once: leaving it empty would ask again next run, and on a
-  machine holding two audio.cpp builds that is how an install ends up served by a different
-  one than it was ([measurements.md](measurements.md)).
+* It settles the machine once. The audio.cpp to run, the backend it was built for and the
+  worker count are written into the unit and the config it names, and nothing looks them up
+  again: a service started at login cannot fail for a reason only another install could fix.
+  Rewriting the unit is what heals a moved checkout or a newer build, which is what
+  `doctor`'s `server_unit` finding reports when the record and the machine disagree
+  ([measurements.md](measurements.md) has the two-builds-on-one-machine case).
 * It waits until the configured checkpoint is resident. A service that is started but still
   loading, or still serving the previous model, has not applied anything.
 * It restarts IBus, and that is asynchronous: `apply` waits for `ibus list-engine` to answer
@@ -117,6 +123,16 @@ layouts, their other engines, their recent-use order - exactly as it found them.
 ```sh
 gsettings get org.gnome.desktop.input-sources sources
 # assert: the list contains ('ibus', 'voiceime')
+```
+
+The unit is where the machine-shaped answers ended up, so reading it back is the assertion
+that they were written down at all:
+
+```sh
+systemctl --user cat voiceime-asr-server.service
+# assert: ExecStart=<the audio.cpp apply named> --config
+#         /home/<user>/.local/share/voiceime/asr-server.json --log
+#         - and no voiceime in that line: nothing re-derives the answer at start-up
 ```
 
 ## 5. The recognition path, without a keyboard
@@ -188,7 +204,8 @@ the input method again afterwards, for the reason given in §4.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `doctor` says there is no audio.cpp CLI, or that `asr_bin` names a file that cannot run | audio.cpp was never built, or the build tree moved or was cleaned | build audio.cpp and run `"$BIN" apply`, which finds the build and records it; or `"$BIN" config set asr_bin <path to audiocpp_cli>` if it is somewhere the search does not look |
+| `doctor` says there is no audio.cpp, or that the unit names one that does not exist | audio.cpp was never built, or the build tree moved or was cleaned | build audio.cpp and run `"$BIN" apply`, which finds the build and rewrites the unit |
+| the service is running an older audio.cpp than the machine has | the unit was written before the checkout was copied or rebuilt | `"$BIN" apply` (`doctor` reports `server_unit`); the old binary runs, so nothing else notices |
 | no text, log shows `no audio was recorded` | the sound server is not giving the microphone | `"$BIN" doctor`, then `config set capture_source` |
 | no text, log shows `transcribe …: …` | the service refused or timed out | `"$BIN" doctor` (the `asr_server` finding), then `"$BIN" apply` |
 | the desktop still shows the input method, but no application receives any key at all | no engine is selected for the session: an engine process ended, and the daemon clears the global engine when its bus name disappears (`ibus engine` answers `No engine is set.`) | `ibus engine voiceime`, which also starts the engine process (`doctor` reports `session_engine`; `apply` selects it again too) |

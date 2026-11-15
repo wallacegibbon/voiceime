@@ -184,13 +184,3 @@ func summarise(payload []byte) string {
 	}
 	return text
 }
-
-// RequestOptions are the options every transcription request carries: the whole
-// recording in one pass, with the caller's overrides on top.
-func RequestOptions(overrides map[string]string) map[string]string {
-	options := map[string]string{"audio_chunk_mode": "none"}
-	for key, value := range overrides {
-		options[key] = value
-	}
-	return options
-}

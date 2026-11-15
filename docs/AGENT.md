@@ -40,10 +40,10 @@ voiceime transcribe [--file recording.wav | --seconds N]
 voiceime capabilities                            # the surface: commands, settings, paths, exit codes
 ```
 
-Two more commands are entry points for other programs, not commands to run by hand:
-`ibus-daemon` spawns `voiceime ibus-engine --ibus`, and the systemd unit's `ExecStart` is
-`voiceime server run`. Neither takes settings as flags: the port comes from
-`asr_server_url` and the checkpoint from `model`, so neither can disagree with the file.
+Two more names appear in the surface and neither is a command to run by hand:
+`ibus-daemon` spawns `voiceime ibus-engine --ibus`, and the systemd unit's `ExecStart` runs
+`audio.cpp` itself - the binary `apply` resolved, on the config file `apply` rendered. Nothing
+long-running re-derives either of those at start-up.
 
 * voiceime **fetches nothing and scans nothing**. A model is one GGUF file and the `model`
   setting names it: there is no models directory, no candidate list, and no ranking deciding
@@ -71,19 +71,19 @@ Two more commands are entry points for other programs, not commands to run by ha
   component file, the `environment.d` file, and the input source this tool added. It leaves
   the model file - and the `model` setting that names it - alone, because that file was
   never the installation's.
-* There is no `server install`, `server restart` or `engine install`: one command makes the
-  machine match the file, and `doctor` answers "is it there" with findings. Asking the same
-  question through several commands, each with its own idea of what "installed" means, is how
-  an install ends up described differently in three places.
+* There is no `server` command at all, and no `server install`, `server restart` or
+  `engine install`: one command makes the machine match the file, and `doctor` answers "is it
+  there" with findings. Asking the same question through several commands, each with its own
+  idea of what "installed" means, is how an install ends up described differently in three
+  places. And nothing that runs long re-derives a decision: the service is `audio.cpp` on a
+  rendered config, so the only code that has to know which build this machine has is the one
+  that installs it.
 
 ## Settings
 
 | Key | Default | Notes |
 |---|---|---|
-| `asr_bin` | `""` | `audiocpp_cli`: the audio.cpp CLI, used to report which backends this build supports. `audiocpp_server` is taken from beside it. **A property of this machine.** When this is empty, `voiceime apply` records the answer it used - what `PATH` names, or the build it finds - so that no later change to `PATH` or to the build trees can move a running machine. Nothing else searches the filesystem. |
-| `backend` | `cpu` | `audio.cpp` backend: cpu, cuda, vulkan, hip, metal. cpu works everywhere; a GPU needs an audio.cpp build with that backend. |
-| `threads` | `4` | Worker threads for the server. **A property of this machine:** more threads than physical cores contend rather than help, and `doctor` reports it as the `threads` finding. |
-| `model` | `""` | **Required.** The GGUF the service serves and the engine transcribes with. Nothing picks it for you: no scan, no download. |
+| `model` | `""` | **Required.** The GGUF the service serves and the engine transcribes with. Nothing picks it for you: no scan, no download. `voiceime apply` writes it back with the path it resolved. |
 | `language` | `zh` | **The user's, not the program's.** Passed to the model; empty asks it to auto-detect, which is usually worse for Chinese and better for most other languages. |
 | `text_script` | `simplified` | Chinese output script: `simplified` or `preserve`. The default is what the reference user writes; `preserve` keeps whatever script the repair model produced. |
 | `max_utterance_seconds` | `60` | A hold whose key never comes up stops recording here. |
@@ -91,7 +91,19 @@ Two more commands are entry points for other programs, not commands to run by ha
 | `asr_server_timeout_ms` | `30000` | Deadline for one transcription. |
 | `capture_source` | `""` | PipeWire source name; empty uses the default input. |
 | `push_to_talk` | `<Control>grave` | **A chord of your choosing.** Held down to dictate; the release transcribes. Needs a modifier, and must not collide with a shortcut the applications you use claim. |
-| `request_options` | `{}` | Extra audio.cpp request options for the served model, `key=value`. |
+
+**What is not here, and where it went.** Which audio.cpp runs, which backend it was built for
+and how many workers that deserves are properties of the machine, not choices: `voiceime apply`
+works them out once and records them where they are used - the binary in the unit's
+`ExecStart`, the backend and worker count in the audio.cpp config that unit names, at
+`~/.local/share/voiceime/asr-server.json`. Ask the machine, not the file:
+
+```
+systemctl --user cat voiceime-asr-server.service      # which audio.cpp runs, and what it was told to serve
+voiceime doctor --json                                # and whether that file and that binary are still there
+```
+
+A settings file with only what a person owns is a settings file an agent can write by hand.
 
 Things every setting shares: `voiceime config set` writes the file atomically, validates
 it, and names the command that puts it in force (`voiceime apply`). Hand-editing is
@@ -115,7 +127,7 @@ voiceime transcribe --seconds 5   # one decode from the microphone, with timing
 | will the engine still be registered after the next login | `component_env` |
 | do this session's keys reach the engine at all | `session_engine` |
 | is an old build still running | `running_build` |
-| is the service unit installed, and does it run this binary | `server_unit` |
+| is the service unit installed, and does it name an audio.cpp and a config that are both there | `server_unit` |
 
 A failing finding is exit 3 with a `fix` an agent can run - usually `voiceime apply`.
 

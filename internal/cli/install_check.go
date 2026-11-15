@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/wallacegibbon/voiceime/internal/config"
 	"github.com/wallacegibbon/voiceime/internal/gnome"
 	"github.com/wallacegibbon/voiceime/internal/ibus"
 )
@@ -132,41 +133,94 @@ func componentEnvironmentVerdict(systemInstalled, componentInstalled, environmen
 	}
 }
 
-// unitExecStart extracts the executable a systemd unit starts.
-func unitExecStart(path string) (string, error) {
+// unitExecStart extracts the command a systemd unit starts. The binary is the first word and
+// the rest are its arguments; the unit that runs audio.cpp names the config file in them, and
+// a check that only looked at the binary could not tell that the file it points at is gone.
+func unitExecStart(path string) ([]string, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	for _, line := range strings.Split(string(raw), "\n") {
 		value, found := strings.CutPrefix(strings.TrimSpace(line), "ExecStart=")
 		if !found {
 			continue
 		}
-		fields := strings.Fields(value)
+		fields := splitUnitCommand(value)
 		if len(fields) == 0 {
-			return "", fmt.Errorf("%s: ExecStart is empty", path)
+			return nil, fmt.Errorf("%s: ExecStart is empty", path)
 		}
-		return fields[0], nil
+		return fields, nil
 	}
-	return "", fmt.Errorf("%s: no ExecStart line", path)
+	return nil, fmt.Errorf("%s: no ExecStart line", path)
 }
 
-// residentKind is one of the two long-lived voiceime processes: how to find it, and where
-// the binary it is supposed to run is recorded.
+// splitUnitCommand splits an ExecStart value the way systemd's word splitter does for the one
+// form it has to read back: whitespace-separated words, with one layer of single or double
+// quotes removed. serverUnit quotes a path when it contains a space, and a plain split would
+// turn such a path into two words and report a file that does not exist.
+func splitUnitCommand(value string) []string {
+	var fields []string
+	var current strings.Builder
+	var quote rune
+	started := false
+	for _, r := range value {
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0
+				continue
+			}
+			current.WriteRune(r)
+		case r == '\'' || r == '"':
+			quote = r
+			started = true
+		case r == ' ' || r == '\t':
+			if started || current.Len() > 0 {
+				fields = append(fields, current.String())
+				current.Reset()
+				started = false
+			}
+		default:
+			current.WriteRune(r)
+		}
+	}
+	if started || current.Len() > 0 {
+		fields = append(fields, current.String())
+	}
+	return fields
+}
+
+// unitArgument returns the value after the first occurrence of flag in a command.
+func unitArgument(fields []string, flag string) string {
+	for index, field := range fields {
+		if field == flag && index+1 < len(fields) {
+			return fields[index+1]
+		}
+	}
+	return ""
+}
+
+// residentKind is one of the two long-lived processes this tool owns: how to find it, which
+// executable it has to be, and where the binary it is supposed to run is recorded.
 type residentKind struct {
 	name    string
 	pattern string
+	// binaryName is the second filter on the match: the pattern is looked for in a
+	// process's whole command line, and a shell that merely mentions it is not the process.
+	binaryName string
 	// configured is that record: the exec of the component file for the engine, the
 	// ExecStart of the unit for the service.
 	configured func() (string, bool)
 }
 
 var residentKinds = []residentKind{
-	{"the engine", "ibus-engine", componentBinaryPath},
+	{"the engine", "ibus-engine", "voiceime", componentBinaryPath},
 	// The service holds the models, so a stale one serves old inference while every
-	// other check passes.
-	{"the recognition service", "server run", servedBinaryPath},
+	// other check passes. The generated config's name identifies it: audio.cpp is an
+	// executable this tool did not build, and the file it is pointed at is the one
+	// `voiceime apply` wrote.
+	{"the recognition service", serverConfigName, config.ASRServerName, servedBinaryPath},
 }
 
 func componentBinaryPath() (string, bool) {
@@ -179,8 +233,15 @@ func servedBinaryPath() (string, bool) {
 	if path == "" {
 		return "", false
 	}
-	exec, err := unitExecStart(path)
-	return exec, err == nil && exec != ""
+	fields, err := unitExecStart(path)
+	return firstField(fields), err == nil && len(fields) > 0
+}
+
+func firstField(fields []string) string {
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
 }
 
 // runningBuildCheck answers one question - do the resident processes run the binaries this
@@ -194,7 +255,7 @@ func runningBuildCheck(report func(Check)) {
 	var healthy, stale []string
 	worst := "ok"
 	for _, kind := range residentKinds {
-		processes := processesRunning(kind.pattern)
+		processes := processesRunning(kind.pattern, kind.binaryName)
 		if len(processes) == 0 {
 			continue
 		}
@@ -253,7 +314,7 @@ func runningBinaryVerdict(running process, want, name string) (status, detail st
 		"pid %d is running %s, but %s is configured to run %s", running.PID, original, name, want)
 }
 
-// process is one running voiceime process.
+// process is one long-lived process this tool owns.
 type process struct {
 	PID int
 	// Binary is the resolved path from /proc/<pid>/exe, with " (deleted)" when
@@ -262,7 +323,7 @@ type process struct {
 	Binary string
 }
 
-func processesRunning(pattern string) []process {
+func processesRunning(pattern, binaryName string) []process {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return nil
@@ -284,7 +345,7 @@ func processesRunning(pattern string) []process {
 		// A renamed binary is still named voiceime; a different name here means
 		// the pattern matched something unrelated (a shell running this command,
 		// for instance), so it is skipped.
-		if !strings.Contains(binary, "voiceime") {
+		if !strings.Contains(filepath.Base(binary), binaryName) {
 			continue
 		}
 		found = append(found, process{PID: atoi(entry.Name()), Binary: binary})
@@ -324,6 +385,10 @@ func isExecutable(path string) bool {
 	return err == nil && !info.IsDir() && info.Mode()&0o111 != 0
 }
 
+// serverUnitCheck reads back the record `voiceime apply` wrote: the unit names one audio.cpp
+// and one config file, and both have to be there for the service to start. The component file
+// is not compared with it - the unit runs audio.cpp and the component runs this engine, so
+// they are meant to name different binaries.
 func serverUnitCheck(report func(Check)) {
 	path := serverUnitPath()
 	if path == "" || !fileExists(path) {
@@ -335,31 +400,56 @@ func serverUnitCheck(report func(Check)) {
 		})
 		return
 	}
-	exec, err := unitExecStart(path)
+	fields, err := unitExecStart(path)
 	if err != nil {
 		report(Check{ID: "server_unit", Status: "fail", Detail: err.Error(), Fix: "voiceime apply"})
 		return
 	}
-	if !isExecutable(exec) {
+	binary := firstField(fields)
+	if !isExecutable(binary) {
 		report(Check{
 			ID:     "server_unit",
 			Status: "fail",
-			Detail: fmt.Sprintf("%s runs %s, which does not exist; systemd will restart it forever with status=203/EXEC", path, exec),
+			Detail: fmt.Sprintf("%s runs %s, which does not exist; systemd will restart it forever with status=203/EXEC", path, binary),
 			Fix:    "voiceime apply",
 		})
 		return
 	}
-	// The component file and the unit are two records of the same install. When they name
-	// different binaries, `make install` updates one of them and the other keeps running the
-	// previous build - which no other check sees.
-	if want, recorded := componentBinaryPath(); recorded && filepath.Clean(want) != filepath.Clean(exec) {
+	// The audio.cpp config is not an input anyone edits: apply renders it and the unit names
+	// it. A missing one means the service was started by an install that has since been
+	// removed - `voiceime remove` deletes that file - and systemd's restart loop is silent.
+	configFile := unitArgument(fields, "--config")
+	if configFile == "" {
+		report(Check{
+			ID:     "server_unit",
+			Status: "fail",
+			Detail: fmt.Sprintf("%s runs %s without naming the audio.cpp config to serve", path, binary),
+			Fix:    "voiceime apply",
+		})
+		return
+	}
+	if !fileExists(configFile) {
+		report(Check{
+			ID:     "server_unit",
+			Status: "fail",
+			Detail: fmt.Sprintf("%s points %s at %s, which does not exist: audio.cpp would refuse to start", path, binary, configFile),
+			Fix:    "voiceime apply",
+		})
+		return
+	}
+	// The unit is a record of a decision, and a record can go stale: a newer audio.cpp build
+	// appears, the checkout is copied somewhere else and left in place, and the service keeps
+	// running the build this machine no longer considers its own. Nothing else notices,
+	// because the old binary works.
+	if current, _, resolveErr := config.ASRServer(); resolveErr == nil &&
+		filepath.Clean(current) != filepath.Clean(binary) {
 		report(Check{
 			ID:     "server_unit",
 			Status: "warn",
-			Detail: fmt.Sprintf("the unit runs %s while the component file runs %s: the engine and the service are different builds", exec, want),
+			Detail: fmt.Sprintf("the service runs %s, while the audio.cpp on this machine is %s", binary, current),
 			Fix:    "voiceime apply",
 		})
 		return
 	}
-	report(Check{ID: "server_unit", Status: "ok", Detail: exec})
+	report(Check{ID: "server_unit", Status: "ok", Detail: fmt.Sprintf("%s serving from %s", binary, configFile)})
 }

@@ -28,12 +28,10 @@ type Spec struct {
 	Model  string
 	Family string
 	Port   int
-	// Backend and Threads are passed through to audio.cpp.
+	// Backend and Threads come from the build and the CPU, which are the only two things
+	// that can answer them: `voiceime apply` resolves both when it installs the service.
 	Backend string
 	Threads int
-	// RequestOptions are the options every transcription request carries. Multipart
-	// uploads have no field for them, so they belong to the served entry.
-	RequestOptions map[string]string
 }
 
 // BaseURL is where a client reaches a server with this spec.
@@ -53,6 +51,12 @@ func EntryID(modelPath string) string {
 	}
 	return name
 }
+
+// wholeRecordingRequestOptions is what every served entry carries, because it is not a
+// preference: voiceime uploads a held utterance as one WAV, and the server must not cut that
+// upload into chunks and decode the pieces separately. Multipart uploads have no field for
+// request options, so the entry's defaults are the only place it can be said.
+var wholeRecordingRequestOptions = map[string]string{"audio_chunk_mode": "none"}
 
 // WriteConfig writes the server's config and returns its path.
 func WriteConfig(spec Spec, path string) error {
@@ -85,7 +89,7 @@ func WriteConfig(spec Spec, path string) error {
 			Path:                  spec.Model,
 			Task:                  "asr",
 			Mode:                  "offline",
-			DefaultRequestOptions: spec.RequestOptions,
+			DefaultRequestOptions: wholeRecordingRequestOptions,
 		}},
 	}
 	encoded, err := json.MarshalIndent(document, "", "  ")

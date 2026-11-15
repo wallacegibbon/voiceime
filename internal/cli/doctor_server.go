@@ -98,16 +98,18 @@ func asrServerCheck(cfg *config.Config, unitInstalled bool) Check {
 		detail = fmt.Sprintf("%s is serving %s (%s)", strings.TrimRight(raw, "/"),
 			entries[0].ID, filepath.Base(entries[0].Path))
 	}
-	if _, port, err := server.ParseURL(raw); err == nil && server.IsLocalHost(host) {
-		if spec, specErr := buildServerSpec(cfg, port); specErr == nil {
-			if matchErr := modelMatches(ctx, raw, spec); matchErr != nil {
-				return Check{
-					ID:     "asr_server",
-					Status: "fail",
-					Detail: matchErr.Error() + " (the service has not been restarted since the setting changed)",
-					Fix:    "voiceime apply",
-				}
-			}
+	// The settings name one checkpoint and the listing says what is served, so the comparison
+	// needs nothing else: not the family, which is in the file, and not the backend or thread
+	// count, which cannot change what a server answers on /v1/models.
+	if wanted := config.Expand(strings.TrimSpace(cfg.Model)); wanted != "" &&
+		(entries[0].ID != server.EntryID(wanted) ||
+			filepath.Clean(entries[0].Path) != filepath.Clean(wanted)) {
+		return Check{
+			ID:     "asr_server",
+			Status: "fail",
+			Detail: fmt.Sprintf("%s serves %s (%s), not the model the settings name (%s)",
+				strings.TrimRight(raw, "/"), entries[0].ID, entries[0].Path, wanted),
+			Fix: "voiceime apply",
 		}
 	}
 	return Check{ID: "asr_server", Status: "ok", Detail: detail}

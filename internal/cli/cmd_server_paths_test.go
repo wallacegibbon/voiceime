@@ -8,16 +8,20 @@ import (
 	"github.com/wallacegibbon/voiceime/internal/config"
 )
 
-// The audio.cpp config is rendered from the settings and never read back by voiceime, so
-// it belongs with the session's disposable state. Where it lands is a contract: `voiceime
-// doctor` reports what is served, and an agent uses this path to see which model it is.
-func TestServerConfigIsGeneratedInTheRuntimeDir(t *testing.T) {
+// The audio.cpp config is rendered by `voiceime apply` and named by the service unit, which
+// systemd starts at login - before any voiceime command has run. So it must not live in a
+// directory that is emptied at logout: the install would work until the machine was rebooted
+// and then fail with nothing to tell anyone why.
+func TestServerConfigOutlivesTheSessionThatWroteIt(t *testing.T) {
 	session := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", session)
 
 	got := serverConfigFile()
-	if want := filepath.Join(session, "voiceime", serverConfigName); got != want {
-		t.Errorf("serverConfigFile = %q, want it under the session directory %q", got, want)
+	if want := filepath.Join(config.DataDir(), serverConfigName); got != want {
+		t.Errorf("serverConfigFile = %q, want %q", got, want)
+	}
+	if strings.HasPrefix(got, session+string(filepath.Separator)) {
+		t.Errorf("serverConfigFile = %q, which a logout empties", got)
 	}
 }
 

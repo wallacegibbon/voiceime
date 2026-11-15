@@ -1,7 +1,7 @@
 package cli
 
 import (
-	"io"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -152,131 +152,157 @@ func TestWithCurrentEngineChangesOnlyTheEngineIdentity(t *testing.T) {
 	}
 }
 
-// A machine that has never recorded where audio.cpp was built has nothing to run, and no
-// other command looks for it. `apply` settles that once: the path goes into the settings it
-// is about to act on, and the report says which build was chosen and which were left.
-func TestApplyRecordsTheASRBuildOnTheMachine(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	// With audio.cpp on PATH there is already an answer, and apply does not replace one
-	// (see FindASRBinary): this is the case where nothing on the machine has been named.
-	t.Setenv("PATH", "")
-	// A checkout in one of the places discovery looks, with two build trees: the choice is
-	// reported, not made silently.
-	build := func(tree string, name string) string {
-		path := filepath.Join(home, "playground", "audio.cpp", "build", tree, "bin", name)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
+// A machine's own facts are settled once, here, and written where they are used. What a build
+// can do comes from the build: an audio.cpp compiled without vulkan cannot do vulkan, so its
+// banner is asked rather than assumed. cpu is preferred where a build offers it because cpu is
+// the only backend measured for this project (docs/measurements.md); the others stay
+// unavailable rather than becoming an unmeasured default.
+func TestResolveEngineAsksTheBuildAndTheCPU(t *testing.T) {
+	stub := func(t *testing.T, banner string) string {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), config.ASRServerName)
+		script := "#!/bin/sh\n"
+		if banner != "" {
+			script += "printf '" + strings.ReplaceAll(banner, "'", `'\''`) + "'\n"
 		}
-		if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		return path
 	}
-	cpu := build("cpu", "audiocpp_cli")
-	build("cuda", "audiocpp_cli")
 
-	t.Run("nothing recorded", func(t *testing.T) {
-		ctx, configPath := contextForApply(t)
-		var report applyReport
-		if err := pointAtASRBuild(ctx, &report); err != nil {
-			t.Fatal(err)
-		}
-		if report.ASRBin != cpu {
-			t.Errorf("asr_bin = %q, want the first build found (%s)", report.ASRBin, cpu)
-		}
-		if !strings.Contains(report.ASRBinFrom, "searched") {
-			t.Errorf("asr_bin_from = %q, want it to say the answer came from the search", report.ASRBinFrom)
-		}
-		if len(report.OtherBuilds) != 1 || !strings.Contains(report.OtherBuilds[0], "cuda") {
-			t.Errorf("other_builds = %v, want the build that was not chosen named", report.OtherBuilds)
-		}
-		// The answer has to be in the file: every later command reads the settings, not this
-		// function.
-		saved, err := config.Load(configPath)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if saved.ASRBin != cpu {
-			t.Errorf("%s holds asr_bin = %q, want %s", configPath, saved.ASRBin, cpu)
-		}
-	})
+	// The banner is several lines and the backends are the last of them, which is what
+	// `supportedBackends` reads.
+	for _, tc := range []struct{ name, banner, want string }{
+		{"a cpu build", "audio.cpp dev\\nbackends: cpu\\n", "cpu"},
+		{"cpu among others", "audio.cpp dev\\nbackends: vulkan, cpu, cuda\\n", "cpu"},
+		// A build that cannot do cpu is run on what it can do, rather than refused: the
+		// machine was built for that backend.
+		{"no cpu in the build", "audio.cpp dev\\nbackends: cuda\\n", "cuda"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			backend, threads, err := resolveEngine(stub(t, tc.banner))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if backend != tc.want {
+				t.Errorf("backend = %q, want %q", backend, tc.want)
+			}
+			// The worker count belongs to the CPU, and one worker per physical core: the
+			// streaming decoder and the repair pass share the same cores.
+			if want := physicalCores(); threads != want || threads <= 0 {
+				t.Errorf("threads = %d, want the machine's %d", threads, want)
+			}
+		})
+	}
 
-	t.Run("PATH names one", func(t *testing.T) {
-		// Measured on the reference machine, where ~/.local/bin holds an audiocpp_cli that
-		// is not the build tree's. Following PATH is fine for one run; leaving the settings
-		// empty means the next run asks again, and whoever edits a PATH has changed which
-		// inference serves dictation without any command saying so.
-		onPath := filepath.Join(t.TempDir(), "audiocpp_cli")
-		if err := os.WriteFile(onPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
-			t.Fatal(err)
+	t.Run("a build that says nothing about itself", func(t *testing.T) {
+		// No backend named is no answer: running it with a guessed one is how an install
+		// ends up with a service that will not start.
+		_, _, err := resolveEngine(stub(t, "audio.cpp dev"))
+		if err == nil {
+			t.Fatal("resolveEngine guessed a backend the build never named")
 		}
-		t.Setenv("PATH", filepath.Dir(onPath))
-
-		ctx, configPath := contextForApply(t)
-		var report applyReport
-		if err := pointAtASRBuild(ctx, &report); err != nil {
-			t.Fatal(err)
-		}
-		if report.ASRBin != onPath {
-			t.Errorf("asr_bin = %q, want the file PATH named (%s)", report.ASRBin, onPath)
-		}
-		if !strings.Contains(report.ASRBinFrom, "PATH") {
-			t.Errorf("asr_bin_from = %q, want it to say the answer came from PATH", report.ASRBinFrom)
-		}
-		if len(report.OtherBuilds) != 0 {
-			t.Errorf("other_builds = %v, want none: nothing is searched when something already answers", report.OtherBuilds)
-		}
-		saved, err := config.Load(configPath)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if saved.ASRBin != onPath {
-			t.Errorf("%s holds asr_bin = %q, want %s recorded", configPath, saved.ASRBin, onPath)
-		}
-	})
-
-	t.Run("a choice already on record", func(t *testing.T) {
-		// A build tree appearing later must not move a running machine (the reason
-		// FindASRBinary stopped guessing).
-		chosen := filepath.Join(t.TempDir(), "audiocpp_cli")
-		if err := os.WriteFile(chosen, []byte("#!/bin/sh\n"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		ctx, configPath := contextForApply(t)
-		ctx.Config.ASRBin = chosen
-		var report applyReport
-		if err := pointAtASRBuild(ctx, &report); err != nil {
-			t.Fatal(err)
-		}
-		if report.ASRBin != "" {
-			t.Errorf("reported %q, want nothing: a value that runs was left alone", report.ASRBin)
-		}
-		if ctx.Config.ASRBin != chosen {
-			t.Errorf("asr_bin = %q, want the recorded %s left alone", ctx.Config.ASRBin, chosen)
-		}
-		// And nothing was written: apply does not rewrite a file it had no reason to change.
-		if written, err := os.ReadFile(configPath); err != nil {
-			t.Fatal(err)
-		} else if len(written) != 0 {
-			t.Errorf("apply wrote the settings it had no reason to change:\n%s", written)
+		if !strings.Contains(fmt.Sprint(err), "backend") {
+			t.Errorf("error %q does not say what is missing", err)
 		}
 	})
 }
 
-// contextForApply is an apply with no output and an empty configuration file: enough for the
-// parts of apply that decide, without touching systemd, IBus or the session.
-func contextForApply(t *testing.T) (*Context, string) {
-	t.Helper()
-	configPath := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(configPath, []byte(""), 0o644); err != nil {
+// The unit is what a start at login reads, so it has to name what is on disk. Two ways that
+// stops being true have different findings: the file the unit points at is gone, or the unit
+// points at an audio.cpp this machine no longer considers its own.
+func TestServerUnitCheckReadsTheRecordBack(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", home)
+	// A built audio.cpp in a checkout: this is what the machine considers its own.
+	built := filepath.Join(home, "playground", "audio.cpp", "build", "linux-cpu-release", "bin", config.ASRServerName)
+	if err := os.MkdirAll(filepath.Dir(built), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := config.Load(configPath)
-	if err != nil {
+	if err := os.WriteFile(built, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return &Context{Config: cfg, ConfigPath: configPath, Stdout: io.Discard, Stderr: io.Discard}, configPath
+	t.Setenv("PATH", t.TempDir())
+
+	unitFor := func(t *testing.T, binary, configFile string) {
+		t.Helper()
+		path := serverUnitPath()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(serverUnit(binary, configFile)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oneFinding := func(t *testing.T) Check {
+		t.Helper()
+		var checks []Check
+		serverUnitCheck(func(c Check) { checks = append(checks, c) })
+		if len(checks) != 1 {
+			t.Fatalf("%d findings, want one", len(checks))
+		}
+		return checks[0]
+	}
+
+	t.Run("nothing installed", func(t *testing.T) {
+		check := oneFinding(t)
+		if check.Status != "fail" || !strings.Contains(check.Detail, "no recognition server unit") {
+			t.Errorf("finding = %+v, want a failure naming the missing unit", check)
+		}
+	})
+
+	t.Run("the config it names is gone", func(t *testing.T) {
+		unitFor(t, built, filepath.Join(home, "asr-server.json"))
+		check := oneFinding(t)
+		if check.Status != "fail" {
+			t.Fatalf("status = %q: the service would fail to start forever, and silently", check.Status)
+		}
+		if !strings.Contains(check.Detail, "asr-server.json") {
+			t.Errorf("detail %q does not name the file that is missing", check.Detail)
+		}
+	})
+
+	t.Run("another audio.cpp is running", func(t *testing.T) {
+		previous := filepath.Join(t.TempDir(), config.ASRServerName)
+		if err := os.WriteFile(previous, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		generated := filepath.Join(home, "asr-server.json")
+		if err := os.WriteFile(generated, []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		unitFor(t, previous, generated)
+		check := oneFinding(t)
+		if check.Status != "warn" {
+			t.Fatalf("status = %q, want a warning: the old binary works, so nothing else notices", check.Status)
+		}
+		if !strings.Contains(check.Detail, previous) || !strings.Contains(check.Detail, built) {
+			t.Errorf("detail %q does not name both the running audio.cpp and the one on the machine", check.Detail)
+		}
+		if !strings.Contains(check.Fix, "voiceime apply") {
+			t.Errorf("fix %q does not name the command that rewrites the unit", check.Fix)
+		}
+	})
+
+	t.Run("what apply wrote", func(t *testing.T) {
+		generated := filepath.Join(config.DataDir(), serverConfigName)
+		if err := os.MkdirAll(filepath.Dir(generated), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(generated, []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		unitFor(t, built, generated)
+		check := oneFinding(t)
+		if check.Status != "ok" {
+			t.Fatalf("status = %q, detail %q", check.Status, check.Detail)
+		}
+		if !strings.Contains(check.Detail, built) || !strings.Contains(check.Detail, generated) {
+			t.Errorf("detail %q does not say which audio.cpp runs and what it was told to serve", check.Detail)
+		}
+	})
 }
 
 // An installed file this version would write differently is rewritten once.

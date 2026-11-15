@@ -140,7 +140,6 @@ func commands() []*Command {
 		cmdConfig(),
 		cmdDoctor(),
 		cmdRemove(),
-		cmdServer(),
 		cmdIBusEngine(),
 		cmdModel(),
 		cmdTranscribe(),
@@ -356,7 +355,7 @@ func writeHelp(w io.Writer) {
 	fmt.Fprint(w, "\nGlobal flags (accepted before or after the command):\n")
 	fmt.Fprint(w, "  --json           one JSON object on stdout (errors on stderr); no human lines\n")
 	fmt.Fprint(w, "  --config <path>  configuration file (default "+config.DefaultPath()+")\n")
-	fmt.Fprint(w, "\n`ibus-engine` is started by ibus-daemon and `server run` by the service unit: they are\nentry points, not commands to run by hand.\n")
+	fmt.Fprint(w, "\n`ibus-engine` is started by ibus-daemon, and the service unit runs audio.cpp directly:\nneither is a command to run by hand.\n")
 	fmt.Fprint(w, "\nEvery command is non-interactive and idempotent; docs/AGENT.md has recipes.\n")
 }
 

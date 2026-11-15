@@ -1,7 +1,8 @@
 # Measured numbers
 
 Every figure below was measured on the reference machine (AMD Ryzen 7 5800U, 8 physical
-cores, CPU backend, `threads = 8`), with the model each row names.
+cores, an audio.cpp build for the cpu backend, 8 workers - which is what `voiceime apply`
+derives here), with the model each row names.
 
 ## Decode speed
 
@@ -171,18 +172,26 @@ selected again", caused by the restart it had just performed itself.
 
 ## Which audio.cpp runs is not something the settings said
 
-The reference machine holds two runnable audio.cpp binaries, dated the same day:
+The reference machine holds two runnable audio.cpp servers, dated the same hour:
 
 | Path | Size | md5 |
 |---|---|---|
-| `~/.local/bin/audiocpp_cli` | 34 MB | `b4e03e71…` |
-| `~/playground/audio.cpp/build/linux-cpu-release/bin/audiocpp_cli` | 865 MB | `ce548d18…` |
+| `~/.local/bin/audiocpp_server` | 41 MB | `294c3aa2…` |
+| `~/playground/audio.cpp/build/linux-cpu-release/bin/audiocpp_server` | 846 MB | `6407e205…` |
 
-With `asr_bin` empty, `FindASRBinary` takes the first because it is on `PATH`, and
-`audiocpp_server` is taken from beside it - so a deploy that never named one was served by a
-different host than the one an earlier configuration had recorded, and every command called
-that a success. That is why `voiceime apply` records the answer it used, search or `PATH`
-whichever answered, instead of leaving the setting empty for the next run to re-derive.
+Both answer `/health`; both were built from the same tree. A tool that re-derived the answer
+at every start - search the machine, pick the first hit, run it - therefore had two different
+answers depending on which directory it happened to look in first, and every command it then
+printed said "ok" about whichever inference it had picked. That is why the answer is settled
+once, by `voiceime apply`, and written into the unit's `ExecStart`: the file systemd reads is
+the record of the decision, and `doctor` compares that record with the machine instead of
+making the decision again. A build tree is preferred over `PATH` because the installed copy is
+usually the older one; both paths are named in `apply`'s output when the machine holds more
+than one.
+
+The two builds are not equivalent in any way that can be seen from the outside - same banner,
+same reported backends, same model served - which is the reason the choice is reported rather
+than inferred quietly.
 
 ## Not measured
 

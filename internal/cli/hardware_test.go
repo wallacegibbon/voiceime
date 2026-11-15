@@ -1,6 +1,10 @@
 package cli
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 const cpuinfoSample = `processor	: 0
 vendor_id	: AuthenticAMD
@@ -52,6 +56,14 @@ func TestParsePhysicalCores(t *testing.T) {
 	}
 }
 
+// The worker count is sized by physical cores, and a machine that does not report them still
+// gets an answer: one worker per logical CPU is the shape of a machine without SMT.
+func TestPhysicalCoresAnswers(t *testing.T) {
+	if got := physicalCores(); got < 1 {
+		t.Errorf("physicalCores = %d on this machine, want at least one", got)
+	}
+}
+
 func TestParseBackends(t *testing.T) {
 	cases := map[string]int{
 		"backends: cpu":                 1,
@@ -70,83 +82,19 @@ func TestParseBackends(t *testing.T) {
 	}
 }
 
-func TestThreadsVerdict(t *testing.T) {
-	eightCores := hardwareFacts{PhysicalCores: 8, LogicalCPUs: 16}
-	cases := []struct {
-		name     string
-		threads  int
-		facts    hardwareFacts
-		want     string
-		wantFix  bool
-		contains string
-	}{
-		{"within the core count", 4, eightCores, "ok", false, "8 physical cores"},
-		{"exactly the core count", 8, eightCores, "ok", false, "8 physical cores"},
-		{"oversubscribed", 16, eightCores, "warn", true, "contend"},
-		{"cores unknown", 4, hardwareFacts{LogicalCPUs: 4}, "ok", false, "not reported"},
-		{"logical fallback oversubscribed", 8, hardwareFacts{LogicalCPUs: 4}, "warn", true, "contend"},
+// A build's banner is several lines with the backends last, which is why the reader looks for
+// the line rather than reading one line of output.
+func TestSupportedBackendsReadsTheBanner(t *testing.T) {
+	stub := filepath.Join(t.TempDir(), "audiocpp_server")
+	script := "#!/bin/sh\nprintf 'audio.cpp dev\\ngit: 000000 2026-01-01\\nbuild: x\\nbackends: cpu, vulkan\\n'\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	for _, test := range cases {
-		t.Run(test.name, func(t *testing.T) {
-			status, detail, fix := threadsVerdict(test.threads, test.facts)
-			if status != test.want {
-				t.Fatalf("status = %q, want %q (%s)", status, test.want, detail)
-			}
-			if (fix != "") != test.wantFix {
-				t.Errorf("fix = %q, wantFix = %v", fix, test.wantFix)
-			}
-			if !containsSubstring(detail, test.contains) {
-				t.Errorf("detail = %q, want it to mention %q", detail, test.contains)
-			}
-		})
+	got := supportedBackends(stub)
+	if len(got) != 2 || got[0] != "cpu" || got[1] != "vulkan" {
+		t.Errorf("supportedBackends = %v, want [cpu vulkan]", got)
 	}
-	// An unknown core count must not produce a finding: advising against a guess is
-	// worse than saying nothing.
-	if status, _, _ := threadsVerdict(64, hardwareFacts{}); status != "" {
-		t.Errorf("status = %q with no core count, want no finding", status)
+	if got := supportedBackends(""); got != nil {
+		t.Errorf("supportedBackends(\"\") = %v, want nothing", got)
 	}
-}
-
-func TestBackendVerdict(t *testing.T) {
-	noGPU := hardwareFacts{}
-	withDriver := hardwareFacts{GPUDrivers: []string{"nvidia-smi"}}
-	withRenderNode := hardwareFacts{RenderNodes: []string{"/dev/dri/renderD128"}}
-
-	cases := []struct {
-		name       string
-		configured string
-		supported  []string
-		facts      hardwareFacts
-		want       string
-		contains   string
-	}{
-		{"cpu on a cpu-only build", "cpu", []string{"cpu"}, noGPU, "ok", "supports: cpu"},
-		{"unsupported backend", "vulkan", []string{"cpu"}, noGPU, "fail", "was built with"},
-		{"unknown support list", "vulkan", nil, noGPU, "ok", "vulkan"},
-		{"gpu the binary was built for", "cuda", []string{"cpu", "cuda"}, withDriver, "ok", "supports"},
-		{"gpu present but unused", "cpu", []string{"cpu"}, withDriver, "warn", "nvidia-smi"},
-		// A render node exists on every laptop with integrated graphics; warning
-		// about them would make the check noise, so it is context, not a finding.
-		{"render node only", "cpu", []string{"cpu"}, withRenderNode, "ok", "render node"},
-	}
-	for _, test := range cases {
-		t.Run(test.name, func(t *testing.T) {
-			status, detail, _ := backendVerdict(test.configured, test.supported, test.facts)
-			if status != test.want {
-				t.Fatalf("status = %q, want %q (%s)", status, test.want, detail)
-			}
-			if !containsSubstring(detail, test.contains) {
-				t.Errorf("detail = %q, want it to mention %q", detail, test.contains)
-			}
-		})
-	}
-}
-
-func containsSubstring(haystack, needle string) bool {
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return true
-		}
-	}
-	return needle == ""
 }

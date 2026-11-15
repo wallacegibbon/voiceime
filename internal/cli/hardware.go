@@ -2,50 +2,28 @@ package cli
 
 import (
 	"os"
-	"os/exec"
-	"path/filepath"
 	"runtime"
-	"sort"
 	"strings"
 )
 
-// This file answers the questions about the *machine* that the reference
+// This is what `voiceime apply` asks the machine before it writes anything down: how many
+// cores there are, and what the audio.cpp build supports. Neither is a setting - a machine
+// has one core count, and a build was compiled for some backends and not others - so the
+// answer belongs to the one command that installs, and nothing at run time looks it up again.
+//
+// There used to be a check here comparing `threads` and `backend` in the settings with the
+// CPU. Both settings are gone, so there is nothing to disagree with; the values are in the
+// audio.cpp config the service unit names, and `server_unit` reports that file.
 
-// hardwareFacts is what can be learned without running a benchmark.
-type hardwareFacts struct {
-	// PhysicalCores is 0 when it cannot be determined; callers fall back to the
-	// logical count rather than guessing.
-	PhysicalCores int
-	LogicalCPUs   int
-	// GPUDrivers are the vendor compute tools found on PATH (nvidia-smi and
-	// friends), which say a GPU is there to be used.
-	GPUDrivers []string
-	// RenderNodes are /dev/dri/renderD* nodes. They are much weaker evidence: an
-	// integrated GPU that cannot help, or cannot be driven by the local audio.cpp
-	// build, has one too, so they are reported but never treated as a finding.
-	RenderNodes []string
-}
-
-func detectHardware() hardwareFacts {
-	cores := 0
+// physicalCores is the count to size a worker pool by, or 0 when the machine does not say.
+// Logical CPUs are the fallback: an unknown shape is not a reason to run one thread.
+func physicalCores() int {
 	if raw, err := os.ReadFile("/proc/cpuinfo"); err == nil {
-		cores = parsePhysicalCores(string(raw))
+		if cores := parsePhysicalCores(string(raw)); cores > 0 {
+			return cores
+		}
 	}
-	return hardwareFacts{
-		PhysicalCores: cores,
-		LogicalCPUs:   runtime.NumCPU(),
-		GPUDrivers:    gpuDrivers(),
-		RenderNodes:   renderNodes(),
-	}
-}
-
-// Cores is the count to reason with: physical cores when they are known, logical
-// CPUs otherwise.
-func (h hardwareFacts) Cores() int {
-	if h.PhysicalCores > 0 {
-		return h.PhysicalCores
-	}
-	return h.LogicalCPUs
+	return runtime.NumCPU()
 }
 
 // parsePhysicalCores counts unique (physical id, core id) pairs in /proc/cpuinfo.
@@ -80,24 +58,7 @@ func parsePhysicalCores(cpuinfo string) int {
 	return len(seen)
 }
 
-func gpuDrivers() []string {
-	var drivers []string
-	for _, tool := range []string{"nvidia-smi", "rocm-smi", "rocminfo"} {
-		if _, err := exec.LookPath(tool); err == nil {
-			drivers = append(drivers, tool)
-		}
-	}
-	return drivers
-}
-
-// renderNodes lists the DRM render nodes, which are reported as context rather
-// than as evidence.
-func renderNodes() []string {
-	nodes, _ := filepath.Glob("/dev/dri/renderD*")
-	sort.Strings(nodes)
-	return nodes
-}
-
+// parseBackends reads the backend list out of an audio.cpp build's own banner.
 func parseBackends(line string) []string {
 	_, value, found := strings.Cut(line, "backends:")
 	if !found {
@@ -112,8 +73,9 @@ func parseBackends(line string) []string {
 	return backends
 }
 
-// supportedBackends asks the local binary which backends it was built with, which
-// is the only authority on whether `backend = vulkan` can work here.
+// supportedBackends asks the binary what it was compiled with, which is the only authority on
+// whether a backend can work here: an audio.cpp built without cuda cannot do cuda whatever
+// the machine has.
 func supportedBackends(binary string) []string {
 	if binary == "" {
 		return nil
@@ -123,13 +85,4 @@ func supportedBackends(binary string) []string {
 		return nil
 	}
 	return parseBackends(lastLineMatching(version, "backends:"))
-}
-
-func containsString(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }

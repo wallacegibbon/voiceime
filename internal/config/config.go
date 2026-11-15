@@ -21,12 +21,14 @@ const AppName = "voiceime"
 
 const TargetRate = 16000
 
+// Config is what a person owns: which checkpoint to serve, which language, which key starts a
+// dictation, how far one recording may go. `asr_server_url` is here because the server can
+// belong to another machine; when `voiceime apply` starts one on this machine it writes the
+// address itself. Everything else about the machine - which audio.cpp runs, which backend it
+// was built for, how many workers that deserves - is resolved by apply and recorded where it
+// is used: the service unit, and the audio.cpp config that unit names. A setting that
+// deployment can work out is a question asked of the wrong person.
 type Config struct {
-	ASRBin string `toml:"asr_bin" desc:"Path to audio.cpp's audiocpp_cli; audiocpp_server is taken from beside it. 'voiceime apply' records a build it finds when this is empty."`
-
-	Backend string `toml:"backend" desc:"audio.cpp backend: cpu, cuda, vulkan, hip, metal."`
-	Threads int    `toml:"threads" desc:"Worker threads handed to audio.cpp."`
-
 	Model string `toml:"model" desc:"The GGUF the service serves and the engine transcribes with. You name it: voiceime scans nothing and downloads nothing."`
 
 	Language   string `toml:"language" desc:"Recognition language code, e.g. zh or en."`
@@ -43,16 +45,10 @@ type Config struct {
 	// Held down to dictate. A modifier is required, so the press cannot also be ordinary
 	// typing.
 	PushToTalk string `toml:"push_to_talk" desc:"Combination held down to dictate; the release transcribes the recording."`
-
-	// Passed straight into the generated server config, so a new audio.cpp request option
-	// is usable without a voiceime release.
-	RequestOptions map[string]string `toml:"request_options" desc:"Extra request options for the served model, set as key=value; an empty value removes one."`
 }
 
 func Default() *Config {
 	return &Config{
-		Backend:    "cpu",
-		Threads:    4,
 		Language:   "zh",
 		TextScript: "simplified",
 		// A forgotten key must not grow a recording without bound.
@@ -60,8 +56,7 @@ func Default() *Config {
 		ASRServerTimeoutMS:  30000,
 		// A chord: the engine sees the key while the user is typing, so the press that
 		// starts a dictation must not be one the application was going to receive.
-		PushToTalk:     "<Control>grave",
-		RequestOptions: map[string]string{},
+		PushToTalk: "<Control>grave",
 	}
 }
 
@@ -181,9 +176,6 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("%s: unknown setting(s) %s (run `voiceime capabilities` for valid keys)",
 			path, strings.Join(unknown, ", "))
 	}
-	if cfg.RequestOptions == nil {
-		cfg.RequestOptions = map[string]string{}
-	}
 	return cfg, nil
 }
 
@@ -251,9 +243,6 @@ func (c *Config) Validate() []Issue {
 		issues = append(issues, Issue{Key: key, Severity: severity, Message: message, Fix: fix})
 	}
 
-	if c.Threads <= 0 {
-		add("error", "threads", "must be positive", "voiceime config set threads 4")
-	}
 	if c.Language == "" {
 		add("warning", "language", "empty; the model will be asked to auto-detect",
 			"voiceime config set language zh")
@@ -271,9 +260,6 @@ func (c *Config) Validate() []Issue {
 			add("error", "asr_server_url", err.Error(),
 				"voiceime config set asr_server_url http://127.0.0.1:18080")
 		}
-	}
-	if c.Backend == "" {
-		add("error", "backend", "must name a backend", "voiceime config set backend cpu")
 	}
 	if strings.TrimSpace(c.PushToTalk) == "" {
 		add("error", "push_to_talk", "must be set; the engine has no other way to start recording",
@@ -380,25 +366,6 @@ func (c *Config) Set(key, raw string) error {
 				return fmt.Errorf("%s must be true or false: %w", key, err)
 			}
 			target.SetBool(boolean)
-		case reflect.Map:
-			if target.Type().Key().Kind() != reflect.String || target.Type().Elem().Kind() != reflect.String {
-				return fmt.Errorf("%s cannot be set from the command line (%s)", key, target.Type())
-			}
-			entry, value, found := strings.Cut(raw, "=")
-			entry = strings.TrimSpace(entry)
-			if !found || entry == "" {
-				return fmt.Errorf("%s needs key=value, e.g. %s audio_chunk_mode=none (an empty value removes a key)", key, key)
-			}
-			if target.IsNil() {
-				target.Set(reflect.MakeMap(target.Type()))
-			}
-			if value == "" {
-				target.SetMapIndex(reflect.ValueOf(entry).Convert(target.Type().Key()), reflect.Value{})
-				return nil
-			}
-			target.SetMapIndex(
-				reflect.ValueOf(entry).Convert(target.Type().Key()),
-				reflect.ValueOf(value).Convert(target.Type().Elem()))
 		default:
 			return fmt.Errorf("%s cannot be set from the command line (%s)", key, target.Kind())
 		}
@@ -408,45 +375,6 @@ func (c *Config) Set(key, raw string) error {
 }
 
 // --------------------------------------------------------------------------- //
-
-// FindASRBinary returns the audio.cpp CLI the settings name.
-//
-// There is one way to get it: the asr_bin setting. The only fallback is PATH, which is a
-// decision someone made about this machine rather than a guess about where a build tree
-// might be. It used to guess - a checkout directory, then build/*/bin/audiocpp_cli under it,
-// preferring the path whose name contained the backend - so adding a second build tree
-// could change which inference a running service performed. Settling it belongs to
-// `voiceime apply`, which writes the answer - what it finds, or what PATH named - into
-// asr_bin and says which it used. Measured on the reference machine, ~/.local/bin and a
-// build tree both hold a runnable audiocpp_cli, of different sizes and md5s.
-func (c *Config) FindASRBinary() (string, error) {
-	if configured := strings.TrimSpace(c.ASRBin); configured != "" {
-		path := Expand(configured)
-		if isRunnable(path) {
-			return path, nil
-		}
-		return "", fmt.Errorf("%s is what asr_bin names, and it is not a runnable file: point asr_bin at the audio.cpp build's audiocpp_cli, or build audio.cpp", path)
-	}
-	if found, err := exec.LookPath("audiocpp_cli"); err == nil {
-		return found, nil
-	}
-	return "", errors.New("no audio.cpp CLI: point asr_bin at audiocpp_cli, or put it on PATH (`voiceime capabilities` shows what is found)")
-}
-
-// FindServerBinary returns the resident host that serves the decodes. It is the sibling of
-// the CLI, which is where audio.cpp builds it: one recorded path fixes both.
-func (c *Config) FindServerBinary() (string, error) {
-	if configured := strings.TrimSpace(c.ASRBin); configured != "" {
-		sibling := filepath.Join(filepath.Dir(Expand(configured)), serverBinaryName)
-		if isRunnable(sibling) {
-			return sibling, nil
-		}
-	} else if found, err := exec.LookPath(serverBinaryName); err == nil {
-		return found, nil
-	}
-	return "", fmt.Errorf("%s not found: asr_bin names %s, and %s is not beside it (audio.cpp builds both into the same directory)",
-		serverBinaryName, strings.TrimSpace(c.ASRBin), serverBinaryName)
-}
 
 // FindExecutable returns the first of names present on PATH, or "".
 func FindExecutable(names ...string) string {

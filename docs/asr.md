@@ -36,17 +36,25 @@ and a recording that contains only punctuation is dropped rather than typed, bec
 
 ## The service
 
-`voiceime apply` writes a systemd user unit whose `ExecStart` is
-**`voiceime server run`**. That command renders the audio.cpp config from `config.toml`
-and then runs the server, so the settings stay the only source of truth: there is no
-generated file that can disagree with them.
+`voiceime apply` resolves what this machine adds up to - which audio.cpp to run, which
+backend it was compiled for, how many workers its CPU has - and writes the answer into two
+files: the systemd user unit, whose `ExecStart` is
 
-The config names **one entry**, in offline mode, with the request options a multipart
-upload has no field for:
+```
+audiocpp_server --config ~/.local/share/voiceime/asr-server.json --log
+```
+
+and that `asr-server.json`, the audio.cpp config. Nothing re-derives either at start-up: a
+service systemd starts at login reads what the install decided months earlier. The file lives
+where a login can read it, not in a session directory that is emptied at logout, and it is
+never hand-edited - `voiceime remove` deletes it, and the next `apply` renders it again.
+
+It names **one entry**, in offline mode, with the request options a multipart upload has no
+field for:
 
 ```json
 {
-  "host": "127.0.0.1", "port": 18080, "backend": "cpu", "threads": 4,
+  "host": "127.0.0.1", "port": 18080, "backend": "cpu", "threads": 8,
   "lazy_load": false,
   "models": [{ "id": "qwen3-asr-0.6b-q8_0", "family": "qwen3_asr",
                "path": "/home/u/models/Qwen3-ASR-0.6B-GGUF/qwen3-asr-0.6b-q8_0.gguf",
@@ -56,7 +64,9 @@ upload has no field for:
 ```
 
 `lazy_load: false` is the point of the service: the weights belong to its startup, so a
-request never waits for a load.
+request never waits for a load. `audio_chunk_mode: none` is the other half of "every
+recording is sent whole": the served entry has to be told not to cut the upload up and decode
+the pieces separately.
 
 The id is the model file's name (`server.EntryID`). The client does not need it
 configured: it asks `GET /v1/models` and uses the single entry it finds, which is also
@@ -86,9 +96,9 @@ Two steps run on every answer before it is typed, in this order:
 
 The alternative is the model's own switch. SenseVoice answers with **no** punctuation at
 all when its `enable_itn` option is off, and that takes the digits out of dates and numbers
-with it (measured: `"嗯。"` against `"嗯"`), so voiceime keeps the switch on
-(`request_options enable_itn=false` would turn it off) and removes the one mark that is
-always added.
+with it (measured: `"嗯。"` against `"嗯"`), so voiceime keeps the switch on - there is no
+setting for it, because the measured trade is not worth offering - and removes the one mark
+that is always added.
 
 An answer that carries no letter or digit is not typed at all: a lone `"。"` is punctuation
 from audio the model could not read, not a transcript.

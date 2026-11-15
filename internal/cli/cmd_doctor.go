@@ -77,22 +77,28 @@ func runDoctor(ctx *Context) []Check {
 		})
 	}
 
-	// 2. audio.cpp CLI, which does all the actual inference.
-	asrBinary, asrErr := cfg.FindASRBinary()
+	// 2. audio.cpp, which does all the actual inference.
+	asrBinary, _, asrErr := config.ASRServer()
 	if asrErr != nil {
 		report(Check{
 			ID:     "audio_cpp",
 			Status: "fail",
-			Detail: "audiocpp_cli not found",
-			// `apply` looks for a build and records it, which is the part a caller cannot
-			// be asked to get right first: the path has to come from the machine.
-			Fix: "build audio.cpp, then `voiceime apply` " +
-				"(or name the build with `voiceime config set asr_bin /path/to/audio.cpp/build/<backend>/bin/audiocpp_cli`)",
+			Detail: asrErr.Error(),
+			// There is no setting to point at the build: the path comes from the machine,
+			// and `apply` is what writes it into the service unit.
+			Fix: "build audio.cpp (cmake -B build && cmake --build build), then `voiceime apply`",
 		})
 	} else {
 		detail := asrBinary
+		// The banner is the only authority on what this build can do. Its first line says
+		// which build it is and its last which backends it was compiled with, and both are
+		// worth naming: a build without cuda cannot do cuda whatever the machine has.
 		if version, err := probe(asrBinary, "--version"); err == nil {
-			detail += " (" + firstLine(version) + ")"
+			detail += " (" + firstLine(version)
+			if backends := parseBackends(lastLineMatching(version, "backends:")); len(backends) > 0 {
+				detail += ", backends: " + strings.Join(backends, ", ")
+			}
+			detail += ")"
 		}
 		report(Check{ID: "audio_cpp", Status: "ok", Detail: detail})
 	}
@@ -160,10 +166,7 @@ func runDoctor(ctx *Context) []Check {
 		report(Check{ID: "feedback", Status: "ok", Detail: "notifications and sound cues available"})
 	}
 
-	// 7. The settings whose right value is a property of the machine.
-	hardwareChecks(ctx, report)
-
-	// 8. Installed artifacts: the paths baked into the component file and the
+	// 7. Installed artifacts: the paths baked into the component file and the
 	// systemd unit, and whether the resident processes run those paths. A moved
 	// checkout breaks all three silently (see install_check.go).
 	installChecks(report)

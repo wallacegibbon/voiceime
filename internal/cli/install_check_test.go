@@ -11,13 +11,13 @@ import (
 )
 
 func TestUnitExecStartReadsTheCommand(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "voiceime-asr-server.service")
+	path := filepath.Join(t.TempDir(), serverUnitName)
 	unit := `[Unit]
 Description=voiceime recognition server
 
 [Service]
 Type=simple
-ExecStart=/home/u/.local/bin/voiceime server run --config /home/u/.config/voiceime/config.toml
+ExecStart=/home/u/playground/audio.cpp/build/linux-cpu-release/bin/audiocpp_server --config /home/u/.local/share/voiceime/asr-server.json --log
 Restart=on-failure
 
 [Install]
@@ -26,12 +26,22 @@ WantedBy=default.target
 	if err := os.WriteFile(path, []byte(unit), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, err := unitExecStart(path)
+	fields, err := unitExecStart(path)
 	if err != nil {
 		t.Fatalf("unitExecStart: %v", err)
 	}
-	if want := "/home/u/.local/bin/voiceime"; got != want {
-		t.Errorf("unitExecStart = %q, want %q", got, want)
+	want := "/home/u/playground/audio.cpp/build/linux-cpu-release/bin/audiocpp_server"
+	if firstField(fields) != want {
+		t.Errorf("the unit names %q, want %q", firstField(fields), want)
+	}
+	configFile := "/home/u/.local/share/voiceime/asr-server.json"
+	if got := unitArgument(fields, "--config"); got != configFile {
+		t.Errorf("--config = %q, want %q", got, configFile)
+	}
+	// A flag with nothing after it is not a value: reporting the empty string as the
+	// config it names would send the reader to a file called nothing.
+	if got := unitArgument(fields, "--log"); got != "" {
+		t.Errorf("unitArgument(--log) = %q, want nothing", got)
 	}
 }
 
@@ -136,8 +146,8 @@ func TestResidentKindsCoverTheResidentProcesses(t *testing.T) {
 	names := map[string]bool{}
 	for _, kind := range residentKinds {
 		names[kind.name] = true
-		if kind.pattern == "" || kind.configured == nil {
-			t.Errorf("%s needs both a process pattern and a configured-binary lookup", kind.name)
+		if kind.pattern == "" || kind.binaryName == "" || kind.configured == nil {
+			t.Errorf("%s needs a process pattern, an executable name and a configured-binary lookup", kind.name)
 		}
 	}
 	for _, name := range []string{"the engine", "the recognition service"} {
@@ -147,11 +157,18 @@ func TestResidentKindsCoverTheResidentProcesses(t *testing.T) {
 	}
 }
 
-// processesRunning reads /proc, so this checks it does not match a process that
-// merely has voiceime in the command line it was launched with.
+// processesRunning reads /proc, so this checks it does not match a process that merely has the
+// pattern in the command line it was launched with - which, for the recognition service, is a
+// path this tool wrote rather than one of its own executables.
 func TestProcessesRunningRequiresTheBinaryToBeOurs(t *testing.T) {
-	for _, running := range processesRunning("--nonexistent-pattern--") {
+	for _, running := range processesRunning("--nonexistent-pattern--", "voiceime") {
 		t.Errorf("matched an unrelated process: %+v", running)
+	}
+	// The pattern here is the file the service is started with, which on a running machine
+	// does match a live process: what has to keep a shell, an editor or a `grep` out of the
+	// finding is the executable name.
+	for _, running := range processesRunning(serverConfigName, "no-such-binary-name") {
+		t.Errorf("matched a process that is not the audio.cpp this tool started: %+v", running)
 	}
 	if atoi("12") != 12 || isDigits("1a") || isDigits("") {
 		t.Error("pid parsing is wrong")
@@ -169,7 +186,7 @@ func contains(haystack, needle string) bool {
 
 func TestCommandLineNormalizesNulSeparatedArguments(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cmdline")
-	raw := []byte("/home/u/.local/bin/voiceime\x00server\x00run\x00--config\x00/home/u/.config/voiceime/config.toml\x00")
+	raw := []byte("/home/u/audio.cpp/build/linux-cpu-release/bin/audiocpp_server\x00--config\x00/home/u/.local/share/voiceime/asr-server.json\x00--log\x00")
 	if err := os.WriteFile(path, raw, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -177,10 +194,10 @@ func TestCommandLineNormalizesNulSeparatedArguments(t *testing.T) {
 	if !ok {
 		t.Fatal("commandLine failed on a readable file")
 	}
-	if !contains(got, "server run") {
-		t.Errorf("commandLine = %q, want it to contain %q", got, "server run")
+	if !contains(got, "--config /home/u/.local/share/voiceime/asr-server.json") {
+		t.Errorf("commandLine = %q, want it to contain the arguments", got)
 	}
-	if !strings.HasPrefix(got, "/home/u/.local/bin/voiceime ") {
+	if !strings.HasPrefix(got, "/home/u/audio.cpp/build/linux-cpu-release/bin/audiocpp_server ") {
 		t.Errorf("commandLine = %q, want it to start with the binary path", got)
 	}
 	if strings.Contains(got, "\\x00") {
@@ -191,7 +208,7 @@ func TestCommandLineNormalizesNulSeparatedArguments(t *testing.T) {
 // A process that merely mentions the pattern is not an engine.
 func TestProcessesRunningIgnoresProcessesThatMerelyMentionThePattern(t *testing.T) {
 	// A shell whose command line contains the pattern: exactly what pkill -f matched.
-	command := exec.Command("/bin/sh", "-c", "sleep 5 # voiceime ibus-engine")
+	command := exec.Command("/bin/sh", "-c", "sleep 5 # voiceime ibus-engine "+serverConfigName)
 	if err := command.Start(); err != nil {
 		t.Fatalf("start the decoy: %v", err)
 	}
@@ -200,9 +217,12 @@ func TestProcessesRunningIgnoresProcessesThatMerelyMentionThePattern(t *testing.
 		_, _ = command.Process.Wait()
 	}()
 
-	for _, found := range processesRunning("ibus-engine") {
-		if found.PID == command.Process.Pid {
-			t.Fatalf("pid %d mentions the pattern but was taken for an engine (exe %s)", found.PID, found.Binary)
+	for _, kind := range residentKinds {
+		for _, found := range processesRunning(kind.pattern, kind.binaryName) {
+			if found.PID == command.Process.Pid {
+				t.Fatalf("pid %d mentions %q but was taken for %s (exe %s)",
+					found.PID, kind.pattern, kind.name, found.Binary)
+			}
 		}
 	}
 }

@@ -11,8 +11,8 @@ import (
 )
 
 func TestConfigApplyRefusesAConfigThatNamesAMissingModel(t *testing.T) {
-	configPath, modelsDir := freshConfig(t)
-	missing := filepath.Join(modelsDir, "absent.gguf")
+	configPath := bareConfig(t)
+	missing := filepath.Join(filepath.Dir(configPath), "absent.gguf")
 	appendToFile(t, configPath, "model = \""+missing+"\"\n")
 
 	code, stdout, stderr := runForTest(t, "--config", configPath, "config", "apply")
@@ -29,8 +29,8 @@ func TestConfigApplyRefusesAConfigThatNamesAMissingModel(t *testing.T) {
 }
 
 func TestConfigValidateRejectsAModelPathThatDoesNotExist(t *testing.T) {
-	configPath, modelsDir := freshConfig(t)
-	missing := filepath.Join(modelsDir, "absent.gguf")
+	configPath := bareConfig(t)
+	missing := filepath.Join(filepath.Dir(configPath), "absent.gguf")
 	appendToFile(t, configPath, "model = \""+missing+"\"\n")
 
 	code, stdout, _ := runForTest(t, "--config", configPath, "config", "validate")
@@ -48,8 +48,8 @@ func TestConfigValidateRejectsAModelPathThatDoesNotExist(t *testing.T) {
 // The fix offered for a missing path has to be runnable, which is the failure mode
 // this project keeps hitting: advice that cannot be followed.
 func TestConfigValidateOffersARunnableFixForAMissingModel(t *testing.T) {
-	configPath, modelsDir := freshConfig(t)
-	missing := filepath.Join(modelsDir, "absent.gguf")
+	configPath := bareConfig(t)
+	missing := filepath.Join(filepath.Dir(configPath), "absent.gguf")
 	appendToFile(t, configPath, "model = \""+missing+"\"\n")
 
 	code, stdout, _ := runForTest(t, "--config", configPath, "--json", "config", "validate")
@@ -69,9 +69,11 @@ func TestConfigValidateOffersARunnableFixForAMissingModel(t *testing.T) {
 	if !strings.Contains(fix, "config set model") {
 		t.Fatalf("the fix does not say how to correct the setting: %q", fix)
 	}
-	// Run the fix, exactly as printed, and confirm it clears the issue.
+	// Run the fix with a real checkpoint in place of its placeholder, and confirm the
+	// configuration becomes usable: advice that names the wrong command is the failure
+	// mode this project keeps hitting.
 	_, clearOut, clearErr := runForTest(t, "--config", configPath, "--json",
-		"config", "set", "model", "")
+		"config", "set", "model", ggufFixture(t, "sense_asr"))
 	if clearErr != "" {
 		t.Fatalf("the documented fix failed: %s", clearErr)
 	}

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/wallacegibbon/voiceime/internal/config"
-	"github.com/wallacegibbon/voiceime/internal/models"
 	"github.com/wallacegibbon/voiceime/internal/server"
 )
 
@@ -26,7 +25,7 @@ func serverUnitInstalled() bool {
 
 // asrServerCheck reports on the resident server, the one prerequisite dictation cannot
 // work without.
-func asrServerCheck(cfg *config.Config, scanned []models.Model, unitInstalled bool) Check {
+func asrServerCheck(cfg *config.Config, unitInstalled bool) Check {
 	raw := strings.TrimSpace(cfg.ASRServerURL)
 	if raw == "" {
 		return Check{
@@ -98,7 +97,7 @@ func asrServerCheck(cfg *config.Config, scanned []models.Model, unitInstalled bo
 			entries[0].ID, filepath.Base(entries[0].Path))
 	}
 	if _, port, err := server.ParseURL(raw); err == nil && server.IsLocalHost(host) {
-		if spec, specErr := buildServerSpec(cfg, scanned, port, ""); specErr == nil {
+		if spec, specErr := buildServerSpec(cfg, port, ""); specErr == nil {
 			if matchErr := modelMatches(ctx, raw, spec); matchErr != nil {
 				return Check{
 					ID:     "asr_server",

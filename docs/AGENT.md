@@ -27,7 +27,7 @@ if the two disagree, the runtime wins.
 
 ```
 voiceime config init|show|get|set|apply|validate
-voiceime models list [--all] [--refresh] [--force]
+voiceime model
 voiceime server install|run|restart|status|uninstall [--port N] [--model PATH]
 voiceime engine install [--apply]|status|uninstall
 voiceime transcribe [--file recording.wav | --seconds N]
@@ -35,12 +35,16 @@ voiceime doctor
 voiceime capabilities
 ```
 
-* voiceime **fetches nothing**. A checkpoint is on the machine or it is not: put a GGUF in
-  `models_dir` and point `model` at it. Every "nothing to serve" answer names a model worth
-  fetching and its size, because choosing a family and a size is otherwise a guess.
-* `models list --refresh` is the **only** command that inspects model files (about six
-  seconds each). Everything else reads the cache and says when a file has no answer yet.
-  After placing a new checkpoint yourself, this is the command that identifies it.
+* voiceime **fetches nothing and scans nothing**. A model is one GGUF file and the `model`
+  setting names it: there is no models directory, no candidate list, and no ranking deciding
+  for you. Every "nothing named" answer says what to fetch and what it costs on disk, because
+  choosing a family and a size is otherwise a guess.
+* What a checkpoint *is* - the audio.cpp family that picks the loader, which the generated
+  service configuration requires - is read from the file's own metadata
+  (`audiocpp.model_spec.*`), a few hundred bytes at its start. Nothing is loaded, no
+  subprocess is asked and nothing is cached, so there is nothing to refresh and nothing can
+  go stale. `voiceime model` prints that answer for the file you named; a GGUF without a
+  model spec in it is refused by name, together with what it does say it is.
 * `server install` sets `asr_server_url` and `model` in the configuration and starts the
   unit; `server run` is what the unit executes.
 * `engine install` writes the IBus component and **appends** `('ibus', voiceime)` to
@@ -58,11 +62,10 @@ voiceime capabilities
 
 | Key | Default | Notes |
 |---|---|---|
-| `models_dir` | `~/models` | Scanned for GGUF checkpoints. You place files here; voiceime never downloads. |
-| `asr_bin` | `""` | `audiocpp_cli`, which the service runs and `--refresh` inspects with; `audiocpp_server` is taken from beside it. `config init` writes what it finds; nothing else searches the filesystem, and `PATH` is the only fallback. |
+| `asr_bin` | `""` | `audiocpp_cli`: the audio.cpp CLI, used to report which backends this build supports. `audiocpp_server` is taken from beside it. `config init` writes what it finds; nothing else searches the filesystem, and `PATH` is the only fallback. |
 | `backend` | `cpu` | `audio.cpp` backend: cpu, cuda, vulkan, hip, metal. |
 | `threads` | `4` | Worker threads for the server. |
-| `model` | `""` | The checkpoint the service serves; empty picks the best installed transcription model. `server install` writes it. |
+| `model` | `""` | **Required.** The GGUF the service serves and the engine transcribes with. Nothing picks it for you: no scan, no download. |
 | `language` | `zh` | Passed to the model; empty asks it to auto-detect. |
 | `text_script` | `simplified` | Chinese output script: `simplified` or `preserve`. |
 | `max_utterance_seconds` | `60` | A hold whose key never comes up stops recording here. |

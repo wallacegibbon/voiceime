@@ -30,10 +30,11 @@ microphone ──► capture (parec, 16 kHz mono) ── hold ── release
 
 ```sh
 make install                     # ~/.local/bin, no root needed
-voiceime config init             # write defaults, discover audio.cpp
-# put a GGUF in ~/models - voiceime does not fetch models
-voiceime models list --refresh   # identify what is on the machine
-voiceime server install          # serve the model, resident
+voiceime config init             # write defaults, find audio.cpp's CLI
+voiceime config set model ~/models/…/sensevoice-small-q8.gguf
+                                 # a model is one GGUF you name; nothing is fetched or scanned
+voiceime model                   # what that file is: family, size, tasks
+voiceime server install          # serve it, resident
 voiceime engine install --apply  # register the IBus engine and the input source, and
                                  # record the search path so a login keeps them
 voiceime doctor                  # every finding carries a fix

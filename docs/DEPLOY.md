@@ -40,20 +40,29 @@ and lists the settings whose default is a property of the machine
 
 ## 3. A model
 
-voiceime fetches nothing: a checkpoint is on the machine or it is not. Put a GGUF in
-`models_dir` (`~/models` by default), then identify it:
+voiceime fetches nothing and scans nothing: a model is one GGUF file, and you name it.
 
 ```sh
-"$BIN" models list --refresh          # inspect every file and record the answer
-# assert: one line per model as `<family> <size> <tasks(modes)> <path>`, no line saying
-# "not inspected", and the file you intend to serve is the one you expect
+"$BIN" model
+# assert: exit 3, "no checkpoint is named", and the fix `config set model /path/to/model.gguf`
 ```
 
-`models list --refresh` is the only command that inspects files (about six seconds each) and
-the only writer of the inspection cache; everything else reads the cache and says when a file
-has no answer yet. So this is also the command that classifies a checkpoint you placed by
-hand. With nothing usable in the directory, `doctor`'s `model` check names one worth fetching
-and what it costs on disk.
+Fetch one - the answer above names a checkpoint worth starting with and what it costs on disk
+(SenseVoice small, 242 MiB, is what the reference machine uses). Then name it:
+
+```sh
+"$BIN" config set model ~/models/SenseVoice-Small-GGUF/sensevoice-small-q8-audiocpp-v1.gguf
+"$BIN" model --json
+# assert: data.family is the audio.cpp family ("sense_asr"), data.size_bytes is the file's
+# size, and data.tasks contains "asr"
+```
+
+`model` reads that out of the checkpoint's own metadata, which audio.cpp writes into every
+GGUF it produces. Nothing is loaded, no other program is asked, and there is no cache to
+refresh: the answer is the same a year later, or the answer is that the file is not one of
+audio.cpp's. That second case says so by name - `is a GGUF (whisper) with no audio.cpp model
+spec in it` - and what to do about it is to convert the checkpoint with audio.cpp, not to
+point voiceime at it harder.
 
 ## 4. The service
 

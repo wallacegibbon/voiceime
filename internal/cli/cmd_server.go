@@ -14,7 +14,7 @@ import (
 
 	"github.com/wallacegibbon/voiceime/internal/asr"
 	"github.com/wallacegibbon/voiceime/internal/config"
-	"github.com/wallacegibbon/voiceime/internal/models"
+	"github.com/wallacegibbon/voiceime/internal/model"
 	"github.com/wallacegibbon/voiceime/internal/server"
 )
 
@@ -92,11 +92,7 @@ func writeServerConfig(spec server.Spec) (string, error) {
 
 func runServerInstall(ctx *Context, port int, modelFlag string) error {
 	cfg := ctx.Config
-	scanned, err := cachedModels(ctx)
-	if err != nil {
-		return err
-	}
-	spec, err := buildServerSpec(cfg, scanned, port, modelFlag)
+	spec, err := buildServerSpec(cfg, port, modelFlag)
 	if err != nil {
 		return err
 	}
@@ -270,11 +266,7 @@ func documentationURL() string {
 // the settings, then become the server.
 func runServerForeground(ctx *Context, port int, modelFlag string) error {
 	cfg := ctx.Config
-	scanned, err := cachedModels(ctx)
-	if err != nil {
-		return err
-	}
-	spec, err := buildServerSpec(cfg, scanned, port, modelFlag)
+	spec, err := buildServerSpec(cfg, port, modelFlag)
 	if err != nil {
 		return err
 	}
@@ -326,15 +318,11 @@ func runServerRestart(ctx *Context) error {
 	if err := runCommand("systemctl --user restart " + serverUnitName); err != nil {
 		return FailureError("systemctl --user restart %s: %v", serverUnitName, err)
 	}
-	scanned, err := models.Cached(ctx.Config)
-	if err != nil {
-		return FailureError("%v", err)
-	}
 	_, port, err := server.ParseURL(ctx.Config.ASRServerURL)
 	if err != nil {
 		return PreconditionError("voiceime server install", "%v", err)
 	}
-	spec, err := buildServerSpec(ctx.Config, scanned, port, "")
+	spec, err := buildServerSpec(ctx.Config, port, "")
 	if err != nil {
 		return PreconditionError("voiceime server install", "%v", err)
 	}
@@ -436,61 +424,29 @@ func runServerStatus(ctx *Context) error {
 
 // buildServerSpec decides which checkpoint the service serves. Shared with doctor, so the
 // check can say what should be running.
-func buildServerSpec(cfg *config.Config, scanned []models.Model, port int, modelFlag string) (server.Spec, error) {
-	configured := modelFlag
-	if strings.TrimSpace(configured) == "" {
-		configured = cfg.Model
+func buildServerSpec(cfg *config.Config, port int, modelFlag string) (server.Spec, error) {
+	configured := strings.TrimSpace(modelFlag)
+	if configured == "" {
+		configured = strings.TrimSpace(cfg.Model)
 	}
-	resolved := models.Resolve(scanned, cfg.Language, configured)
-	if resolved.Model == "" {
-		if pending := models.Uninspected(scanned); len(pending) > 0 {
-			return server.Spec{}, PreconditionError("voiceime models list --refresh",
-				"%d model file(s) have not been inspected yet", len(pending))
-		}
-		return server.Spec{}, PreconditionError(noModelFix, "%s", noModelAdvice(cfg.ResolvedModelsDir()))
+	if configured == "" {
+		return server.Spec{}, PreconditionError(noModelFix, "%s", noModelAdvice())
 	}
-	family, err := modelFamily(scanned, resolved.Model)
+	path := config.Expand(configured)
+	// The family is not something to remember or re-derive: audio.cpp wrote it into the
+	// file, and the server requires it.
+	info, err := model.Open(path)
 	if err != nil {
-		return server.Spec{}, err
+		return server.Spec{}, PreconditionError("voiceime config set model /path/to/model.gguf", "%v", err)
 	}
 	return server.Spec{
-		Model:          resolved.Model,
-		Family:         family,
+		Model:          path,
+		Family:         info.Family,
 		Port:           port,
 		Backend:        cfg.Backend,
 		Threads:        cfg.Threads,
 		RequestOptions: asr.RequestOptions(cfg.RequestOptions),
 	}, nil
-}
-
-// modelFamily reports a model's audio.cpp family, which the server requires.
-func modelFamily(scanned []models.Model, path string) (string, error) {
-	found := models.Lookup(scanned, path)
-	switch {
-	case found == nil:
-		return "", PreconditionError("voiceime models list",
-			"%s is not a model voiceime can see; check models_dir", path)
-	case !found.Inspected:
-		return "", PreconditionError("voiceime models list --refresh",
-			"%s has not been inspected yet", path)
-	case found.Error != "":
-		return "", PreconditionError("voiceime models list", "%s: %s", path, found.Error)
-	case found.Family == "":
-		return "", FailureError("%s: audio.cpp did not report a family", path)
-	}
-	return found.Family, nil
-}
-
-// cachedModels reads the inspection cache, turning a missing models directory into the
-// command that creates it.
-func cachedModels(ctx *Context) ([]models.Model, error) {
-	cached, err := models.Cached(ctx.Config)
-	if err != nil {
-		// The directory is the setting this error is about; "no model" is the next
-		// question, and it is answered by the callers of buildServerSpec.
-		return nil, PreconditionError("voiceime config set models_dir /path/to/models", "%v", err)
-	}
-	return cached, nil
 }
 
 // shellQuote quotes a value for a shell-style word splitter, which is what systemd and

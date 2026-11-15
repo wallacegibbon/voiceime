@@ -8,15 +8,44 @@ import (
 	"testing"
 )
 
+// checkpointFile is the file a named checkpoint has to be: it exists. Validate does not read
+// what is inside it - only the commands that serve one do.
+func checkpointFile(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "model.gguf")
+	if err := os.WriteFile(path, []byte("GGUF"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// usableConfig is a configuration that would pass: every default, plus the one thing no
+// default can know - where the user put the checkpoint.
+func usableConfig(t *testing.T) *Config {
+	cfg := Default()
+	cfg.Model = checkpointFile(t)
+	return cfg
+}
+
+// The shipped defaults do not contradict each other. What a fresh one is missing is a
+// checkpoint, and that is said once, with the command that fixes it.
 func TestDefaultsAreCoherent(t *testing.T) {
 	cfg := Default()
+	issues := Errors(cfg.Validate())
+	if len(issues) != 1 || issues[0].Key != "model" {
+		t.Fatalf("default config = %+v, want only the missing checkpoint", issues)
+	}
+	if issues[0].Fix == "" {
+		t.Error("the missing checkpoint carries no fix, so an agent cannot act on it")
+	}
+	cfg.Model = checkpointFile(t)
 	if issues := Errors(cfg.Validate()); len(issues) != 0 {
-		t.Fatalf("default config has blocking issues: %+v", issues)
+		t.Errorf("naming a checkpoint left issues: %+v", issues)
 	}
 }
 
 func TestValidateReportsAnUnusablePushToTalkTrigger(t *testing.T) {
-	cfg := Default()
+	cfg := usableConfig(t)
 	cfg.PushToTalk = ""
 	issues := Errors(cfg.Validate())
 	if len(issues) != 1 || issues[0].Key != "push_to_talk" {
@@ -65,7 +94,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if loaded.Threads != 7 || loaded.RequestOptions["audio_chunk_mode"] != "none" {
 		t.Errorf("round trip lost settings: %+v", loaded)
 	}
-	if loaded.ModelsDir != original.ModelsDir || loaded.PushToTalk != original.PushToTalk {
+	if loaded.Backend != original.Backend || loaded.PushToTalk != original.PushToTalk {
 		t.Errorf("round trip changed defaults: %+v", loaded)
 	}
 }
@@ -234,7 +263,7 @@ func TestSetRequestOptionsAsKeyValue(t *testing.T) {
 
 // The streaming client speaks HTTP over a raw socket, so it cannot do TLS.
 func TestValidateRejectsAServerAddressTheStreamCannotUse(t *testing.T) {
-	cfg := Default()
+	cfg := usableConfig(t)
 	cfg.ASRServerURL = "https://example.invalid:18080"
 	issues := Errors(cfg.Validate())
 	if len(issues) != 1 || issues[0].Key != "asr_server_url" {
@@ -271,7 +300,7 @@ func TestValidateRejectsAServerAddressTheStreamCannotUse(t *testing.T) {
 }
 
 func TestValidateRejectsUnknownTextCleanupValues(t *testing.T) {
-	cfg := Default()
+	cfg := usableConfig(t)
 	cfg.TextScript = "traditional"
 	issues := Errors(cfg.Validate())
 	if len(issues) != 1 {

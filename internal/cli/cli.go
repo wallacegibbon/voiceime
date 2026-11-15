@@ -114,7 +114,7 @@ func commands() []*Command {
 		cmdEngine(),
 		cmdServer(),
 		cmdIBusEngine(),
-		cmdModels(),
+		cmdModel(),
 		cmdTranscribe(),
 	}
 }

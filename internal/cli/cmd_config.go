@@ -13,7 +13,7 @@ import (
 
 	"github.com/wallacegibbon/voiceime/internal/config"
 	"github.com/wallacegibbon/voiceime/internal/ibus"
-	"github.com/wallacegibbon/voiceime/internal/models"
+	"github.com/wallacegibbon/voiceime/internal/model"
 	"github.com/wallacegibbon/voiceime/internal/server"
 )
 
@@ -32,37 +32,22 @@ func cmdConfig() *Command {
 	}
 }
 
-// resolvedModels says which checkpoint an empty `model` resolves to, so `config show`
-// can answer "which model is in use" for a value that is empty on purpose.
-func resolvedModels(ctx *Context) map[string]string {
-	resolved := map[string]string{}
-	scanned, err := models.Cached(ctx.Config)
+// configuredModel answers "which model is in use" where a user looks first. The answer comes
+// from the file itself, so it is the same answer everywhere else in the tool.
+func configuredModel(ctx *Context) map[string]string {
+	out := map[string]string{}
+	path := strings.TrimSpace(ctx.Config.Model)
+	if path == "" {
+		out["model"] = noModelAdvice()
+		return out
+	}
+	info, err := model.Open(config.Expand(path))
 	if err != nil {
-		return resolved
+		out["model"] = err.Error()
+		return out
 	}
-	choice := models.Resolve(scanned, ctx.Config.Language, ctx.Config.Model)
-	if strings.TrimSpace(ctx.Config.Model) != "" {
-		if found := models.Lookup(scanned, ctx.Config.Model); found != nil {
-			resolved["model"] = "in use: " + describeModel(scanned, found.Path)
-		}
-		return resolved
-	}
-	if choice.Model == "" {
-		resolved["model"] = "empty means pick one, and no transcription model is installed"
-	} else {
-		resolved["model"] = "empty means pick one: " + describeModel(scanned, choice.Model)
-	}
-	return resolved
-}
-
-// describeModel names a checkpoint the way a user recognises it: the file, then its
-// family, which is what the ranking is based on.
-func describeModel(scanned []models.Model, path string) string {
-	found := models.Lookup(scanned, path)
-	if found == nil {
-		return filepath.Base(path)
-	}
-	return filepath.Base(found.Path) + " (" + found.Family + ")"
+	out["model"] = describeCheckpoint(info)
+	return out
 }
 
 // applyReport is what `config apply` did, one line per thing that reads the configuration.
@@ -112,10 +97,6 @@ func applyService(ctx *Context) (status string, served []string, err error) {
 	if _, lookupErr := exec.LookPath("systemctl"); lookupErr != nil || !fileExists(serverUnitPath()) {
 		return "not installed", nil, nil
 	}
-	scanned, scanErr := cachedModels(ctx)
-	if scanErr != nil {
-		return "", nil, scanErr
-	}
 	local, port := false, 0
 	if strings.TrimSpace(ctx.Config.ASRServerURL) != "" {
 		host, parsedPort, parseErr := server.ParseURL(ctx.Config.ASRServerURL)
@@ -124,7 +105,7 @@ func applyService(ctx *Context) (status string, served []string, err error) {
 		}
 		local, port = server.IsLocalHost(host), parsedPort
 	}
-	spec, specErr := buildServerSpec(ctx.Config, scanned, port, "")
+	spec, specErr := buildServerSpec(ctx.Config, port, "")
 	if specErr != nil {
 		return "", nil, specErr
 	}
@@ -239,10 +220,9 @@ func runConfig(ctx *Context, args []string, force bool) error {
 
 	case "show":
 		fields := ctx.Config.Fields()
-		// An empty model setting is an instruction to choose, not an absence, and the
-		// file cannot show what it chose. Printing the resolution here is where a user
-		// looks first for "which model is running".
-		resolved := resolvedModels(ctx)
+		// The model setting is a path, and a path on its own does not say what will be
+		// served. What the file says about itself is printed next to it.
+		resolved := configuredModel(ctx)
 		ctx.Print("%s", ctx.ConfigPath)
 		for _, field := range fields {
 			line := fmt.Sprintf("%-22s %v", field.Key, field.Value)
@@ -452,8 +432,6 @@ func runCapabilities(ctx *Context, args []string) error {
 			"cache_dir":        config.CacheDir(),
 			"data_dir":         config.DataDir(),
 			"runtime_dir":      config.RuntimeDir(),
-			"model_index":      config.ModelIndexPath(),
-			"models_dir":       ctx.Config.ResolvedModelsDir(),
 			"environment_dir":  config.EnvironmentDir(),
 			"environment_file": ibus.EnvironmentFile(),
 		},
@@ -505,10 +483,19 @@ func environment(ctx *Context) map[string]any {
 		environment["asr_bin"] = nil
 	}
 
-	modelsDir := ctx.Config.ResolvedModelsDir()
-	environment["models_dir"] = modelsDir
-	environment["models_dir_exists"] = dirExists(modelsDir)
-	environment["models_dir_gguf_count"] = countGGUF(modelsDir)
+	// The named checkpoint, as the file itself describes it. "How many GGUFs are around"
+	// is not a question this tool answers: one file is named and the rest are somebody
+	// else's.
+	if path := strings.TrimSpace(ctx.Config.Model); path != "" {
+		expanded := config.Expand(path)
+		environment["model"] = expanded
+		if info, err := model.Open(expanded); err == nil {
+			environment["model_family"] = info.Family
+			environment["model_size_bytes"] = info.SizeBytes
+		} else {
+			environment["model_error"] = err.Error()
+		}
+	}
 
 	environment["capture_tool"] = config.FindExecutable("parec", "pw-record")
 	environment["play_tool"] = config.FindExecutable("pw-play", "paplay", "canberra-gtk-play")
@@ -519,25 +506,6 @@ func environment(ctx *Context) map[string]any {
 
 	environment["ibus"] = ibusState(ctx)
 	return environment
-}
-
-func dirExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.IsDir()
-}
-
-// countGGUF is a cheap inventory of the models directory. It deliberately does
-// not inspect the files: that is `voiceime models list --refresh`, which records them.
-func countGGUF(dir string) int {
-	matches, err := filepath.Glob(filepath.Join(dir, "*.gguf"))
-	if err != nil {
-		return 0
-	}
-	nested, err := filepath.Glob(filepath.Join(dir, "*", "*.gguf"))
-	if err != nil {
-		return len(matches)
-	}
-	return len(matches) + len(nested)
 }
 
 func lastLineMatching(text, prefix string) string {

@@ -2,12 +2,11 @@ package cli
 
 import (
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 
 	"github.com/wallacegibbon/voiceime/internal/config"
-	"github.com/wallacegibbon/voiceime/internal/models"
+	"github.com/wallacegibbon/voiceime/internal/model"
 )
 
 // Check is one doctor finding.
@@ -95,26 +94,11 @@ func runDoctor(ctx *Context) []Check {
 		report(Check{ID: "audio_cpp", Status: "ok", Detail: detail})
 	}
 
-	// 3. The models directory itself.
-	modelsDir := cfg.ResolvedModelsDir()
-	if info, err := os.Stat(modelsDir); err != nil || !info.IsDir() {
-		report(Check{
-			ID:     "models_dir",
-			Status: "fail",
-			Detail: modelsDir + " does not exist",
-			Fix:    fmt.Sprintf("mkdir -p %s   # or: voiceime config set models_dir <dir>", modelsDir),
-		})
-	} else {
-		report(Check{ID: "models_dir", Status: "ok", Detail: modelsDir})
-	}
+	// 3. The checkpoint. It is named by a path and read from the file, so this needs no
+	// CLI, no cache and no directory: it is reported whether or not audio.cpp is present.
+	modelChecks(ctx, report)
 
-	// 4. Model selection. Scanning needs the CLI, so it is skipped rather than
-	// reported as failed when the CLI is absent - one failure, not two.
-	if asrErr == nil {
-		modelChecks(ctx, report)
-	}
-
-	// 5. Capture.
+	// 4. Capture.
 	if tool := config.FindExecutable("parec", "pw-record"); tool == "" {
 		report(Check{
 			ID:     "capture",
@@ -132,7 +116,7 @@ func runDoctor(ctx *Context) []Check {
 		report(Check{ID: "capture", Status: "ok", Detail: detail})
 	}
 
-	// 6. Text delivery through IBus.
+	// 5. Text delivery through IBus.
 	state := ibusState(ctx)
 	status := "ok"
 	detail := "IBus is running"
@@ -150,7 +134,7 @@ func runDoctor(ctx *Context) []Check {
 	}
 	report(Check{ID: "ibus", Status: status, Detail: detail, Fix: fix})
 
-	// 7. Optional feedback tools. Missing ones degrade UX, never function.
+	// 6. Optional feedback tools. Missing ones degrade UX, never function.
 	var optional []string
 	for id, tool := range map[string]string{
 		"notify": config.FindExecutable("notify-send"),
@@ -172,10 +156,10 @@ func runDoctor(ctx *Context) []Check {
 		report(Check{ID: "feedback", Status: "ok", Detail: "notifications and sound cues available"})
 	}
 
-	// 8. The settings whose right value is a property of the machine.
+	// 7. The settings whose right value is a property of the machine.
 	hardwareChecks(ctx, report)
 
-	// 9. Installed artifacts: the paths baked into the component file and the
+	// 8. Installed artifacts: the paths baked into the component file and the
 	// systemd unit, and whether the resident processes run those paths. A moved
 	// checkout breaks all three silently (see install_check.go).
 	installChecks(ctx, report)
@@ -184,96 +168,40 @@ func runDoctor(ctx *Context) []Check {
 	return checks
 }
 
-// modelChecks reports which model will be used and whether the choice exists.
+// modelChecks reports on the checkpoint that was named. There is no collection to scan and
+// no cache that can be stale: one path, and what the file at the end of it says about itself.
 func modelChecks(ctx *Context, report func(Check)) {
 	cfg := ctx.Config
-	// A diagnostic reads. `models list --refresh` is the cache's only writer (D35), so
-	// doctor cannot change what it is inspecting and cannot fail because it could not.
-	everything, err := models.Cached(cfg)
-	if err != nil {
-		report(Check{
-			ID:     "models",
-			Status: "fail",
-			Detail: err.Error(),
-			Fix:    "voiceime models list",
-		})
+	path := strings.TrimSpace(cfg.Model)
+	if path == "" {
+		report(Check{ID: "model", Status: "fail", Detail: noModelAdvice(), Fix: noModelFix})
+		report(asrServerCheck(cfg, serverUnitInstalled()))
 		return
 	}
-	pending := models.Uninspected(everything)
-	scanned := models.ASRModels(everything)
-	if len(pending) > 0 {
-		// Classifying a model costs about six seconds; the answer belongs to the command
-		// that records it, and the finding names that command.
-		report(Check{
-			ID:     "models",
-			Status: "fail",
-			Detail: fmt.Sprintf("%d of %d file(s) in %s have not been inspected yet, so none can be classified",
-				len(pending), len(everything), cfg.ResolvedModelsDir()),
-			Fix: "voiceime models list --refresh",
-		})
-		return
-	}
-	if len(scanned) == 0 {
+	info, err := model.Open(config.Expand(path))
+	switch {
+	case err != nil:
 		report(Check{
 			ID:     "model",
 			Status: "fail",
-			Detail: noModelAdvice(cfg.ResolvedModelsDir()),
-			Fix:    noModelFix,
+			Detail: err.Error(),
+			Fix:    "voiceime config set model /path/to/model.gguf",
 		})
-		return
-	}
-
-	if cfg.Model != "" {
-		found := models.Lookup(scanned, cfg.Model)
-		switch {
-		case found == nil:
-			report(Check{
-				ID:     "model",
-				Status: "fail",
-				Detail: cfg.Model + " is configured but was not found under " + cfg.ResolvedModelsDir(),
-				Fix:    "voiceime models list",
-			})
-		case found.Error != "":
-			report(Check{
-				ID:     "model",
-				Status: "fail",
-				Detail: found.Path + " cannot be loaded: " + found.Error,
-				Fix:    "voiceime config set model <path from `voiceime models list`>",
-			})
-		case !found.ASR():
-			report(Check{
-				ID:     "model",
-				Status: "fail",
-				Detail: fmt.Sprintf("%s (%s) is not a transcription model", found.Path, found.Family),
-				Fix:    "voiceime config set model <path from `voiceime models list`>",
-			})
-		default:
-			report(Check{
-				ID:     "model",
-				Status: "ok",
-				Detail: fmt.Sprintf("%s (%s)", found.Path, found.Family),
-			})
-		}
-	} else {
-		picked := models.Pick(scanned, cfg.Language)
-		if picked == nil {
-			report(Check{
-				ID:     "model",
-				Status: "fail",
-				Detail: noModelAdvice(cfg.ResolvedModelsDir()),
-				Fix:    noModelFix,
-			})
-		} else {
-			report(Check{
-				ID:     "model",
-				Status: "ok",
-				Detail: fmt.Sprintf("%s (%s) - picked automatically", picked.Path, picked.Family),
-				Fix:    "voiceime config set model " + picked.Path,
-			})
-		}
+	case info.Says() && !info.ASR():
+		// Only when the file says what it does: some checkpoints embed a full spec and
+		// some only a family, and a model that does not name its tasks is not a model
+		// that refuses to transcribe.
+		report(Check{
+			ID:     "model",
+			Status: "fail",
+			Detail: fmt.Sprintf("%s says it does %s, not transcription", info.Path, strings.Join(info.Tasks, "/")),
+			Fix:    "voiceime config set model /path/to/model.gguf",
+		})
+	default:
+		report(Check{ID: "model", Status: "ok", Detail: describeCheckpoint(info)})
 	}
 
 	// The optional resident server: the one part of a working installation nothing
 	// else verifies, because dictation keeps working when it cannot start.
-	report(asrServerCheck(cfg, scanned, serverUnitInstalled()))
+	report(asrServerCheck(cfg, serverUnitInstalled()))
 }

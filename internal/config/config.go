@@ -19,20 +19,15 @@ import (
 // AppName is the directory name under every XDG base directory.
 const AppName = "voiceime"
 
-const DefaultModelsDir = "~/models"
-
 const TargetRate = 16000
 
 type Config struct {
-	ModelsDir string `toml:"models_dir" desc:"Directory scanned for GGUF checkpoints."`
-	ASRBin    string `toml:"asr_bin" desc:"Path to audio.cpp's audiocpp_cli; audiocpp_server is taken from beside it. 'config init' fills this in."`
+	ASRBin string `toml:"asr_bin" desc:"Path to audio.cpp's audiocpp_cli; audiocpp_server is taken from beside it. 'config init' fills this in."`
 
 	Backend string `toml:"backend" desc:"audio.cpp backend: cpu, cuda, vulkan, hip, metal."`
 	Threads int    `toml:"threads" desc:"Worker threads handed to audio.cpp."`
 
-	// The one checkpoint the service serves and the engine transcribes with. Empty picks
-	// the best installed ASR model.
-	Model string `toml:"model" desc:"Checkpoint the recognition service loads; empty picks the best installed ASR model."`
+	Model string `toml:"model" desc:"The GGUF the service serves and the engine transcribes with. You name it: voiceime scans nothing and downloads nothing."`
 
 	Language   string `toml:"language" desc:"Recognition language code, e.g. zh or en."`
 	TextScript string `toml:"text_script" desc:"Chinese output script: simplified converts Traditional characters to Simplified; preserve leaves them."`
@@ -56,7 +51,6 @@ type Config struct {
 
 func Default() *Config {
 	return &Config{
-		ModelsDir:  DefaultModelsDir,
 		Backend:    "cpu",
 		Threads:    4,
 		Language:   "zh",
@@ -138,9 +132,6 @@ func UserUnitDir() string {
 // DefaultPath is the config file every command reads when --config is absent.
 func DefaultPath() string { return filepath.Join(ConfigDir(), "config.toml") }
 
-// ModelIndexPath caches model inspection results so rescans stay cheap.
-func ModelIndexPath() string { return filepath.Join(CacheDir(), "model_index.json") }
-
 // Expand resolves a leading ~ in a user-supplied path.
 func Expand(path string) string {
 	if path == "~" || strings.HasPrefix(path, "~/") {
@@ -150,9 +141,6 @@ func Expand(path string) string {
 	}
 	return path
 }
-
-// ResolvedModelsDir returns the absolute models directory.
-func (c *Config) ResolvedModelsDir() string { return Expand(c.ModelsDir) }
 
 // checkServerURL validates the address of the resident recognition server.
 func checkServerURL(raw string) error {
@@ -291,18 +279,18 @@ func (c *Config) Validate() []Issue {
 		add("error", "push_to_talk", "must be set; the engine has no other way to start recording",
 			`voiceime config set push_to_talk "<Control>grave"`)
 	}
-	if c.ModelsDir == "" {
-		add("error", "models_dir", "must be set", "voiceime config set models_dir "+DefaultModelsDir)
-	}
-	if path := strings.TrimSpace(c.Model); path != "" {
-		if _, err := os.Stat(Expand(path)); err != nil {
-			reason := err.Error()
-			if errors.Is(err, os.ErrNotExist) {
-				reason = "does not exist"
-			}
-			add("error", "model", fmt.Sprintf("%s %s", path, reason),
-				`voiceime config set model ""   # empty picks an installed model`)
+	// A checkpoint is named, never chosen: voiceime reads the one GGUF this key points at
+	// and asks nothing of the directory around it.
+	if path := strings.TrimSpace(c.Model); path == "" {
+		add("error", "model", "must name a GGUF; nothing is scanned and nothing is downloaded",
+			"voiceime config set model /path/to/model.gguf")
+	} else if _, err := os.Stat(Expand(path)); err != nil {
+		reason := err.Error()
+		if errors.Is(err, os.ErrNotExist) {
+			reason = "does not exist"
 		}
+		add("error", "model", fmt.Sprintf("%s %s", path, reason),
+			"voiceime config set model /path/to/model.gguf")
 	}
 	return issues
 }

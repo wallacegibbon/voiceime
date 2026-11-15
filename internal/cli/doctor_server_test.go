@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/wallacegibbon/voiceime/internal/config"
-	"github.com/wallacegibbon/voiceime/internal/models"
 )
 
 func TestASRServerCheckStates(t *testing.T) {
@@ -89,7 +88,7 @@ func TestASRServerCheckStates(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := config.Default()
 			tc.mutate(cfg)
-			check := asrServerCheck(cfg, []models.Model{}, tc.unit)
+			check := asrServerCheck(cfg, tc.unit)
 			if check.ID != "asr_server" {
 				t.Fatalf("check id = %q, want asr_server", check.ID)
 			}
@@ -123,16 +122,13 @@ func TestASRServerCheckCatchesAStaleModel(t *testing.T) {
 	}))
 	defer stale.Close()
 
-	scanned := []models.Model{
-		{Path: "/models/sense.gguf", Inspected: true, Family: "sense_asr", Tasks: []models.Task{{Name: "asr"}}},
-		{Path: "/models/qwen.gguf", Inspected: true, Family: "qwen3_asr", Tasks: []models.Task{{Name: "asr"}}},
-	}
 	cfg := config.Default()
 	cfg.ASRServerURL = stale.URL
-	cfg.Model = "/models/qwen.gguf"
-	cfg.ASRBin = "/bin/true" // not used by the check, but keeps the spec resolvable
+	// A checkpoint the file itself says is qwen3_asr: the check has to notice the running
+	// service is serving something else.
+	cfg.Model = ggufFixture(t, "qwen3_asr")
 
-	check := asrServerCheck(cfg, scanned, true)
+	check := asrServerCheck(cfg, true)
 	if check.Status != "fail" {
 		t.Fatalf("status = %q, want fail: the service serves other.gguf but the setting names qwen.gguf", check.Status)
 	}
@@ -188,8 +184,15 @@ func TestConfigSetNamesHowToApplyEverySetting(t *testing.T) {
 	configPath, _ := freshConfig(t)
 	for _, field := range config.Default().Fields() {
 		value := fmt.Sprint(field.Value)
-		if field.Type == "map[string]string" {
+		switch field.Type {
+		case "map[string]string":
 			value = "audio_chunk_mode=none"
+		case "string":
+			// A checkpoint is a file that exists; the default is empty because no
+			// default can know where the user put one.
+			if field.Key == "model" {
+				value = ggufFixture(t, "sense_asr")
+			}
 		}
 		code, stdout, stderr := runForTest(t, "config", "set", field.Key, value, "--json", "--config", configPath)
 		if code != ExitOK {

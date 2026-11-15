@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -9,141 +8,127 @@ import (
 	"testing"
 
 	"github.com/wallacegibbon/voiceime/internal/config"
-	"github.com/wallacegibbon/voiceime/internal/models"
 )
 
-// installedModels returns two checkpoints whose ranking is not the order the user chose.
-func installedModels() []models.Model {
-	tasks := []models.Task{{Name: "asr", Modes: []string{"offline", "streaming"}}}
-	return []models.Model{
-		{Path: "/models/best.gguf", Inspected: true, Family: "sense_asr", Tasks: tasks},
-		{Path: "/models/chosen.gguf", Inspected: true, Family: "qwen3_asr", Tasks: tasks},
-	}
+// ggufFixture writes a checkpoint whose metadata says it belongs to a given audio.cpp family,
+// and returns its path. The family is what the generated server config needs, so any test
+// that reaches the service has to name a file that carries one.
+func ggufFixture(t *testing.T, family string) string {
+	t.Helper()
+	return writeGGUF(t, filepath.Join(t.TempDir(), family+".gguf"), family, []string{"asr"})
 }
 
-// The service serves the configured model, with the family of the model it actually serves.
-func TestServerSpecServesTheConfiguredModel(t *testing.T) {
-	cfg := config.Default()
-	cfg.Model = "/models/chosen.gguf"
+// Test that the family comes out of the file rather than out of anything the tool remembers
+// about a directory: the settings name one path, and the answer follows it.
+func TestServerSpecServesTheConfiguredModelWithTheFamilyItCarries(t *testing.T) {
+	chosen := writeGGUF(t, filepath.Join(t.TempDir(), "chosen.gguf"), "qwen3_asr", []string{"asr"})
 
-	spec, err := buildServerSpec(cfg, installedModels(), 18080, "")
+	cfg := config.Default()
+	cfg.Model = chosen
+	spec, err := buildServerSpec(cfg, 18080, "")
 	if err != nil {
 		t.Fatalf("buildServerSpec: %v", err)
 	}
-	if spec.Model != "/models/chosen.gguf" {
+	if spec.Model != chosen {
 		t.Errorf("model = %q, want the configured one", spec.Model)
 	}
 	if spec.Family != "qwen3_asr" {
-		t.Errorf("family = %q, want the family of the model that is served", spec.Family)
+		t.Errorf("family = %q, want the family the file names", spec.Family)
 	}
 }
 
 // A flag is a one-off override, and it has to beat the setting it duplicates.
 func TestServerSpecPrefersTheFlag(t *testing.T) {
+	dir := t.TempDir()
 	cfg := config.Default()
-	cfg.Model = "/models/chosen.gguf"
+	cfg.Model = writeGGUF(t, filepath.Join(dir, "chosen.gguf"), "qwen3_asr", []string{"asr"})
 
-	spec, err := buildServerSpec(cfg, installedModels(), 18080, "/models/best.gguf")
+	spec, err := buildServerSpec(cfg, 18080, writeGGUF(t, filepath.Join(dir, "other.gguf"), "sense_asr", []string{"asr"}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if spec.Model != "/models/best.gguf" {
-		t.Errorf("model = %q, want the --model flag", spec.Model)
+	if !strings.HasSuffix(spec.Model, "other.gguf") || spec.Family != "sense_asr" {
+		t.Errorf("spec = %+v, want the file named on the command line", spec)
 	}
 }
 
-// With nothing configured, the ranking decides.
-func TestServerSpecPicksAModel(t *testing.T) {
-	spec, err := buildServerSpec(config.Default(), installedModels(), 18080, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if spec.Model != "/models/best.gguf" {
-		t.Errorf("model = %q, want the top-ranked model", spec.Model)
-	}
-}
-
-// With nothing installed there is nothing to serve, and the message says so.
-func TestServerSpecWithoutModels(t *testing.T) {
-	cfg := config.Default()
-	if _, err := buildServerSpec(cfg, nil, 18080, ""); err == nil {
-		t.Fatal("buildServerSpec succeeded with no models installed")
-	} else if got := err.Error(); got == "" || filepath.Base(got) == "" {
-		t.Errorf("error %q says nothing", got)
-	}
-}
-
-// "No model to serve" must not be said about models nobody has looked at.
-func TestServerSpecSaysWhenModelsAreUninspected(t *testing.T) {
-	cfg := config.Default()
-	unclassified := []models.Model{{
-		Path:      "/models/sense.gguf",
-		Inspected: false,
-	}}
-	_, err := buildServerSpec(cfg, unclassified, 18080, "")
+// Nothing named: the answer is what to fetch and the command that names it afterwards. voiceime
+// fetches nothing and scans nothing, so "install a model" is not a thing to say here.
+func TestServerSpecWithoutANamedCheckpointGivesTheAdvice(t *testing.T) {
+	_, err := buildServerSpec(config.Default(), 18080, "")
 	if err == nil {
-		t.Fatal("buildServerSpec succeeded with nothing classified")
+		t.Fatal("buildServerSpec succeeded with nothing named")
 	}
-	if !strings.Contains(err.Error(), "have not been inspected") {
-		t.Errorf("error %q does not say what is missing", err)
+	// An answer with no name in it cannot be acted on: the choices differ by 20x on disk.
+	if !strings.Contains(err.Error(), "sensevoice_small_q8") || !strings.Contains(err.Error(), "MiB") {
+		t.Errorf("error %q does not say what to fetch", err)
 	}
-	if strings.Contains(err.Error(), "nothing to serve") {
-		t.Errorf("error %q says there is no model when one is sitting there unclassified", err)
-	}
-	// With nothing on disk at all, the download advice is the right one.
-	if _, err := buildServerSpec(cfg, nil, 18080, ""); err == nil ||
-		!strings.Contains(err.Error(), "put a GGUF in") || !strings.Contains(err.Error(), "recommended:") {
-		t.Errorf("error = %v, want the download advice when no file exists", err)
+	if strings.Contains(err.Error(), "models list") || strings.Contains(err.Error(), "models install") {
+		t.Errorf("error %q points at commands that no longer exist", err)
 	}
 }
 
-// The failure names the command that fixes it, and it is not the one that just failed.
-func TestServerRunNamesTheRefreshWhenModelsAreUninspected(t *testing.T) {
-	cacheDir := t.TempDir()
-	t.Setenv("XDG_CACHE_HOME", cacheDir)
-	configPath, modelsDir := freshConfig(t)
-	if err := os.WriteFile(filepath.Join(modelsDir, "sample.gguf"), []byte("gguf"), 0o644); err != nil {
+// A named file that is not an audio.cpp checkpoint is a different failure, and it says so:
+// the reader has a file in hand and needs to know which of the two problems they have.
+func TestServerSpecRejectsAFileWithoutAModelSpec(t *testing.T) {
+	notACheckpoint := filepath.Join(t.TempDir(), "notes.gguf")
+	if err := os.WriteFile(notACheckpoint, []byte("not a gguf"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-
-	code, stdout, stderr := runForTest(t, "--config", configPath, "server", "run")
-	if code != ExitPrecondition {
-		t.Fatalf("exit %d, want %d\nstdout: %s\nstderr: %s", code, ExitPrecondition, stdout, stderr)
+	cfg := config.Default()
+	cfg.Model = notACheckpoint
+	_, err := buildServerSpec(cfg, 18080, "")
+	if err == nil {
+		t.Fatal("a text file was accepted as a checkpoint")
 	}
-	if !strings.Contains(stderr, "have not been inspected") {
-		t.Fatalf("the failure does not say what is missing:\n%s", stderr)
-	}
-	if !strings.Contains(stderr, "fix: voiceime models list --refresh") {
-		t.Errorf("the fix is not the command that classifies models:\n%s", stderr)
-	}
-	if strings.Contains(stderr, "fix: voiceime server install") {
-		t.Errorf("the fix re-runs the command that failed:\n%s", stderr)
-	}
-	// Nothing was inspected and nothing was written: `server run` reads, and refuses.
-	if _, err := os.Stat(filepath.Join(cacheDir, "voiceime", "model_index.json")); !os.IsNotExist(err) {
-		t.Error("server run wrote the cache")
+	if !strings.Contains(err.Error(), "not a GGUF") {
+		t.Errorf("error %q does not say the file is not a GGUF", err)
 	}
 }
 
-// With nothing on disk, the answer is not "install" - voiceime does not fetch anything.
-// It is what to download, where to put it, and the command that names it afterwards.
-func TestServerRunNamesTheDownloadAndTheModelSettingWhenNothingIsThere(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	configPath, _ := freshConfig(t)
+// With nothing named, `server run` refuses before it starts anything, and the fix it names is
+// the setting, not the command that just failed.
+func TestServerRunNamesTheModelSettingWhenNothingIsNamed(t *testing.T) {
+	configPath := bareConfig(t)
 
 	code, _, stderr := runForTest(t, "--config", configPath, "server", "run")
 	if code != ExitPrecondition {
 		t.Fatalf("exit %d, want %d\nstderr: %s", code, ExitPrecondition, stderr)
 	}
-	if !strings.Contains(stderr, "fix: voiceime config set model ") {
+	if !strings.Contains(stderr, "config set model ") {
 		t.Errorf("the fix is not the command that names a checkpoint:\n%s", stderr)
 	}
-	if strings.Contains(stderr, "voiceime models install") {
+	if strings.Contains(stderr, "voiceime models ") {
 		t.Errorf("the fix runs a command that no longer exists:\n%s", stderr)
 	}
 	// "no model" alone cannot be acted on: the choices differ by 20x on disk.
-	if !strings.Contains(stderr, "recommended:") {
-		t.Errorf("the failure does not say what to download:\n%s", stderr)
+	if !strings.Contains(stderr, "sensevoice_small_q8") {
+		t.Errorf("the failure does not name a checkpoint to fetch:\n%s", stderr)
+	}
+}
+
+// `voiceime model` is how you check what you named: it reads the file, not the settings.
+func TestModelCommandDescribesTheNamedCheckpoint(t *testing.T) {
+	configPath, _ := freshConfig(t)
+	checkpoint := ggufFixture(t, "sense_asr")
+	if _, _, stderr := runForTest(t, "--config", configPath, "config", "set", "model", checkpoint); stderr != "" {
+		t.Fatalf("config set model: %s", stderr)
+	}
+
+	code, stdout, stderr := runForTest(t, "--config", configPath, "model")
+	if code != ExitOK {
+		t.Fatalf("exit %d, want %d\nstdout: %s\nstderr: %s", code, ExitOK, stdout, stderr)
+	}
+	for _, want := range []string{checkpoint, "sense_asr", "asr"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("output %q does not mention %s", stdout, want)
+		}
+	}
+
+	// With nothing named it is a missing prerequisite, with the advice.
+	emptyPath := bareConfig(t)
+	if code, _, stderr := runForTest(t, "--config", emptyPath, "model"); code != ExitPrecondition {
+		t.Errorf("exit %d with nothing named, want %d: %s", code, ExitPrecondition, stderr)
 	}
 }
 
@@ -151,36 +136,6 @@ func TestServerRunNamesTheDownloadAndTheModelSettingWhenNothingIsThere(t *testin
 func TestServerInstallWritesNoUnitWhenTheSettingsCannotBeSaved(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-
-	// A models directory with one file the cache already answers for, and a binary pair the
-	// service lookup can find, so the install gets as far as saving the settings.
-	modelsDir := t.TempDir()
-	modelFile := filepath.Join(modelsDir, "sample.gguf")
-	if err := os.WriteFile(modelFile, []byte("gguf"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	info, err := os.Stat(modelFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cacheDir := filepath.Join(os.Getenv("XDG_CACHE_HOME"), "voiceime")
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	index := map[string]any{
-		"version": 1,
-		"models": map[string]any{
-			modelFile: map[string]any{
-				"size_bytes": info.Size(), "modified_unix": info.ModTime().Unix(),
-				"family": "fake_asr", "tasks": []map[string]any{{"name": "asr", "modes": []string{"streaming", "offline"}}},
-				"languages": []string{"zh"},
-			},
-		},
-	}
-	body, _ := json.Marshal(index)
-	if err := os.WriteFile(filepath.Join(cacheDir, "model_index.json"), body, 0o644); err != nil {
-		t.Fatal(err)
-	}
 
 	binDir := t.TempDir()
 	cli := filepath.Join(binDir, "audiocpp_cli")
@@ -191,7 +146,7 @@ func TestServerInstallWritesNoUnitWhenTheSettingsCannotBeSaved(t *testing.T) {
 	}
 
 	cfg := config.Default()
-	cfg.ModelsDir = modelsDir
+	cfg.Model = ggufFixture(t, "sense_asr")
 	cfg.ASRBin = cli
 	ctx := &Context{
 		Config:     cfg,
@@ -200,7 +155,7 @@ func TestServerInstallWritesNoUnitWhenTheSettingsCannotBeSaved(t *testing.T) {
 		Stderr:     io.Discard,
 	}
 
-	err = runServerInstall(ctx, 18080, "")
+	err := runServerInstall(ctx, 18080, "")
 	if err == nil {
 		t.Fatal("installing with an unwritable configuration reported success")
 	}

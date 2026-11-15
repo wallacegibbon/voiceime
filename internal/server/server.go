@@ -126,7 +126,6 @@ type Entry struct {
 	Path   string `json:"path"`
 	Mode   string `json:"mode"`
 	Family string `json:"family"`
-	Loaded bool   `json:"loaded"`
 }
 
 // Entries asks the server what it serves.

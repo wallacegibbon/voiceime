@@ -14,10 +14,6 @@ import (
 // Chunk is one block of captured audio.
 type Chunk struct {
 	Data []byte
-	// StartSample is the position of this chunk in the stream the session has
-	// seen, in samples at SampleRate. The transcript model uses it to know which
-	// text a repair replaces.
-	StartSample int64
 	// DroppedSamples counts audio discarded because the consumer fell behind.
 	// A non-zero value means the transcript is missing speech, which is worth
 	// surfacing rather than hiding: the alternative would be unbounded memory.
@@ -45,8 +41,7 @@ type captureBase struct {
 	err        error
 	diagnostic string
 
-	sampleCursor int64
-	dropped      int64
+	dropped int64
 }
 
 func newCaptureBase() *captureBase {
@@ -96,8 +91,7 @@ func (c *captureBase) diagnosticTail() string {
 }
 
 func (c *captureBase) publish(data []byte) {
-	chunk := Chunk{Data: data, StartSample: c.sampleCursor, DroppedSamples: c.dropped}
-	c.sampleCursor += int64(SampleCount(data))
+	chunk := Chunk{Data: data, DroppedSamples: c.dropped}
 	c.dropped = 0
 
 	select {

@@ -49,7 +49,6 @@ type fakeCapture struct {
 	mu      sync.Mutex
 	started bool
 	stopped bool
-	samples int64
 }
 
 func newFakeCapture() *fakeCapture {
@@ -94,8 +93,7 @@ func (c *fakeCapture) publish(data []byte) {
 			c.mu.Unlock()
 			return
 		}
-		chunk := audio.Chunk{Data: append([]byte(nil), data[offset:end]...), StartSample: c.samples}
-		c.samples += int64(audio.SampleCount(chunk.Data))
+		chunk := audio.Chunk{Data: append([]byte(nil), data[offset:end]...)}
 		c.chunks <- chunk
 		c.mu.Unlock()
 	}

@@ -23,22 +23,27 @@ fixes it. The rest of this page is those commands, in order.
 ## 2. Configuration
 
 ```sh
-"$BIN" config init
-"$BIN" config show --json | head
+"$BIN" config show
 ```
 
-`config init` writes `~/.config/voiceime/config.toml`, points `asr_bin` at the built
-`audiocpp_cli` it finds (build audio.cpp first — nothing else searches for it, ever again),
-and lists the settings whose default is a property of the machine
-(`asr_bin`, `threads`, `backend`, `language`, `text_script`, `push_to_talk`). Set them now:
+`config show` prints the file's path and every setting with the value on record. On a fresh
+machine there is no file yet: it prints the defaults and says `exists: false`. Nothing needs
+to create it - the first `config set`, and `apply` below, write it.
+
+Six of those defaults are properties of the machine or of the person using it, not of
+voiceime: `asr_bin`, `backend`, `threads`, `language`, `text_script`, `push_to_talk`. What
+each one is for, and what it should be here, is the settings table in
+[AGENT.md](AGENT.md). Set what this machine needs:
 
 ```sh
 "$BIN" config set threads 8
 ```
 
 A setting takes effect when the next `apply` (below) reads the file, so nothing else is run
-here. What a wrong setting would do is `doctor`'s `config` finding, which names the setting
-and the command that corrects it.
+here. `apply` also settles `asr_bin`: it looks for an audio.cpp build once, records the path
+in the settings it is about to act on, and says which build it chose - so build audio.cpp
+before it, or name the build yourself. What a wrong setting would do is `doctor`'s `config`
+finding, which names the setting and the command that corrects it.
 
 ## 3. A model
 
@@ -166,7 +171,7 @@ the input method again afterwards, for the reason given in §4.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `doctor` says there is no audio.cpp CLI, or that `asr_bin` names a file that cannot run | audio.cpp was never built, or the build tree moved or was cleaned | `"$BIN" config set asr_bin <path to audiocpp_cli>` (or build it and run `config init --force`), then `"$BIN" apply` |
+| `doctor` says there is no audio.cpp CLI, or that `asr_bin` names a file that cannot run | audio.cpp was never built, or the build tree moved or was cleaned | build audio.cpp and run `"$BIN" apply`, which finds the build and records it; or `"$BIN" config set asr_bin <path to audiocpp_cli>` if it is somewhere the search does not look |
 | no text, log shows `no audio was recorded` | the sound server is not giving the microphone | `"$BIN" doctor`, then `config set capture_source` |
 | no text, log shows `transcribe …: …` | the service refused or timed out | `"$BIN" doctor` (the `asr_server` finding), then `"$BIN" apply` |
 | the desktop still shows the input method, but no application receives any key at all | no engine is selected for the session: an engine process ended, and the daemon clears the global engine when its bus name disappears (`ibus engine` answers `No engine is set.`) | `ibus engine voiceime`, which also starts the engine process (`doctor` reports `session_engine`; `apply` selects it again too) |

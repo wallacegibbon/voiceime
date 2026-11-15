@@ -118,52 +118,6 @@ func decodeOne(t *testing.T, text string) map[string]any {
 	return object
 }
 
-func TestConfigInitRefusesThenOverwritesWithForce(t *testing.T) {
-	configPath := freshConfig(t)
-	original, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	code, stdout, stderr := runForTest(t, "config", "init", "--json", "--config", configPath)
-	if code != ExitOK {
-		t.Fatalf("init on an existing file: exit %d, stderr %s", code, stderr)
-	}
-	payload := decodeOne(t, stdout)["data"].(map[string]any)
-	if payload["written"] != false {
-		t.Errorf("init overwrote an existing file without --force: %v", payload)
-	}
-	after, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(after) != string(original) {
-		t.Error("init changed a file it said it had not written")
-	}
-
-	// The refusal has to be visible in human mode too: the step is documented
-	// without --json, and exit 0 with no output reads as a success.
-	code, stdout, stderr = runForTest(t, "config", "init", "--config", configPath)
-	if code != ExitOK {
-		t.Fatalf("init on an existing file (human mode): exit %d, stderr %s", code, stderr)
-	}
-	if !strings.Contains(stdout, "already exists") {
-		t.Errorf("init said nothing in human mode, where a refusal and a success look alike:\n%s", stdout)
-	}
-	if _, err := os.Stat(configPath); err != nil {
-		t.Fatalf("config file missing after a no-op init: %v", err)
-	}
-
-	code, stdout, stderr = runForTest(t, "config", "init", "--force", "--json", "--config", configPath)
-	if code != ExitOK {
-		t.Fatalf("init --force: exit %d, stderr %s", code, stderr)
-	}
-	payload = decodeOne(t, stdout)["data"].(map[string]any)
-	if payload["written"] != true {
-		t.Errorf("init --force did not write: %v", payload)
-	}
-}
-
 // A successful --json invocation is exactly one object on stdout and nothing on
 // stderr, so a caller can parse it without looking anywhere else.
 func TestJsonSuccessIsOneObjectOnStdout(t *testing.T) {

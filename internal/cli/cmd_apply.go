@@ -54,9 +54,14 @@ func cmdRemove() *Command {
 
 // applyReport is one line per thing that reads the configuration.
 type applyReport struct {
-	Service   string   `json:"service"`
-	Served    []string `json:"served,omitempty"`
-	Component string   `json:"component"`
+	// ASRBin and OtherBuilds are present only on a machine that had no audio.cpp build
+	// recorded: apply finds one, writes it down, and says which other builds it did not
+	// choose. An install that already names a runnable file never sees these keys.
+	ASRBin      string   `json:"asr_bin,omitempty"`
+	OtherBuilds []string `json:"other_builds,omitempty"`
+	Service     string   `json:"service"`
+	Served      []string `json:"served,omitempty"`
+	Component   string   `json:"component"`
 	// Desktop is the input-source list the desktop's own switcher reads. The entry the
 	// engine needs there belongs to its name, so it is converged with everything else.
 	Desktop string `json:"desktop"`
@@ -73,6 +78,9 @@ func runApply(ctx *Context) error {
 	}
 
 	var report applyReport
+	if err := pointAtASRBuild(ctx, &report); err != nil {
+		return err
+	}
 	var err error
 	if report.Service, report.Served, err = applyService(ctx); err != nil {
 		return err
@@ -86,6 +94,13 @@ func runApply(ctx *Context) error {
 	report.Engine = dropEngines()
 
 	if !ctx.JSON {
+		if report.ASRBin != "" {
+			ctx.Print("asr_bin:   pointed at %s", report.ASRBin)
+			for _, other := range report.OtherBuilds {
+				ctx.Print("           %s is also built here: choose it with", other)
+				ctx.Print("           `voiceime config set asr_bin %s`", other)
+			}
+		}
 		ctx.Print("service:   %v", report.Service)
 		if len(report.Served) > 0 {
 			ctx.Print("serving:   %s", strings.Join(report.Served, " and "))
@@ -97,6 +112,35 @@ func runApply(ctx *Context) error {
 		ctx.Print("`voiceime doctor` re-checks all of it, and `voiceime transcribe` proves the path.")
 	}
 	return ctx.Emit("apply", report)
+}
+
+// pointAtASRBuild settles the one fact a new machine's settings cannot know: where audio.cpp
+// was built. It used to be a step of its own (`config init`), which meant a fresh machine
+// needed two commands in the right order and every later command silently did nothing if the
+// first was skipped. It belongs here because this is the command that makes a machine ready:
+// the search runs once, the answer goes into the settings apply is about to act on, and the
+// same report says what was chosen. Afterwards every command reads that recorded path, so a
+// build tree appearing, moving or gaining a second sibling cannot change what a running
+// machine does - see FindASRBinary.
+//
+// Nothing is looked for when the settings already name a runnable file: finding a build is
+// not overwriting a decision. When there is more than one build, the first is chosen and the
+// rest are reported rather than kept to itself: which one to run is a decision about the
+// machine, and the caller is the one who knows it.
+func pointAtASRBuild(ctx *Context, report *applyReport) error {
+	if _, err := ctx.Config.FindASRBinary(); err == nil {
+		return nil
+	}
+	found := config.DiscoverASRBinaries()
+	if len(found) == 0 {
+		return nil
+	}
+	ctx.Config.ASRBin = found[0]
+	report.ASRBin, report.OtherBuilds = found[0], found[1:]
+	if err := config.Save(ctx.Config, ctx.ConfigPath); err != nil {
+		return FailureError("cannot record the audio.cpp build in %s: %v", ctx.ConfigPath, err)
+	}
+	return nil
 }
 
 // applyService makes the recognition service exist and run what the settings say.
@@ -128,7 +172,9 @@ func applyService(ctx *Context) (status string, served []string, err error) {
 		return "", nil, err
 	}
 	if _, err := cfg.FindServerBinary(); err != nil {
-		return "", nil, PreconditionError("voiceime config set asr_bin /path/to/audiocpp_server",
+		// asr_bin names the CLI, and the server is found beside it: advice that told the
+		// caller to point asr_bin at audiocpp_server would break the CLI lookup.
+		return "", nil, PreconditionError("voiceime config set asr_bin /path/to/audio.cpp/build/<backend>/bin/audiocpp_cli",
 			"the recognition server binary is not reachable: %v", err)
 	}
 

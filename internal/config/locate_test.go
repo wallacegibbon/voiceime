@@ -47,7 +47,7 @@ func TestFindASRBinaryRefusesToGuess(t *testing.T) {
 	built := buildTree(t, filepath.Join(home, "audio.cpp"), "linux-cpu-release", true)
 
 	// A CLI sitting in the most obvious place on the machine is still not an answer:
-	// discovery belongs to `config init`, which writes it into asr_bin and says so.
+	// discovery belongs to `voiceime apply`, which writes it into asr_bin and says so.
 	cfg := Default()
 	clearPATH(t)
 	if _, err := cfg.FindASRBinary(); err == nil {
@@ -106,7 +106,8 @@ func TestFindServerBinaryIsTheSiblingOfTheNamedCLI(t *testing.T) {
 	}
 }
 
-// What `config init` searches for: built CLIs under the plausible checkout locations.
+// What `voiceime apply` searches for: built CLIs under the plausible checkout
+// locations.
 func TestDiscoverASRBinariesFindsBuiltCLIs(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -121,7 +122,7 @@ func TestDiscoverASRBinariesFindsBuiltCLIs(t *testing.T) {
 		t.Fatalf("DiscoverASRBinaries = %v, want the three runnable CLIs", found)
 	}
 	// The order is the candidate list's, and within one checkout the build profiles in
-	// name order: stable, so two runs of `config init` point asr_bin at the same file.
+	// name order: stable, so two runs of the search point asr_bin at the same file.
 	// A checkout with several build trees returns all of them, because that is a decision
 	// for the person writing the settings, not a guess for this function.
 	want := []string{

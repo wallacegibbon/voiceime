@@ -22,7 +22,7 @@ const AppName = "voiceime"
 const TargetRate = 16000
 
 type Config struct {
-	ASRBin string `toml:"asr_bin" desc:"Path to audio.cpp's audiocpp_cli; audiocpp_server is taken from beside it. 'config init' fills this in."`
+	ASRBin string `toml:"asr_bin" desc:"Path to audio.cpp's audiocpp_cli; audiocpp_server is taken from beside it. 'voiceime apply' records a build it finds when this is empty."`
 
 	Backend string `toml:"backend" desc:"audio.cpp backend: cpu, cuda, vulkan, hip, metal."`
 	Threads int    `toml:"threads" desc:"Worker threads handed to audio.cpp."`
@@ -416,7 +416,7 @@ func (c *Config) Set(key, raw string) error {
 // might be. It used to guess - a checkout directory, then build/*/bin/audiocpp_cli under it,
 // preferring the path whose name contained the backend - so adding a second build tree
 // could change which inference a running service performed. Discovery belongs to
-// `config init`, which writes what it finds into asr_bin and says so.
+// `voiceime apply`, which writes what it finds into asr_bin and says so.
 func (c *Config) FindASRBinary() (string, error) {
 	if configured := strings.TrimSpace(c.ASRBin); configured != "" {
 		path := Expand(configured)

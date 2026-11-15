@@ -13,21 +13,18 @@ import (
 
 // configActions is the whole of the configuration command: read the file, write one value.
 // Applying a setting is not one of them - that is `voiceime apply`, which converges
-// everything that reads the file at once.
-var configActions = []string{"path", "show", "init", "get", "set"}
+// everything that reads the file at once. Creating the file is not one of them either: apply
+// writes it, and so does the first `config set`.
+var configActions = []string{"path", "show", "get", "set"}
 
 func cmdConfig() *Command {
-	var force bool
 	return &Command{
 		Name:    "config",
 		Summary: "Inspect and edit the configuration file",
 		Actions: configActions,
 		Usage:   usageLine("config", configActions, "[args]"),
-		Flags: func(set *flag.FlagSet) {
-			set.BoolVar(&force, "force", false, "config init: overwrite an existing file")
-		},
 		Run: func(ctx *Context, args []string) error {
-			return runConfig(ctx, args, force)
+			return runConfig(ctx, args)
 		},
 	}
 }
@@ -50,7 +47,7 @@ func configuredModel(ctx *Context) map[string]string {
 	return out
 }
 
-func runConfig(ctx *Context, args []string, force bool) error {
+func runConfig(ctx *Context, args []string) error {
 	if len(args) == 0 {
 		return UsageError("config needs an action: %s", strings.Join(configActions, ", "))
 	}
@@ -70,6 +67,11 @@ func runConfig(ctx *Context, args []string, force bool) error {
 		// served. What the file says about itself is printed next to it.
 		resolved := configuredModel(ctx)
 		ctx.Print("%s", ctx.ConfigPath)
+		if !fileExists(ctx.ConfigPath) {
+			// The shape of a fresh install. Saying so is what keeps "these are the
+			// defaults" and "these are your settings" distinguishable.
+			ctx.Print("(no file yet: these are the defaults; the first `config set`, or `voiceime apply`, writes it)")
+		}
 		for _, field := range fields {
 			line := fmt.Sprintf("%-22s %v", field.Key, field.Value)
 			if note, ok := resolved[field.Key]; ok && note != "" {
@@ -82,62 +84,6 @@ func runConfig(ctx *Context, args []string, force bool) error {
 			"exists":   fileExists(ctx.ConfigPath),
 			"fields":   fields,
 			"resolved": resolved,
-		})
-
-	case "init":
-		// Writing over an existing file needs an explicit flag (--force, declared
-		// on the command): init has to be safe to run blind from a setup script.
-		if len(rest) > 0 {
-			return UsageError("config init: unexpected argument %q", rest[0])
-		}
-		existed := fileExists(ctx.ConfigPath)
-		if existed && !force {
-			ctx.Print("config already exists at %s; not written (pass --force to overwrite)", ctx.ConfigPath)
-			return ctx.Emit("config init", map[string]any{
-				"path":    ctx.ConfigPath,
-				"written": false,
-				"existed": true,
-				"note":    "already exists; pass --force to overwrite",
-			})
-		}
-		// Where audio.cpp was built is not something to guess at every run, so it is
-		// guessed once here, written into the settings, and reported. A value that
-		// already names a runnable file is kept: init never overwrites a choice.
-		found := ""
-		if _, err := ctx.Config.FindASRBinary(); err != nil {
-			if candidates := config.DiscoverASRBinaries(); len(candidates) > 0 {
-				found = candidates[0]
-				ctx.Config.ASRBin = found
-			}
-		}
-		if err := config.Save(ctx.Config, ctx.ConfigPath); err != nil {
-			return FailureError("cannot write %s: %v", ctx.ConfigPath, err)
-		}
-		ctx.Print("wrote %s", ctx.ConfigPath)
-		if found != "" {
-			ctx.Print("pointed asr_bin at the audio.cpp CLI %s", found)
-		}
-		// Every default in this file is a measurement or a path from the machine
-		// voiceime was developed on. The ones that are not portable are listed
-		// rather than left for an agent to notice.
-		facts := detectHardware()
-		reviews := config.ReviewDefaults(ctx.Config, config.ReviewFacts{
-			ASRBinary: found,
-			Cores:     facts.Cores(),
-			GPUs:      facts.GPUDrivers,
-		})
-		for _, review := range reviews {
-			ctx.Print("review %-22s %v  (%s)", review.Key, review.Value, review.Why)
-			if review.Fix != "" {
-				ctx.Print("       fix: %s", review.Fix)
-			}
-		}
-		return ctx.Emit("config init", map[string]any{
-			"path":       ctx.ConfigPath,
-			"written":    true,
-			"existed":    existed,
-			"discovered": map[string]any{"asr_bin": found},
-			"review":     reviews,
 		})
 
 	case "get":

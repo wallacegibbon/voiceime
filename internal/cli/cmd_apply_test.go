@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -149,6 +150,96 @@ func TestWithCurrentEngineChangesOnlyTheEngineIdentity(t *testing.T) {
 	if read != updated {
 		t.Errorf("round trip changed the component:\n got %+v\nwant %+v", read, updated)
 	}
+}
+
+// A machine that has never recorded where audio.cpp was built has nothing to run, and no
+// other command looks for it. `apply` settles that once: the path goes into the settings it
+// is about to act on, and the report says which build was chosen and which were left.
+func TestApplyRecordsTheASRBuildOnTheMachine(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// With audio.cpp on PATH there is already an answer, and apply does not replace one
+	// (see FindASRBinary): this is the case where nothing on the machine has been named.
+	t.Setenv("PATH", "")
+	// A checkout in one of the places discovery looks, with two build trees: the choice is
+	// reported, not made silently.
+	build := func(tree string, name string) string {
+		path := filepath.Join(home, "playground", "audio.cpp", "build", tree, "bin", name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	cpu := build("cpu", "audiocpp_cli")
+	build("cuda", "audiocpp_cli")
+
+	t.Run("nothing recorded", func(t *testing.T) {
+		ctx, configPath := contextForApply(t)
+		var report applyReport
+		if err := pointAtASRBuild(ctx, &report); err != nil {
+			t.Fatal(err)
+		}
+		if report.ASRBin != cpu {
+			t.Errorf("asr_bin = %q, want the first build found (%s)", report.ASRBin, cpu)
+		}
+		if len(report.OtherBuilds) != 1 || !strings.Contains(report.OtherBuilds[0], "cuda") {
+			t.Errorf("other_builds = %v, want the build that was not chosen named", report.OtherBuilds)
+		}
+		// The answer has to be in the file: every later command reads the settings, not this
+		// function.
+		saved, err := config.Load(configPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if saved.ASRBin != cpu {
+			t.Errorf("%s holds asr_bin = %q, want %s", configPath, saved.ASRBin, cpu)
+		}
+	})
+
+	t.Run("a choice already on record", func(t *testing.T) {
+		// A build tree appearing later must not move a running machine (the reason
+		// FindASRBinary stopped guessing).
+		chosen := filepath.Join(t.TempDir(), "audiocpp_cli")
+		if err := os.WriteFile(chosen, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		ctx, configPath := contextForApply(t)
+		ctx.Config.ASRBin = chosen
+		var report applyReport
+		if err := pointAtASRBuild(ctx, &report); err != nil {
+			t.Fatal(err)
+		}
+		if report.ASRBin != "" {
+			t.Errorf("reported %q, want nothing: a value that runs was left alone", report.ASRBin)
+		}
+		if ctx.Config.ASRBin != chosen {
+			t.Errorf("asr_bin = %q, want the recorded %s left alone", ctx.Config.ASRBin, chosen)
+		}
+		// And nothing was written: apply does not rewrite a file it had no reason to change.
+		if written, err := os.ReadFile(configPath); err != nil {
+			t.Fatal(err)
+		} else if len(written) != 0 {
+			t.Errorf("apply wrote the settings it had no reason to change:\n%s", written)
+		}
+	})
+}
+
+// contextForApply is an apply with no output and an empty configuration file: enough for the
+// parts of apply that decide, without touching systemd, IBus or the session.
+func contextForApply(t *testing.T) (*Context, string) {
+	t.Helper()
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &Context{Config: cfg, ConfigPath: configPath, Stdout: io.Discard, Stderr: io.Discard}, configPath
 }
 
 // An installed file this version would write differently is rewritten once.

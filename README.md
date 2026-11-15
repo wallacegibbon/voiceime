@@ -30,11 +30,11 @@ microphone ──► capture (parec, 16 kHz mono) ── hold ── release
 
 ```sh
 make install                     # ~/.local/bin, no root needed
-voiceime config init             # write defaults, find audio.cpp's CLI
 voiceime config set model ~/models/…/sensevoice-small-q8.gguf
                                  # a model is one GGUF you name; nothing is fetched or scanned
 voiceime model                   # what that file is: family, size, tasks
-voiceime apply                   # serve the model, register the engine and the input
+voiceime apply                   # point asr_bin at the audio.cpp build this machine has,
+                                 # serve the model, register the engine and the input
                                  # source, and record the search path a login needs
 voiceime doctor                  # every finding carries a fix
 ```

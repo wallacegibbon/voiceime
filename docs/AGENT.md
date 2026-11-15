@@ -33,7 +33,7 @@ numbers are in [measurements.md](measurements.md).
 ```
 voiceime apply                                   # make this machine match the configuration
 voiceime remove                                  # take back what apply installed
-voiceime config path|show|init|get|set
+voiceime config path|show|get|set
 voiceime model                                   # the checkpoint the configuration names
 voiceime doctor                                  # every prerequisite, machine-readable
 voiceime transcribe [--file recording.wav | --seconds N]
@@ -80,22 +80,24 @@ Two more commands are entry points for other programs, not commands to run by ha
 
 | Key | Default | Notes |
 |---|---|---|
-| `asr_bin` | `""` | `audiocpp_cli`: the audio.cpp CLI, used to report which backends this build supports. `audiocpp_server` is taken from beside it. `config init` writes what it finds; nothing else searches the filesystem, and `PATH` is the only fallback. |
-| `backend` | `cpu` | `audio.cpp` backend: cpu, cuda, vulkan, hip, metal. |
-| `threads` | `4` | Worker threads for the server. |
+| `asr_bin` | `""` | `audiocpp_cli`: the audio.cpp CLI, used to report which backends this build supports. `audiocpp_server` is taken from beside it. **A property of this machine.** `voiceime apply` records the build it finds when this is empty; nothing else searches the filesystem, and `PATH` is the only fallback. |
+| `backend` | `cpu` | `audio.cpp` backend: cpu, cuda, vulkan, hip, metal. cpu works everywhere; a GPU needs an audio.cpp build with that backend. |
+| `threads` | `4` | Worker threads for the server. **A property of this machine:** more threads than physical cores contend rather than help, and `doctor` reports it as the `threads` finding. |
 | `model` | `""` | **Required.** The GGUF the service serves and the engine transcribes with. Nothing picks it for you: no scan, no download. |
-| `language` | `zh` | Passed to the model; empty asks it to auto-detect. |
-| `text_script` | `simplified` | Chinese output script: `simplified` or `preserve`. |
+| `language` | `zh` | **The user's, not the program's.** Passed to the model; empty asks it to auto-detect, which is usually worse for Chinese and better for most other languages. |
+| `text_script` | `simplified` | Chinese output script: `simplified` or `preserve`. The default is what the reference user writes; `preserve` keeps whatever script the repair model produced. |
 | `max_utterance_seconds` | `60` | A hold whose key never comes up stops recording here. |
 | `asr_server_url` | `""` | The service root; `voiceime apply` writes it. Must be `http://`. |
 | `asr_server_timeout_ms` | `30000` | Deadline for one transcription. |
 | `capture_source` | `""` | PipeWire source name; empty uses the default input. |
-| `push_to_talk` | `<Control>grave` | Held down to dictate; the release transcribes. Needs a modifier. |
+| `push_to_talk` | `<Control>grave` | **A chord of your choosing.** Held down to dictate; the release transcribes. Needs a modifier, and must not collide with a shortcut the applications you use claim. |
 | `request_options` | `{}` | Extra audio.cpp request options for the served model, `key=value`. |
 
 Things every setting shares: `voiceime config set` writes the file atomically, validates
 it, and names the command that puts it in force (`voiceime apply`). Hand-editing is
-supported and needs the same command.
+supported and needs the same command. Neither creates a step first: the file appears with the
+first value written, and `voiceime config show` prints what is on record (or the defaults,
+with `exists: false`, when there is no file).
 
 ## Verifying
 

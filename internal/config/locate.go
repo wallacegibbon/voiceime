@@ -15,14 +15,15 @@ const serverBinaryName = "audiocpp_server"
 const audioCPPBuildGlob = "build/*/bin/audiocpp_cli"
 
 // This file answers one question, and answers it once: is there an audio.cpp CLI on this
-// machine worth pointing asr_bin at. `config init` asks it; nothing else does. Every other
-// command reads the path the settings record, so a build tree appearing, disappearing or
-// changing name later cannot change what is running - see FindASRBinary.
+// machine worth pointing asr_bin at. `voiceime apply` asks it, once, when the settings name
+// nothing; nothing else does. Every other command reads the path the settings record, so a
+// build tree appearing, disappearing or changing name later cannot change what is running -
+// see FindASRBinary.
 
 // DiscoverASRBinaries returns the audio.cpp CLIs found on this machine, most plausible
 // first. It returns them all rather than one because a checkout with several build trees
-// (a CPU build and a CUDA build, say) is a decision, and `config init` should show it
-// instead of making it.
+// (a CPU build and a CUDA build, say) is a decision: apply points at the first and names
+// the rest, so the caller can choose instead of having it chosen silently.
 func DiscoverASRBinaries() []string {
 	var found []string
 	for _, root := range checkoutCandidates() {

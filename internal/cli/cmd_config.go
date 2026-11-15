@@ -234,7 +234,10 @@ func runCapabilities(ctx *Context, args []string) error {
 			"name":    command.Name,
 			"summary": command.Summary,
 			"usage":   command.Usage,
-			"actions": command.Actions,
+			// An empty list, not null: a caller iterating the actions of every
+			// command should not have to know which commands have any. `flags`
+			// below is already built as an empty slice for the same reason.
+			"actions": orEmpty(command.Actions),
 			"flags":   flags,
 		})
 	}

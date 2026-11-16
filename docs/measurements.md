@@ -46,6 +46,13 @@ at start-up, and one kept for comparison costs memory only once it has been aske
 it is visible to voiceime as a separate step: the load happens inside one request, and
 `asr_server_timeout_ms` is the ceiling on it.
 
+That ceiling is also what bounds `voiceime doctor`'s endpoint probe, rather than a patience the
+program keeps to itself: the probe may be the first request a model has ever had, and a probe
+given less time than a dictation would call a working address broken. Asked cold with ten
+milliseconds of silence where the speech would be, the other checkpoint answered in 1.7 s wall,
+of which its own timing counted 0.35 s. Both cold costs measured here sit well inside the 30 s
+the settings allow; the row above is the larger of them.
+
 ## How long a recording the served model takes
 
 SenseVoice small refuses a recording longer than its encoder can hold, in its own words

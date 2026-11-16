@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/wallacegibbon/voiceime/internal/asr"
 	"github.com/wallacegibbon/voiceime/internal/config"
@@ -47,7 +46,12 @@ func asrEndpointCheck(cfg *config.Config) Check {
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	// The same ceiling a dictation would be given, from the same setting. A first request to a
+	// model that is not loaded pays for loading inside itself - measured here at 4.12 s for one
+	// checkpoint and 1.3 s for another - so a probe with a shorter patience of its own would
+	// call an address broken at exactly the moment a dictation would have worked. An address
+	// with nothing behind it still answers in milliseconds; only a stalled one costs the wait.
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.ASRServerTimeout())
 	defer cancel()
 	if err := asr.CheckCredential(ctx, url, named, cfg.APIKey); err != nil {
 		var refused *asr.CredentialError

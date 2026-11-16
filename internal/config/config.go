@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -184,6 +185,14 @@ type Issue struct {
 	Severity string `json:"severity"`
 	Message  string `json:"message"`
 	Fix      string `json:"fix,omitempty"`
+}
+
+// ASRServerTimeout is the ceiling one request gets. The file holds milliseconds because the
+// file is written by a person; this is the only place that number becomes a duration, so a
+// dictation and the probe `voiceime doctor` sends in its place are bounded by one ceiling
+// rather than by two.
+func (c *Config) ASRServerTimeout() time.Duration {
+	return time.Duration(c.ASRServerTimeoutMS) * time.Millisecond
 }
 
 // FixLine is the instruction to change one setting - the line, and the file it belongs in -

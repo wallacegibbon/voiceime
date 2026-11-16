@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wallacegibbon/voiceime/internal/config"
 )
@@ -202,6 +203,45 @@ func TestEndpointCheckSendsTheCredential(t *testing.T) {
 	}
 	if gotModel != "glm-asr-2512" {
 		t.Errorf("asked with model %q, want the id from the settings", gotModel)
+	}
+}
+
+// The finding waits exactly as long as a dictation would, and no longer. The patience is the
+// setting's, not a number kept here: a model asked for the first time pays for loading itself
+// inside the request, so a probe with a shorter patience of its own would call a working
+// address broken at the moment a dictation would have worked - and a longer one would sit past
+// a deadline the person at the keyboard wrote.
+func TestEndpointCheckWaitsExactlyAsLongAsTheSettingsAllow(t *testing.T) {
+	stalled := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		_, _ = w.Write([]byte(`{"text":""}`))
+	}))
+	defer stalled.Close()
+
+	cfg := config.Default()
+	cfg.ASRServerURL = stalled.URL + "/v1/audio/transcriptions"
+	cfg.Model = "sensevoice-small-q8-audiocpp-v1"
+
+	// A model that takes a moment to come back is not a broken address: within the settings'
+	// ceiling the finding is ok.
+	cfg.ASRServerTimeoutMS = 5000
+	if check := asrEndpointCheck(cfg); check.Status != "ok" {
+		t.Fatalf("status = %q, detail %q: an address that answered inside the ceiling was reported as failing",
+			check.Status, check.Detail)
+	}
+
+	// And the ceiling is that setting: shorten it and the same address is reported as not
+	// answering, in about the shortened time rather than a patience invented here.
+	cfg.ASRServerTimeoutMS = 50
+	started := time.Now()
+	check := asrEndpointCheck(cfg)
+	elapsed := time.Since(started)
+	if check.Status != "fail" || !strings.Contains(check.Detail, "cannot be reached") {
+		t.Fatalf("status = %q, detail %q: a deadline past asr_server_timeout_ms was not reported as one",
+			check.Status, check.Detail)
+	}
+	if elapsed > time.Second {
+		t.Errorf("the finding waited %v for a ceiling of 50ms: it is bounded by something other than the setting", elapsed)
 	}
 }
 

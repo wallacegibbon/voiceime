@@ -59,7 +59,7 @@ func NewServerTranscriber(cfg *config.Config) ServerTranscriber {
 		Model:    cfg.Model,
 		APIKey:   cfg.APIKey,
 		Language: cfg.Language,
-		Timeout:  time.Duration(cfg.ASRServerTimeoutMS) * time.Millisecond,
+		Timeout:  cfg.ASRServerTimeout(),
 	}
 }
 
@@ -180,6 +180,11 @@ func refusedCredential(response *http.Response) bool {
 // the address the engine really uses is authoritative in a way an answer on one we invented is
 // not. Anything else - 400 "the recording is empty", 415, 200 with an empty text - says the
 // address is there and did not refuse the credential.
+//
+// The caller owns the deadline. This is the request a dictation makes, with silence where the
+// speech would be, so a second ceiling kept here would let the finding answer a question the
+// engine was never asked: an address that takes longer than this function's own patience but
+// inside the settings' is an address a dictation would have waited for too.
 func CheckCredential(ctx context.Context, address, model, apiKey string) error {
 	target, err := RequestURL(address)
 	if err != nil {
@@ -202,8 +207,6 @@ func CheckCredential(ctx context.Context, address, model, apiKey string) error {
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target, &body)
 	if err != nil {
 		return err

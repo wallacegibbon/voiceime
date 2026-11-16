@@ -125,9 +125,14 @@ systemctl --user cat <that unit>                   # the same facts, from the un
 curl -s http://127.0.0.1:18080/v1/models          # the service's own list of what it has loaded
 ```
 
-Things every setting shares: `voiceime config set` writes the file atomically, validates
-it, and names the command that puts it in force (`voiceime apply`). Hand-editing is
-supported and needs the same command. No step comes first: the file appears with the
+Things every setting shares: the file is read by one parser, and it is checked **where it
+becomes something that runs** - the engine process, a `transcribe`, an `apply`. `config set`
+checks it too, but that is not where the gate is: the next edit may be by hand, and a value
+that was fine when it was written stops working the moment the value beside it changes.
+A file that cannot work is refused before a microphone is opened or a request is sent: the
+command says the key, the reason and the fix, and an engine does not start at all until it
+can do what it is asked. Hand-editing is supported and needs the same command to take
+effect (`voiceime apply`). No step comes first: the file appears with the
 first value written, and `voiceime config show` prints what is on record (or the defaults,
 with `exists: false`, when there is no file).
 
@@ -186,7 +191,9 @@ stdout). `ready: hold … to dictate` on selection, then `recording`, `decoded �
 `committed N character(s)` per hold. The lines that are not routine are the ones worth
 reading: `the press before this one never saw its release` (a key event went to another
 input context), `discarded the recording in progress` (the engine was deselected mid-hold),
-`recording stopped at the …s limit` (the key was never released) and `engine process ending`
+`recording stopped at the …s limit` (the key was never released), `not starting: the
+settings cannot work: <key>: <reason> (<fix>)` (the settings the engine was started with
+cannot do what they ask, so no engine was started), and `engine process ending`
 (how this engine stopped, which matters because no engine process means no input method for
 the session).
 

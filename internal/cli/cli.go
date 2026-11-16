@@ -209,6 +209,22 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	return ExitOK
 }
 
+// firstBlockingIssue asks the settings file the question "can this work?" and answers it once.
+//
+// It belongs wherever a settings file becomes something that runs - the engine process, a
+// measurement, the install - rather than wherever a value happens to have been written. `config
+// set` is not the gate: the next edit may be made by hand, and a value that was fine when it was
+// written stops working the moment the value beside it changes. A parse error and an unknown key
+// are already refused by Load above, which every command goes through; this is the other half -
+// the combinations that read perfectly and still cannot work.
+func firstBlockingIssue(cfg *config.Config) (config.Issue, bool) {
+	issues := config.Errors(cfg.Validate())
+	if len(issues) == 0 {
+		return config.Issue{}, false
+	}
+	return issues[0], true
+}
+
 func parseInterspersed(flags *flag.FlagSet, args []string) ([]string, error) {
 	var positional []string
 	for index := 0; index < len(args); index++ {

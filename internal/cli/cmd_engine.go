@@ -236,6 +236,17 @@ func runIBusEngine(ctx *Context, options engineRunOptions) error {
 		}
 	}
 
+	// The settings are checked here - where a settings file becomes an engine - and not where
+	// they were written. The file may have been edited by hand since, and the two values that
+	// make one request can have been pulled apart since. The reason goes into this session's
+	// log, the one file that says what an engine did, and the process then refuses to be an
+	// engine: starting and answering nothing is harder to notice than not starting and saying
+	// why, and `doctor` reports the missing engine with its own fix.
+	if issue, bad := firstBlockingIssue(ctx.Config); bad {
+		logf("not starting: the settings cannot work: %s: %s (%s)", issue.Key, issue.Message, issue.Fix)
+		return PreconditionError(issue.Fix, "the settings cannot work: %s: %s", issue.Key, issue.Message)
+	}
+
 	// One pipeline, whether the audio comes from the microphone or from a file: the
 	// diagnostic run is the real path with a different source, not a shorter path that
 	// proves less.

@@ -36,6 +36,13 @@ func cmdTranscribe() *Command {
 
 func runTranscribe(ctx *Context, file string, seconds float64) error {
 	cfg := ctx.Config
+	// The settings are checked before anything is recorded or sent. A combination that cannot
+	// work - an address with nothing named in it, an id written as a file - fails at whoever
+	// happens to be asked, and that answer is someone else's error message about a request that
+	// should never have been made.
+	if issue, bad := firstBlockingIssue(cfg); bad {
+		return PreconditionError(issue.Fix, "the settings cannot work: %s: %s", issue.Key, issue.Message)
+	}
 	if file != "" {
 		meta, err := os.Stat(config.Expand(file))
 		if err != nil {

@@ -65,8 +65,7 @@ func runApply(ctx *Context) error {
 	// A configuration that cannot work is not applied halfway: the settings are checked
 	// first so that a failure leaves every part of the installation reading the same file it
 	// was reading before.
-	if issues := config.Errors(ctx.Config.Validate()); len(issues) > 0 {
-		issue := issues[0]
+	if issue, bad := firstBlockingIssue(ctx.Config); bad {
 		return PreconditionError(issue.Fix, "cannot apply the configuration: %s: %s", issue.Key, issue.Message)
 	}
 

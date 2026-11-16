@@ -148,3 +148,35 @@ func TestIsTerminalFileDistinguishesPipesAndFiles(t *testing.T) {
 		t.Errorf("%s was not recognised as a character device", os.DevNull)
 	}
 }
+
+// The engine asks the same question at the point the settings become a running thing, and
+// refuses to be an engine rather than starting and answering nothing: the reason goes into the
+// log that says what an engine did, and an engine that is not running is a finding `doctor`
+// reports with its own fix.
+func TestEngineRefusesSettingsThatCannotWork(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(configPath,
+		[]byte(`asr_server_url = "http://127.0.0.1:1/v1/audio/transcriptions"`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	trace := filepath.Join(t.TempDir(), "engine.log")
+
+	code, _, stderr := runForTest(t, "--config", configPath, "ibus-engine", "--ibus",
+		"--address", "unix:path=/nonexistent", "--trace", trace)
+	if code != ExitPrecondition {
+		t.Fatalf("settings that cannot work started an engine anyway: exit %d. stderr: %s", code, stderr)
+	}
+	if !strings.Contains(stderr, "the settings cannot work") {
+		t.Errorf("stderr = %q, want the settings problem named", stderr)
+	}
+	logged, err := os.ReadFile(trace)
+	if err != nil {
+		t.Fatalf("the engine wrote no log: %v", err)
+	}
+	if !strings.Contains(string(logged), "the settings cannot work: model:") {
+		t.Errorf("the engine log = %q, want the reason it did not start", logged)
+	}
+	if !strings.Contains(string(logged), "voiceime config set model") {
+		t.Errorf("the engine log = %q, want the fix that completes the pair", logged)
+	}
+}

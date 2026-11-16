@@ -62,3 +62,43 @@ func TestTranscribeSaysWhenNothingWasRecognized(t *testing.T) {
 		t.Errorf("seconds = %v, want the recording's length: the numbers are how a caller knows the path carried audio", payload["seconds"])
 	}
 }
+
+// A settings file that reads perfectly and still cannot work - an address with nothing named in
+// it - is refused before anything is recorded or sent. `config set` is not what guards this: the
+// file may have been hand-edited since it was written, and the two values that make one request
+// can have been pulled apart since. The assertion that matters is that the endpoint was never
+// asked. A request with no model in it fails at someone else's API, and that answer is not about
+// the mistake made here.
+func TestTranscribeRefusesSettingsThatCannotWork(t *testing.T) {
+	asked := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = true
+		_, _ = w.Write([]byte(`{"text":"this request should never have been made"}`))
+	}))
+	defer server.Close()
+
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(configPath,
+		[]byte(fmt.Sprintf("asr_server_url = %q\n", server.URL+"/v1/audio/transcriptions")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wavPath := filepath.Join(t.TempDir(), "silence.wav")
+	silence := make([]byte, audio.SampleRate/2*audio.BytesPerSample)
+	if err := os.WriteFile(wavPath, audio.EncodeWAV(silence, audio.SampleRate, 1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, _, stderr := runForTest(t, "--config", configPath, "transcribe", "--file", wavPath)
+	if code != ExitPrecondition {
+		t.Fatalf("an address with no model id exited %d, want %d. stderr: %s", code, ExitPrecondition, stderr)
+	}
+	if !strings.Contains(stderr, "nothing names the model to ask it for") {
+		t.Errorf("stderr = %q, want the settings problem named", stderr)
+	}
+	if !strings.Contains(stderr, "voiceime config set model") {
+		t.Errorf("stderr = %q, want the fix that completes the pair", stderr)
+	}
+	if asked {
+		t.Error("the endpoint was asked, although the settings cannot work")
+	}
+}

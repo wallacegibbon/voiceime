@@ -8,25 +8,26 @@ import (
 	"github.com/wallacegibbon/voiceime/internal/config"
 )
 
-// A model on this machine is not this program's. It is a systemd user unit that runs an
-// audio.cpp build, and it belongs to whatever installed it: the unit's name, the name and place
-// of the audio.cpp config it is handed, and the checkpoint behind that are that project's
-// business. None of them are settings this program reads, and none of them are named here.
+// A model on this machine is not this program. It is a systemd user unit that runs an
+// audio.cpp build, started by a script that sits in this project's scripts/ directory and is
+// compiled into nothing: the unit's name, the name and place of the audio.cpp config it is
+// handed, and the checkpoint behind that are that service's business. None of them are settings
+// this program reads, and none of them are named here.
 //
 // So a model service is found by what it runs, and what it was told to serve is read out of its
 // own `ExecStart`. That is what keeps the two halves usable apart: a machine with only a
 // provider's address has no such unit and nothing below says anything about one, and a machine
-// whose model service was installed by something else is still described truthfully.
+// whose model service was started by a different script still is described truthfully.
 
 // modelServiceBinary is the executable a model service runs. It is the one name shared with the
-// project that installs such a thing, and it is how a model service is recognized.
+// script that starts such a thing, and it is how a model service is recognized.
 const modelServiceBinary = "audiocpp_server"
 
 // installModelService is the command that puts a model on this machine where the settings can
-// post to it. It belongs to the project that installs model services, and it is written here
-// without a path: this program does not own that checkout, and a path it invented would be a
-// guess about someone else's machine.
-const installModelService = "asr-service.sh <audiocpp_server> <model.gguf>"
+// post to it. The path is the one in this project, relative to a checkout - the same place
+// `make install` is run from - because this program has no way to know where that checkout is,
+// and an absolute path it invented would be a guess about someone else's machine.
+const installModelService = "scripts/asr-service.sh <audiocpp_server> <model.gguf>"
 
 // modelService is a model service as this machine describes it.
 type modelService struct {

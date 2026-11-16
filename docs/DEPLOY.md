@@ -92,12 +92,12 @@ find ~ -maxdepth 4 -name '*.gguf' -size +1M
 #         produced says nothing on that line, and is not a model a service here can serve
 ```
 
-Build audio.cpp (`cmake -B build && cmake --build build`). A model service is a separate
-project - one script, `asr-service.sh`, in the `audiocpp-asr-service` checkout - and one
-command turns a checkpoint into a running service:
+Build audio.cpp (`cmake -B build && cmake --build build`). A model service is one script in
+this project - `scripts/asr-service.sh`, in the same checkout, run from it - and one command
+turns a checkpoint into a running service:
 
 ```sh
-~/playground/audiocpp-asr-service/asr-service.sh \
+scripts/asr-service.sh \
   ~/playground/audio.cpp/build/linux-cpu-release/bin/audiocpp_server \
   ~/models/SenseVoice-Small-GGUF/sensevoice-small-q8-audiocpp-v1.gguf
 # assert: wrote:     /home/<user>/.local/share/audiocpp-asr/serve.json
@@ -130,15 +130,35 @@ Four things about that service belong to this deploy:
   file, because a program that never asks an address what it serves has to be told - and the
   file it is told in is a person's, not this script's. Nothing looks any of them up again - a
   service started at login cannot fail for a reason only another run could fix.
+* The two files it writes are the whole of the service, and they live where a login can read
+  them - `~/.local/share/audiocpp-asr/serve.json` and `~/.config/systemd/user/audiocpp-asr.service`,
+  not a runtime directory emptied at logout. The unit is a user one, so it needs no root and it
+  dies with the user's session. Whether it therefore starts at boot or only at login is
+  lingering, and the script says which this machine is instead of changing it:
+  `loginctl enable-linger <user>` moves every service that user owns, which is their decision.
+* It asks this project's own program what the settings say - `voiceime capabilities --json`,
+  read with `jq` - rather than matching the file with a pattern. Two ordinary hand-edits are
+  what that buys: a comment after a value is invisible to a hand-rolled parser, and a key
+  written twice reads as whichever line that parser happened to look at first. The program that
+  owns the format refuses both, and the script repeats the refusal and stops, because starting a
+  model on a port it guessed is a wrong answer rather than an unknown one. Measured: an address
+  with a trailing `# comment` was read correctly, and a file with the same key twice printed the
+  client's own parse error and started nothing (exit 3).
 * It asks, rather than assumes: the family from the checkpoint, the backend from the build, the
-  cores from the kernel. A build without `cpu` in its banner is refused by name, and a
-  checkpoint with no model spec in it is refused by name - the answer is to convert it with
-  audio.cpp, not to point the service at it harder.
+  cores from the kernel. A build without `cpu` in its banner is refused by name, a
+  checkpoint with no model spec in it is refused by name, and two checkpoints that would be
+  served under one id are refused before anything is written - the answer in each case is to
+  convert, rebuild or rename, not to point the service at it harder.
 * It is idempotent, and says what it changed: running it again with nothing changed prints
   `unchanged:` twice, and rewriting the unit is what heals a moved checkout or a newer build.
 * It starts nothing when the address is not this machine: with `asr_server_url` a provider's, it
   reports `https://… is not this machine: no model is started here.` and leaves the settings
   exactly as they were. That is the whole of "the local model is optional".
+
+Switching among the ids it served is not a redeploy: it is editing the one `model` line in the
+settings file and running `voiceime apply`, which is why those two lines are printed rather than
+written. What the first request to a model that is not loaded costs is measured in
+[measurements.md](measurements.md#what-starting-a-model-costs).
 
 None of those three names - the unit, the audio.cpp config, the checkpoint - is a voiceime
 setting, and none is a path this program knows. `voiceime doctor` looks for a unit by the binary
@@ -265,17 +285,17 @@ make install
 A running process keeps the binary it was started from, so `doctor` reports a stale one as a
 `warn` (`running_build`) until it is restarted. `apply` is what restarts them, and it selects
 the input method again afterwards, for the reason given in §4. A rebuilt **audio.cpp** is a
-different pair of commands, and they belong to the model service's project: running
-`asr-service.sh` again rewrites that unit with the build that exists now, and
+different pair of commands, and they belong to the model service rather than to this program:
+running `scripts/asr-service.sh` again rewrites that unit with the build that exists now, and
 `systemctl --user cat <the unit server_unit names>` shows which one it points at now.
 
 ## Recovery
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `asr_endpoint` fails with `no address is configured` | `asr_server_url` is empty, and recognition is an address | write the provider's URL, or run `asr-service.sh` with a checkpoint (a model on this machine) |
-| `asr_endpoint` fails with `nothing names the model to ask it for` | an address was written without the id it is asked for | write the `model = "<id>"` line the finding names; for a model on this machine, `asr-service.sh` prints that line next to the address |
-| `asr_endpoint` fails with a connection error and `server_unit` says the unit runs a binary that does not exist | the audio.cpp build was moved, cleaned or never built | `asr-service.sh /path/to/audiocpp_server /path/to/model.gguf`, which rewrites both files |
+| `asr_endpoint` fails with `no address is configured` | `asr_server_url` is empty, and recognition is an address | write the provider's URL, or run `scripts/asr-service.sh` with a checkpoint (a model on this machine) |
+| `asr_endpoint` fails with `nothing names the model to ask it for` | an address was written without the id it is asked for | write the `model = "<id>"` line the finding names; for a model on this machine, `scripts/asr-service.sh` prints that line next to the address |
+| `asr_endpoint` fails with a connection error and `server_unit` says the unit runs a binary that does not exist | the audio.cpp build was moved, cleaned or never built | `scripts/asr-service.sh /path/to/audiocpp_server /path/to/model.gguf`, which rewrites both files |
 | `server_unit` warns that a model starts here while the settings post elsewhere | the endpoint moved to a provider and the local model stayed loaded | `systemctl --user disable --now <the unit `server_unit` names>` |
 | no text, log shows `no audio was recorded` | the sound server is not giving the microphone | `"$BIN" doctor`, then the `capture_source` line it names |
 | no text, log shows `transcribe …: …` | the endpoint refused, timed out, or the model id is wrong | `"$BIN" doctor` (the `asr_endpoint` finding), then `"$BIN" transcribe --file sample_16k.wav` |

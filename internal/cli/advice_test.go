@@ -95,6 +95,53 @@ func TestAdviceNamesASettingThatExists(t *testing.T) {
 // drift this catches.
 var configSettingRE = regexp.MustCompile(`write ([a-z_]+) = `)
 
+// Advice names files as well as commands, and a path is the easiest part of a sentence to
+// leave true by accident. `asr-service.sh` was advice this program printed for as long as the
+// script lived in a different project: every command that printed it named a file no copy of
+// this project contained, and the only machines where it could be followed were the ones where
+// someone happened to have put the other checkout somewhere. A path relative to this project is
+// a claim about this repository, so this repository answers it - in both shapes the advice uses:
+// a path with a directory in it, and a bare script name, which is a claim that the script meant
+// is the one this project ships. Absolute paths and `~/…` are claims about whoever's machine it
+// is run on, and are left alone.
+func TestAdviceNamesAFileThatIsHere(t *testing.T) {
+	root := repositoryRoot(t)
+	checked := 0
+	if err := walkStringLiterals(root, func(path, value string) {
+		for _, match := range projectPathRE.FindAllStringSubmatch(value, -1) {
+			checked++
+			if _, err := os.Stat(filepath.Join(root, match[1])); err != nil {
+				t.Errorf("%s: %q names no file in this project", path, match[1])
+			}
+		}
+		for _, match := range scriptNameRE.FindAllStringSubmatch(value, -1) {
+			checked++
+			if _, err := os.Stat(filepath.Join(root, "scripts", match[1])); err != nil {
+				t.Errorf("%s: %q names no script this project ships (scripts/ holds them)", path, match[1])
+			}
+		}
+	}); err != nil {
+		t.Fatalf("reading the source: %v", err)
+	}
+	// scripts/asr-service.sh is named from several places, so this is not near zero; the count
+	// is there for the same reason the others are - a pattern that stopped matching is a check
+	// that passed without looking.
+	if checked < 10 {
+		t.Fatalf("only %d paths checked: the pattern stopped matching", checked)
+	}
+	t.Logf("checked %d paths against this checkout", checked)
+}
+
+// projectPathRE matches a path relative to this project's own directories, with the suffix of a
+// file this project ships. The directories are named rather than any leading word matched:
+// "the service/…" is prose, and a prose word is not a path to look for on disk.
+var projectPathRE = regexp.MustCompile(`(?:^|[^-~/\w])((?:docs|scripts|cmd|internal|tools)/[\w./-]+\.(?:md|sh|toml|go))`)
+
+// scriptNameRE matches a bare shell script name. scripts/ is the only place this project keeps
+// one, so that is where the claim is checked - which is the exact drift this exists for: the
+// name was right and the file was not there.
+var scriptNameRE = regexp.MustCompile(`(?:^|[^-~/\w])([a-z][\w-]*\.sh)(?:[^A-Za-z0-9_-]|$)`)
+
 // walkStringLiterals calls visit with the value of every string literal in the module's Go
 // files. Only literals are read: those are the sentences a caller acts on. Comments may talk
 // about a command or a setting that used to exist, and do.

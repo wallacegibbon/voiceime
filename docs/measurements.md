@@ -21,6 +21,26 @@ RTF falls as the recording grows (fixed overhead amortises), so the wait after a
 `RTF × the length of what you said`: about 1.6 s for a 35 s sentence with SenseVoice, 4.4 s
 with Qwen3-0.6B. `asr_server_timeout_ms` (30 s) is the ceiling on one decode.
 
+## What starting a model costs
+
+`scripts/asr-service.sh` registers every checkpoint it is given and loads the first at
+start-up; the rest load when a request first names them. The same 7.5 s clip, `curl` straight
+at the service, on an otherwise idle machine:
+
+| | wall | the decode itself |
+|---|---|---|
+| first request to a model that was not loaded | 4.12 s | 2.29 s |
+| the same model again | 2.06 s | 2.05 s |
+| resident memory, one model loaded | 262 MB | |
+| resident memory, both models loaded | 2.07 GB | |
+
+So naming a model nobody has asked for yet costs about 1.8 s, once per model, and the weights
+stay resident afterwards (audio.cpp's `max_loaded_models: 0` means "no limit"): switching back
+is not another load. That is what the arrangement buys - the model used every day pays nothing
+at start-up, and one kept for comparison costs memory only once it has been asked for. None of
+it is visible to voiceime as a separate step: the load happens inside one request, and
+`asr_server_timeout_ms` is the ceiling on it.
+
 ## How long a recording the served model takes
 
 SenseVoice small refuses a recording longer than its encoder can hold, in its own words

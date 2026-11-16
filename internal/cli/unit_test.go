@@ -8,11 +8,11 @@ import (
 	"github.com/wallacegibbon/voiceime/internal/config"
 )
 
-// A model service on this machine is recognized by what it runs. Its name belongs to whoever
-// installed it, the audio.cpp config it serves is whatever its own command line names, and a
-// unit running anything else is not a model service at all. None of those three facts are
-// assumed here, which is what lets a model installed by another project - or by hand - be
-// described correctly.
+// A model service on this machine is recognized by what it runs. Its name belongs to the script
+// that wrote it - or to whoever wrote the unit by hand - the audio.cpp config it serves is
+// whatever its own command line names, and a unit running anything else is not a model service
+// at all. None of those three facts are assumed here, which is what lets a model service started
+// by either be described correctly.
 func TestModelServiceIsFoundByWhatItRuns(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)

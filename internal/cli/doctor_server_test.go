@@ -46,7 +46,7 @@ func TestASREndpointCheckStates(t *testing.T) {
 			mutate:     func(c *config.Config) { c.ASRServerURL = "" },
 			wantStatus: "fail",
 			wantDetail: "no address is configured",
-			wantFix:    "asr-service.sh",
+			wantFix:    "scripts/asr-service.sh",
 		},
 		{
 			// A model on this machine has its id written by the script that starts it; a
@@ -57,7 +57,7 @@ func TestASREndpointCheckStates(t *testing.T) {
 			},
 			wantStatus: "fail",
 			wantDetail: "nothing names the model",
-			wantFix:    "asr-service.sh",
+			wantFix:    "scripts/asr-service.sh",
 		},
 		{
 			name: "a provider with nothing to ask it for",
@@ -94,7 +94,7 @@ func TestASREndpointCheckStates(t *testing.T) {
 			},
 			wantStatus: "fail",
 			wantDetail: "cannot be reached",
-			wantFix:    "asr-service.sh",
+			wantFix:    "scripts/asr-service.sh",
 		},
 		{
 			name: "nothing listening, and this machine does run a model service",

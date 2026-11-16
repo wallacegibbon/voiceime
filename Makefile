@@ -59,6 +59,10 @@ build: ## Build bin/voiceime for this machine
 
 .PHONY: install
 install: build ## Install to $(DESTDIR)$(PREFIX)/bin (docs to $(PREFIX)/docs)
+	@# scripts/ is deliberately not installed. asr-service.sh is run at deploy time, from the
+	@# checkout, next to the audio.cpp build and the checkpoint it is pointed at - and it asks
+	@# `voiceime capabilities` for the rest. An installed copy would have no checkout beside
+	@# it and nothing to be told, so the fix `doctor` prints names it by its path in here.
 	install -d $(DESTDIR)$(PREFIX)/bin
 	install -m 0755 $(BIN_DIR)/$(BINARY) $(DESTDIR)$(PREFIX)/bin/$(BINARY)
 	@# The manual travels with the binary: the systemd unit writes
@@ -158,8 +162,20 @@ docs-check: ## Fail if a relative link or anchor in the documentation does not r
 	@# python3 is not a build prerequisite. Stdlib only, so no network.
 	@$(GO) run ./tools/check_docs
 
+.PHONY: sh-check
+sh-check: ## Fail if a shell script in this project does not parse
+	@# scripts/ holds the deployment that is deliberately not compiled into the program, so
+	@# nothing in `go build` ever looks at it. A shell script's syntax errors are not its
+	@# only ones - this script carries a comment about a nested ${A:-${B:-c}} expansion that
+	@# parsed, and quietly produced an empty path, in dash and not in bash - so it is parsed
+	@# with /bin/sh, which is the interpreter its own shebang names.
+	@for script in $(shell git ls-files 'scripts/*.sh'); do \
+		sh -n "$$script" || exit 1; \
+	done
+	@echo "sh-check: every script in scripts/ parses with /bin/sh"
+
 .PHONY: check
-check: fmt-check vet test deadcode unused docs-check ## Everything CI should run
+check: fmt-check vet test deadcode unused docs-check sh-check ## Everything CI should run
 
 .PHONY: tidy
 tidy: ## Tidy go.mod and go.sum

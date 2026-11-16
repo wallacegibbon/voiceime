@@ -20,9 +20,9 @@ microphone ──► capture (parec, 16 kHz mono) ── hold ── release
 ```
 
 * Recognition is an endpoint. What answers that request is a separate decision: a model on
-  this machine (the `audiocpp-asr-service` project — one script, one GGUF, one systemd user
-  unit) or a provider across a network (three settings). The engine knows only the address, and
-  which model id to name.
+  this machine (`scripts/asr-service.sh` — one script, one GGUF, one systemd user unit, run
+  by hand at deploy time) or a provider across a network (three settings). The engine knows only
+  the address, and which model id to name.
 * Selecting the engine records nothing. A dictation starts on the key press and ends on
   its release; the whole recording is sent, unchanged.
 * Switching input methods is the desktop's own: Voiceime is in GNOME's input-source list,
@@ -42,9 +42,9 @@ cp config.example.toml ~/.config/voiceime/config.toml
 #   model          = "gpt-4o-mini-transcribe"
 #   api_key        = "sk-…"
 
-# recognition from a model on this machine — a separate project: its script starts the model
-# and prints the two lines the settings need.
-~/playground/audiocpp-asr-service/asr-service.sh \
+# recognition from a model on this machine — this project's script starts the model
+# and prints the two lines the settings need. Run it from the checkout, like `make install`.
+scripts/asr-service.sh \
   ~/playground/audio.cpp/build/linux-cpu-release/bin/audiocpp_server \
   ~/models/SenseVoice-Small-GGUF/sensevoice-small-q8-audiocpp-v1.gguf
 

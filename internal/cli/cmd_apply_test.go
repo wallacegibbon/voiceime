@@ -74,7 +74,7 @@ func TestDoctorNamesAWrongSettingWithAFixThatNamesTheFile(t *testing.T) {
 	if !strings.Contains(detail, "model") {
 		t.Errorf("the finding does not name the setting: %q", detail)
 	}
-	if !strings.Contains(detail, "asr-service.sh") {
+	if !strings.Contains(detail, "scripts/asr-service.sh") {
 		t.Errorf("the finding does not say where a model file belongs instead: %q", detail)
 	}
 	if !strings.Contains(fix, "write model = ") {
@@ -237,8 +237,9 @@ func TestWithCurrentEngineChangesOnlyTheEngineIdentity(t *testing.T) {
 	}
 }
 
-// A model on this machine is a unit some other project wrote: its name is not known here, it is
-// found by the executable it runs, and what it was told to serve is read out of its own command
+// A model on this machine is a unit the script in scripts/ wrote: its name is not known here,
+// it is found by the executable it runs, and what it was told to serve is read out of its own
+// command
 // line. A moved checkout or a deleted audio.cpp config breaks it silently - the service keeps
 // starting and keeps failing - so this reads the record back. Whether this machine wants a model
 // at all is the settings' decision, so every case states one, and a model service that is
@@ -257,7 +258,7 @@ func TestModelServiceCheckReadsTheRecordBack(t *testing.T) {
 	}
 	t.Setenv("PATH", t.TempDir())
 
-	// The unit's name is the other project's to choose. Nothing here gave it, and nothing here
+	// The unit's name is that script's to choose. Nothing here gave it, and nothing here
 	// has to know it.
 	const serviceUnit = "audiocpp-asr.service"
 	unitNamed := func(t *testing.T, name, binary, arguments string) {
@@ -302,7 +303,7 @@ func TestModelServiceCheckReadsTheRecordBack(t *testing.T) {
 		if check.Status != "fail" || !strings.Contains(check.Detail, "this machine") {
 			t.Errorf("finding = %+v, want a failure naming the address that has nothing behind it", check)
 		}
-		if !strings.Contains(check.Fix, "asr-service.sh") {
+		if !strings.Contains(check.Fix, "scripts/asr-service.sh") {
 			t.Errorf("fix %q does not name what installs a model", check.Fix)
 		}
 	})
@@ -332,7 +333,7 @@ func TestModelServiceCheckReadsTheRecordBack(t *testing.T) {
 		}
 	})
 
-	t.Run("what the other project wrote", func(t *testing.T) {
+	t.Run("what the script wrote", func(t *testing.T) {
 		if err := os.MkdirAll(filepath.Dir(served), 0o755); err != nil {
 			t.Fatal(err)
 		}

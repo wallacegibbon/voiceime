@@ -40,7 +40,7 @@ voiceime capabilities                            # the surface: commands, settin
 
 Two more names appear in the surface and neither is a command to run by hand:
 `ibus-daemon` spawns `voiceime ibus-engine --ibus`, and a model service's unit runs `audio.cpp`
-itself, on a config that service's own project wrote. voiceime names neither: it recognizes a
+itself, on a config `scripts/asr-service.sh` wrote. voiceime names neither: it recognizes a
 model service by the binary its unit runs (`audiocpp_server`) and reads the rest of that
 service's story from the unit itself.
 
@@ -53,12 +53,16 @@ way:
 
 ```
 voiceime apply                        # the desktop half: always needed, whatever answers
-asr-service.sh <audiocpp_server> <model.gguf>   # a model on this machine: only if the endpoint is this machine
+scripts/asr-service.sh <audiocpp_server> <model.gguf>   # a model on this machine: only if the endpoint is this machine
 ```
 
-The second command is not part of this program. A model service is a separate project - one
-script, its own unit name, its own audio.cpp config - and the only contact between the two is
-the two settings lines it prints for this file.
+The second is in this project and is not part of this program: a shell script in `scripts/`,
+compiled into nothing, run by whoever deploys, from the checkout. It lives here because it asks
+this project's own program for the address it is being asked to answer — `voiceime capabilities
+--json`, the machine-readable form of the settings — rather than reading the file with a pattern
+of its own. It stays out of the program because an engine that knows one address needs no more,
+and it says so itself: the unit's name, the audio.cpp config and the checkpoint are in two files
+it writes and are not settings here.
 
 * An endpoint elsewhere needs nothing installed here. The model service's script says so and
   starts nothing when `asr_server_url` is not a loopback address. What such a setup needs is
@@ -114,8 +118,8 @@ usable together with the id to ask it for, and nothing in the program goes looki
 **What is not here, and where it went.** Which audio.cpp runs, which checkpoint it serves,
 which backend it was built for and how many workers that deserves are properties of the
 machine, not choices, and they only matter when the endpoint is this machine. They belong to
-the project that installs a model service, and none of that project's names - its unit, its
-audio.cpp config - are settings here or constants in this program. What the engine knows is the
+`scripts/asr-service.sh`, and none of that service's names - its unit, its audio.cpp config -
+are settings here or constants in this program. What the engine knows is the
 binary such a service runs, and everything else it reads out of the unit's own `ExecStart`. Ask
 the machine, not a name:
 

@@ -51,8 +51,9 @@ func cmdRemove() *Command {
 
 // applyReport is one line per thing this command installs: the file that makes the engine
 // reachable, the desktop's list, the running engine processes. The recognition model is not
-// one of them. A model on this machine is installed by another project's script, and an
-// endpoint elsewhere needs nothing installed here at all.
+// one of them. A model on this machine is started by the script in this project's scripts/,
+// which apply neither runs nor knows the unit name of, and an endpoint elsewhere needs nothing
+// installed here at all.
 type applyReport struct {
 	Component string `json:"component"`
 	// Desktop is the input-source list the desktop's own switcher reads. The entry the
@@ -84,7 +85,7 @@ func runApply(ctx *Context) error {
 		ctx.Print("desktop:   %v", report.Desktop)
 		ctx.Print("engine:    %v", report.Engine)
 		ctx.Print("")
-		ctx.Print("a model on this machine is a separate thing: %s", installModelService)
+		ctx.Print("a model on this machine is a separate step, run from the checkout: %s", installModelService)
 		ctx.Print("`voiceime doctor` re-checks all of it.")
 	}
 	return ctx.Emit("apply", report)

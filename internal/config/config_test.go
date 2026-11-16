@@ -98,7 +98,7 @@ func TestValidateRejectsAModelThatIsAPath(t *testing.T) {
 	if len(issues) != 1 || issues[0].Key != "model" || issues[0].Fix == "" {
 		t.Fatalf("Validate with a path as a model id = %+v, want one blocking issue carrying a fix", issues)
 	}
-	if !strings.Contains(issues[0].Message, "asr-service.sh") {
+	if !strings.Contains(issues[0].Message, "scripts/asr-service.sh") {
 		t.Errorf("message %q does not say where a model file belongs", issues[0].Message)
 	}
 }

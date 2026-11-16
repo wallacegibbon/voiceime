@@ -47,8 +47,8 @@ A model list is a catalogue, not a promise about what this account accepts, and 
 publish none at all.
 
 So this document describes the request, and the rest of what makes a local model answer it
-belongs to the project that installs one (`asr-service.sh`). Two facts about that service are
-worth knowing from here, because they are what this request assumes:
+belongs to the script that installs one (`scripts/asr-service.sh`). Two facts about that service
+are worth knowing from here, because they are what this request assumes:
 
 * The weights are loaded before the first request, not during it. That is why a dictation's
   latency is a decode and not a load.
@@ -58,8 +58,8 @@ worth knowing from here, because they are what this request assumes:
 `voiceime doctor`'s `server_unit` finding reads back whatever such a service on this machine
 says about itself - the unit that runs an audio.cpp, and the binary and config that unit names -
 because a unit whose paths have gone missing restarts forever and says nothing. The names are
-that project's; the engine looks for a unit by the binary it runs (`audiocpp_server`) and takes
-the rest from its own `ExecStart`.
+that service's, in the two files the script writes; the engine looks for a unit by the binary it
+runs (`audiocpp_server`) and takes the rest from its own `ExecStart`.
 
 ## Failure
 

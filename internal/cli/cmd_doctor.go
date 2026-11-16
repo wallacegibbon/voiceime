@@ -83,8 +83,8 @@ func runDoctor(ctx *Context) []Check {
 
 	// 2. The address the engine posts to, and - only when that address is this machine -
 	// the model service that answers it. A model service is found by what it runs, not by a
-	// name this program gave it: it is installed by a separate project, and a machine with a
-	// provider's address has none and is not missing anything.
+	// name this program gave it: the script in scripts/ chose that name, no setting here
+	// repeats it, and a machine with a provider's address has none and is not missing anything.
 	service, _ := modelServiceInstalled()
 	report(asrEndpointCheck(ctx.Config, service))
 

@@ -23,8 +23,8 @@
 # and `voiceime doctor` says so with the line to write.
 #
 # A model on this machine: use the two lines the model service's own script prints when
-# it starts that model. That script is a separate project; this program only posts to an
-# address.
+# it starts that model. That script is `scripts/asr-service.sh` in this project, run by
+# hand at deploy time; this program only posts to an address.
 #   asr_server_url = "http://127.0.0.1:18080/v1/audio/transcriptions"
 #   model          = "sensevoice-small-q8-audiocpp-v1"
 #

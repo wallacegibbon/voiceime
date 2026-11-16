@@ -33,14 +33,13 @@ func cmdApply() *Command {
 
 // cmdRemove is its opposite: take the parts this project installed away again. One command
 // because they are one installation: the component file, the entry the desktop's switcher
-// reads, the environment entry that makes a user-level install survive a login. A model
-// service is not part of it: that unit runs audio.cpp, not this program, and the project that
-// installed it is the one that can stop it. `remove` reports what it leaves running, and names
-// the command that stops it.
+// reads, the environment entry that makes a user-level install survive a login. Nothing else
+// belongs to that install, so nothing else is looked at: what answers the address in the
+// settings was not put there by this program, and this program has no name for it.
 func cmdRemove() *Command {
 	return &Command{
 		Name:    "remove",
-		Summary: "Remove the engine, its desktop entry, and any model service this project installed",
+		Summary: "Remove the engine, its desktop entry, and the session entry that installed them",
 		Usage:   "voiceime remove",
 		Flags:   func(set *flag.FlagSet) {},
 		Run: func(ctx *Context, args []string) error {
@@ -50,10 +49,9 @@ func cmdRemove() *Command {
 }
 
 // applyReport is one line per thing this command installs: the file that makes the engine
-// reachable, the desktop's list, the running engine processes. The recognition model is not
-// one of them. A model on this machine is started by the script in this project's scripts/,
-// which apply neither runs nor knows the unit name of, and an endpoint elsewhere needs nothing
-// installed here at all.
+// reachable, the desktop's list, the running engine processes. What answers the address is not
+// one of them: this command neither runs it nor has a name for it, and an endpoint elsewhere
+// needs nothing installed here at all.
 type applyReport struct {
 	Component string `json:"component"`
 	// Desktop is the input-source list the desktop's own switcher reads. The entry the
@@ -85,7 +83,6 @@ func runApply(ctx *Context) error {
 		ctx.Print("desktop:   %v", report.Desktop)
 		ctx.Print("engine:    %v", report.Engine)
 		ctx.Print("")
-		ctx.Print("a model on this machine is a separate step, run from the checkout: %s", installModelService)
 		ctx.Print("`voiceime doctor` re-checks all of it.")
 	}
 	return ctx.Emit("apply", report)
@@ -216,14 +213,11 @@ func withCurrentEngine(installed ibus.Component) ibus.Component {
 }
 
 // runRemove stops and deletes what `apply` created. It leaves the user's own input methods
-// alone: only this engine's entry is taken out of the desktop's list.
+// alone: only this engine's entry is taken out of the desktop's list. Nothing else on the
+// machine is touched - what answers the settings' address is not something this command knows
+// about, and stopping it is not what "remove the engine" asks for.
 func runRemove(ctx *Context) error {
 	removed := []string{}
-
-	// A model service on this machine belongs to the project that installed it, and it may be
-	// answering clients other than this engine. Removing the engine does not stop it and does
-	// not delete its files: what is here is reported, with the command that stops it.
-	service, hasService := modelServiceInstalled()
 
 	// The engine processes go first: a running one holds the session's input method, and
 	// removing the component underneath it leaves the applications showing an input method
@@ -231,8 +225,7 @@ func runRemove(ctx *Context) error {
 	stopped, _ := stopEngines()
 
 	// The files are removed through the package that owns them, so "which file is
-	// voiceime's" is written down once. A model unit and the audio.cpp config it names are
-	// not among them: they belong to the project that installed the model.
+	// voiceime's" is written down once.
 	if ibus.Installed() {
 		if err := ibus.Uninstall(); err != nil {
 			return FailureError("cannot remove %s: %v", ibus.ComponentPath(), err)
@@ -264,19 +257,9 @@ func runRemove(ctx *Context) error {
 		for _, entry := range removed {
 			ctx.Print("removed %s", entry)
 		}
-		if hasService {
-			ctx.Print("left running: %s (%s serving from %s)", service.Unit, service.Binary, service.Config)
-			ctx.Print("a model on this machine is not the engine's to remove: stop it with `systemctl --user disable --now %s`", service.Unit)
-		}
 	}
 	document := map[string]any{
 		"removed": removed, "engines_stopped": stopped, "input_source": inputSource,
-	}
-	if hasService {
-		document["model_service_left_running"] = map[string]any{
-			"unit": service.Unit, "binary": service.Binary, "config": service.Config,
-			"stop_with": "systemctl --user disable --now " + service.Unit,
-		}
 	}
 	return ctx.Emit("remove", document)
 }

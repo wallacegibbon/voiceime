@@ -11,20 +11,18 @@
 # What a client asks of a model service is small, and it is all this script promises: a POST
 # to an address carrying a recording and a model id comes back with text.
 #
-# This script is in this project and is not part of this program. Nothing the engine runs reads
-# it, no setting names it, and no path of the service it writes appears in the settings: the
-# engine recognizes a model service by the binary that service's own unit runs, and reads the
-# rest from that unit. The separation the engine keeps is the same one the file's location
-# does not remove. What is shared is one POST and two lines of the settings file - and that is
-# why the script lives here rather than somewhere else: it asks this project's own program for
-# the address it is being asked to answer, in the machine-readable form that program publishes.
+# It reads nothing that is not on the command line. What a client's settings say is the client's
+# business: whether the address in them is this one, whether anything is posted here, whether a
+# service like this one is wanted at all. This script starts the models it is given, and the two
+# lines a client would need in order to post here are printed at the end, for whoever keeps that
+# file.
 #
 # Usage: scripts/asr-service.sh /path/to/audiocpp_server /path/to/model.gguf [model.gguf …]
 #
-# The checkpoints are named here rather than in a client's settings because they are deployment
-# facts: which files are on this disk. Nothing searches for them and nothing downloads one - a
-# disk with several checkpoints in it is exactly the case where guessing picks one quietly and
-# the user finds out from the words appearing at their cursor.
+# The checkpoints are named here because they are deployment facts: which files are on this disk.
+# Nothing searches for them and nothing downloads one - a disk with several checkpoints in it is
+# exactly the case where guessing picks one quietly and the user finds out from the words
+# appearing at their cursor.
 #
 # The first checkpoint named is the one that starts loaded, because naming it first is saying
 # "this is what I use". The rest are registered and load on first use, which is what makes
@@ -34,11 +32,6 @@
 # It is idempotent: run it again after changing the checkpoints or rebuilding audio.cpp, and it
 # rewrites only what differs. The last thing it prints is the proof, which is also what anyone
 # can check afterwards without a tool of ours: what the service answers on /v1/models.
-#
-# The settings belong to whoever keeps them: ~/.config/voiceime/config.toml, unless
-# ASR_CLIENT_SETTINGS names another. Nothing here writes that file - it is read for the
-# address this service is asked to answer, and the two lines the service needs are printed
-# for whoever keeps that file, once the models are actually serving.
 
 set -eu
 
@@ -60,71 +53,12 @@ unit_dir=$conf/systemd/user
 unit=$unit_dir/audiocpp-asr.service
 unit_name=${unit##*/}
 
-voiceime=${VOICEIME_BIN:-$(command -v voiceime || true)}
-# What the client's settings say: the one thing they own about recognition is the address a
-# recording is posted to, and the id to name in it. The client is asked, in the machine-readable
-# form it publishes for exactly this - `capabilities` is where its settings and their effective
-# values are reported, and it is the only place they are. That is the difference between reading
-# a format and guessing at it: a comment after a value is invisible to a hand-rolled parser, and
-# a key defined twice reads as whichever one the parser happens to look at first - while the
-# program that owns the file refuses both instead of choosing. Nothing here appends to what it is
-# given either: the path belongs to the client.
-surface=
-if [ -n "$voiceime" ]; then
-	if ! surface=$("$voiceime" --config "$settings" capabilities --json 2>/dev/null); then
-		echo "$settings cannot be read, and an address is not something to guess at:" >&2
-		"$voiceime" --config "$settings" capabilities --json 2>&1 1>/dev/null | sed 's/^/  /' >&2
-		exit 3
-	fi
-elif [ -f "$settings" ]; then
-	echo "no voiceime on PATH: $settings is not read, so the loopback address below is an assumption." >&2
-fi
-# The client's answer is JSON, so it is read with a JSON tool. Without one, nothing is
-# substituted by eye for the whole file: the address is not guessed, and saying so is the
-# difference between a wrong answer and an unknown one.
-ask() { # one setting's value from the client's own report, or nothing
-	if [ -z "$surface" ]; then return 0; fi
-	if ! command -v jq >/dev/null 2>&1; then
-		if [ ! -e "$asked_once" ]; then
-			echo "no jq on PATH: $settings is not read, so the address and the model id below are assumptions." >&2
-			: >"$asked_once"
-		fi
-		return 0
-	fi
-	printf '%s' "$surface" | jq -r --arg key "$1" '
-		.data.settings[] | select(.key == $key) | .value | if . == null then "" else . end'
-}
-asked_once=$(mktemp)
-trap 'rm -f "$asked_once"' EXIT
-base_url=$(ask asr_server_url)
-[ -n "$base_url" ] || base_url=http://127.0.0.1:18080/v1/audio/transcriptions
-authority=${base_url#*://}
-authority=${authority%%/*}
-# The host and the port are separate questions. `open.bigmodel.cn` names no port, and taking
-# that as "no host either" would read a provider's endpoint as this machine's - which is exactly
-# what this block exists to decide, and what a wrong answer here starts a model for.
-host=${authority%%:*}
-if [ "$host" = "$authority" ]; then
-	port=18080
-else
-	port=${authority##*:}
-fi
-[ -n "$host" ] || host=127.0.0.1
-[ -n "$port" ] || port=18080
+# The address is this script's to choose, because it is the address this script opens. The
+# settings' `asr_server_url` is a copy of it, made afterwards by whoever reads the printed line.
+host=127.0.0.1
+port=18080
 root="http://$host:$port"
 request_url="$root/v1/audio/transcriptions"
-
-# The settings can name a server that is not this machine - a provider's endpoint, another
-# host. Then nothing belongs here: starting models on this box would contradict the settings,
-# not complete them, and saying so and leaving is the whole of the refusal.
-case "$host" in
-127.0.0.1 | localhost | ::1 | \[::1\] | 127.*) ;;
-*)
-	echo "$base_url is not this machine: no model is started here."
-	echo "a client needs only that this address answer a POST with the recording."
-	exit 0
-	;;
-esac
 
 # What each checkpoint is, and what id it will be served under. audio.cpp wrote the family into
 # the file and its own tool reports it; the server's config requires id, family and path and
@@ -278,33 +212,20 @@ cut -f1 "$plan" | while read -r entry; do
 	fi
 done
 
-# The settings belong to whoever keeps them, and this script does not write them. What was started
-# here is only useful once the client posts to it, so the last thing printed is the two lines
-# that do that and the file they belong in - the same two lines a person edits afterwards to
-# switch a model, which is exactly why they are printed rather than written for them.
-#
-# What to recommend for `model` is the client's current choice where that choice names one of
-# the ids being served: switching a model is their decision, not something a redeploy
-# overwrites. Anything else - a name that is not served here, or nothing at all - gets the
-# first id, which is the one that is already loaded.
-asked=$(ask model)
-chosen=$asked
-# An empty name matches every line of a file, so an unset `model` is asked about separately:
-# treating it as "already one of these" is how a settings file ends up naming nothing.
-if [ -z "$asked" ] || ! cut -f1 "$plan" | grep -qxF "$asked"; then
-	chosen=$(cut -f1 "$plan" | head -n 1)
-fi
+# The settings belong to whoever keeps them, and this script does not write them. What was
+# started here is only useful once the client posts to it, so the last thing printed is the two
+# lines that do that and the file they belong in - the same two lines a person edits afterwards
+# to switch a model, which is exactly why they are printed rather than written for them. The id
+# offered is the first one named, because that is the one whose weights are already loaded; the
+# others are listed above it, and switching to one of those is editing that same line.
+chosen=$(cut -f1 "$plan" | head -n 1)
 
 # The switch is one line in that file, and the command that puts a settings file in force is
 # named here rather than left to memory: an engine process reads it when it starts.
-echo "serving: $(cut -f1 "$plan" | wc -l) model(s) from this machine (backend $backend, $threads threads)"
+echo "serving: $(cut -f1 "$plan" | wc -l) model(s) on this machine (backend $backend, $threads threads)"
 awk -F'\t' '{ printf "  %-42s %s\n", $1, ($4 == "true" ? "loads on first use <- " : "loaded at start-up     <- ") $3 }' "$plan"
 echo "write these two lines in $settings; this script does not edit that file:"
 printf '  asr_server_url = "%s"\n' "$request_url"
-if [ "$chosen" = "$asked" ]; then
-	printf '  model          = "%s"   # already there, and it names one of these\n' "$chosen"
-else
-	printf '  model          = "%s"\n' "$chosen"
-fi
-echo "then put either change in force: voiceime apply"
-echo "switch a model without redeploying: name another of the ids above in that line, then voiceime apply"
+printf '  model          = "%s"\n' "$chosen"
+echo "switch a model without redeploying: name another of the ids above in that line"
+echo "a client reads that file when it starts, so what is written takes effect at its next start"

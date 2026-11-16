@@ -4,8 +4,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -36,7 +34,6 @@ func TestASREndpointCheckStates(t *testing.T) {
 	cases := []struct {
 		name       string
 		mutate     func(*config.Config)
-		service    modelService
 		wantFix    string
 		wantStatus string
 		wantDetail string
@@ -46,18 +43,16 @@ func TestASREndpointCheckStates(t *testing.T) {
 			mutate:     func(c *config.Config) { c.ASRServerURL = "" },
 			wantStatus: "fail",
 			wantDetail: "no address is configured",
-			wantFix:    "scripts/asr-service.sh",
+			wantFix:    `write asr_server_url = "the whole address, path included"`,
 		},
 		{
-			// A model on this machine has its id written by the script that starts it; a
-			// provider's id is a person's to write. Different situations, different fixes.
-			name: "an address on this machine with nothing to ask it for",
+			name: "an address with nothing to ask it for",
 			mutate: func(c *config.Config) {
 				c.ASRServerURL = answering.URL + "/v1/audio/transcriptions"
 			},
 			wantStatus: "fail",
 			wantDetail: "nothing names the model",
-			wantFix:    "scripts/asr-service.sh",
+			wantFix:    `write model = "<id>"`,
 		},
 		{
 			name: "a provider with nothing to ask it for",
@@ -69,7 +64,7 @@ func TestASREndpointCheckStates(t *testing.T) {
 			wantFix:    "write model = \"",
 		},
 		{
-			name: "an address on this machine, and the id it serves",
+			name: "an address, and the id to ask it for",
 			mutate: func(c *config.Config) {
 				c.ASRServerURL = answering.URL + "/v1/audio/transcriptions"
 				c.Model = "sensevoice-small-q8-audiocpp-v1"
@@ -87,25 +82,14 @@ func TestASREndpointCheckStates(t *testing.T) {
 			wantDetail: "asr_server_url",
 		},
 		{
-			name: "nothing listening, and nothing installed to listen",
+			name: "nothing is listening at the address",
 			mutate: func(c *config.Config) {
 				c.ASRServerURL = deadURL(t) + "/v1/audio/transcriptions"
 				c.Model = "x"
 			},
 			wantStatus: "fail",
 			wantDetail: "cannot be reached",
-			wantFix:    "scripts/asr-service.sh",
-		},
-		{
-			name: "nothing listening, and this machine does run a model service",
-			mutate: func(c *config.Config) {
-				c.ASRServerURL = deadURL(t) + "/v1/audio/transcriptions"
-				c.Model = "x"
-			},
-			service:    modelService{Unit: "audiocpp-asr.service"},
-			wantStatus: "fail",
-			wantDetail: "cannot be reached",
-			wantFix:    "systemctl --user restart audiocpp-asr.service",
+			wantFix:    "curl -s",
 		},
 		{
 			name: "a provider that answers, with its model named and its credential accepted",
@@ -164,7 +148,7 @@ func TestASREndpointCheckStates(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := config.Default()
 			tc.mutate(cfg)
-			check := asrEndpointCheck(cfg, tc.service)
+			check := asrEndpointCheck(cfg)
 			if check.ID != "asr_endpoint" {
 				t.Fatalf("check id = %q, want asr_endpoint", check.ID)
 			}
@@ -204,12 +188,12 @@ func TestEndpointCheckSendsTheCredential(t *testing.T) {
 	cfg := config.Default()
 	cfg.ASRServerURL = needsToken.URL + "/v1/audio/transcriptions"
 	cfg.Model = "glm-asr-2512"
-	if check := asrEndpointCheck(cfg, modelService{}); check.Status == "ok" {
+	if check := asrEndpointCheck(cfg); check.Status == "ok" {
 		t.Errorf("an endpoint that refuses the request was reported ok: %q", check.Detail)
 	}
 
 	cfg.APIKey = "sk-test"
-	check := asrEndpointCheck(cfg, modelService{})
+	check := asrEndpointCheck(cfg)
 	if check.Status != "ok" {
 		t.Fatalf("status = %q, detail %q: the credential was set and not used", check.Status, check.Detail)
 	}
@@ -231,50 +215,4 @@ func deadURL(t *testing.T) string {
 	address := listener.Addr().String()
 	listener.Close()
 	return "http://" + address
-}
-
-// The unit is the record of a deployment decision: it names the audio.cpp binary and the
-// config file that decision resolved. The program does not write it - the project that
-// installs a model service does - but it reads it back, because a unit whose paths have gone
-// missing starts forever and fails forever. So the reader has to survive what the writer
-// writes, including a path with a space in it.
-func TestUnitIsReadBackAsWritten(t *testing.T) {
-	unit := "[Unit]\nDescription=audio.cpp ASR server (model resident)\n\n[Service]\n" +
-		"ExecStart=/home/u/playground/audio.cpp/build/linux-cpu-release/bin/audiocpp_server " +
-		"--config /home/u/.local/share/audiocpp-asr/serve.json --log\n" +
-		"Restart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=default.target\n"
-	fields, err := unitExecStart(writeUnitForTest(t, unit))
-	if err != nil {
-		t.Fatalf("the unit cannot be read back: %v", err)
-	}
-	if firstField(fields) != "/home/u/playground/audio.cpp/build/linux-cpu-release/bin/audiocpp_server" {
-		t.Errorf("ExecStart runs %q", firstField(fields))
-	}
-	if got := unitArgument(fields, "--config"); got != "/home/u/.local/share/audiocpp-asr/serve.json" {
-		t.Errorf("the config reads back as %q", got)
-	}
-
-	// A path with a space in it is one quoted word, not two.
-	spaced := "[Service]\nExecStart='/home/u/my audio.cpp/bin/audiocpp_server' " +
-		"--config '/home/u/asr server.json' --log\n"
-	spacedFields, err := unitExecStart(writeUnitForTest(t, spaced))
-	if err != nil {
-		t.Fatalf("a unit with spaces in its paths cannot be read back: %v", err)
-	}
-	if firstField(spacedFields) != "/home/u/my audio.cpp/bin/audiocpp_server" {
-		t.Errorf("the binary reads back as %q", firstField(spacedFields))
-	}
-	if got := unitArgument(spacedFields, "--config"); got != "/home/u/asr server.json" {
-		t.Errorf("the config reads back as %q", got)
-	}
-}
-
-// writeUnitForTest puts a unit where the check can read it back.
-func writeUnitForTest(t *testing.T, unit string) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "audiocpp-asr.service")
-	if err := os.WriteFile(path, []byte(unit), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return path
 }

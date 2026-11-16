@@ -81,12 +81,10 @@ func runDoctor(ctx *Context) []Check {
 		report(Check{ID: "config", Status: "ok", Detail: ctx.ConfigPath})
 	}
 
-	// 2. The address the engine posts to, and - only when that address is this machine -
-	// the model service that answers it. A model service is found by what it runs, not by a
-	// name this program gave it: the script in scripts/ chose that name, no setting here
-	// repeats it, and a machine with a provider's address has none and is not missing anything.
-	service, _ := modelServiceInstalled()
-	report(asrEndpointCheck(ctx.Config, service))
+	// 2. The address the engine posts to. This program has one question about it - can a
+	// request name an id and get an answer back - and it does not ask what kind of thing is
+	// behind it, or who was meant to have started that thing.
+	report(asrEndpointCheck(ctx.Config))
 
 	// 3. Capture.
 	if tool := config.FindExecutable("parec", "pw-record"); tool == "" {
@@ -147,12 +145,10 @@ func runDoctor(ctx *Context) []Check {
 		report(Check{ID: "feedback", Status: "ok", Detail: "notifications and sound cues available"})
 	}
 
-	// 6. Installed artifacts: the paths baked into the component file, whether the
-	// resident processes run those paths, and - if a model service exists here - whether
-	// the unit still names files that do. A moved checkout breaks these silently
-	// (see install_check.go).
+	// 6. Installed artifacts: the paths baked into the component file, and whether the
+	// resident process runs that path. A moved checkout breaks these silently (see
+	// install_check.go).
 	installChecks(report)
-	modelServiceCheck(report, ctx.Config, systemdServiceState)
 
 	return checks
 }

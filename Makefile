@@ -60,14 +60,13 @@ build: ## Build bin/voiceime for this machine
 .PHONY: install
 install: build ## Install to $(DESTDIR)$(PREFIX)/bin (docs to $(PREFIX)/docs)
 	@# scripts/ is deliberately not installed. asr-service.sh is run at deploy time, from the
-	@# checkout, next to the audio.cpp build and the checkpoint it is pointed at - and it asks
-	@# `voiceime capabilities` for the rest. An installed copy would have no checkout beside
-	@# it and nothing to be told, so the fix `doctor` prints names it by its path in here.
+	@# checkout, next to the audio.cpp build and the checkpoint it is pointed at; an installed
+	@# copy of it would be a script with no build and no checkpoint beside it. Nothing here
+	@# refers to it either: what the program prints stops at the address.
 	install -d $(DESTDIR)$(PREFIX)/bin
 	install -m 0755 $(BIN_DIR)/$(BINARY) $(DESTDIR)$(PREFIX)/bin/$(BINARY)
-	@# The manual travels with the binary: the systemd unit writes
-	@# Documentation=file://<dir(binary)>/../docs/AGENT.md, so this is what makes that
-	@# link resolve; the CLI's hints and `voiceime capabilities` name the same files.
+	@# The manual travels with the binary: a machine that has only the installed copy is the
+	@# one where there is no checkout to read these from.
 	install -d $(DESTDIR)$(PREFIX)/docs
 	install -m 0644 docs/*.md $(DESTDIR)$(PREFIX)/docs/
 	@# The settings sample travels with the docs: it is the file a settings file starts

@@ -355,7 +355,7 @@ func writeHelp(w io.Writer) {
 	fmt.Fprint(w, "\nGlobal flags (accepted before or after the command):\n")
 	fmt.Fprint(w, "  --json           one JSON object on stdout (errors on stderr); no human lines\n")
 	fmt.Fprint(w, "  --config <path>  configuration file (default "+config.DefaultPath()+")\n")
-	fmt.Fprint(w, "\n`ibus-engine` is started by ibus-daemon, and the service unit runs audio.cpp directly:\nneither is a command to run by hand.\n")
+	fmt.Fprint(w, "\n`ibus-engine` is started by ibus-daemon: it is not a command to run by hand.\n")
 	fmt.Fprint(w, "\nEvery command is non-interactive and idempotent; docs/AGENT.md has recipes.\n")
 }
 

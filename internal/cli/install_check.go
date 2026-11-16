@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/wallacegibbon/voiceime/internal/config"
 	"github.com/wallacegibbon/voiceime/internal/gnome"
 	"github.com/wallacegibbon/voiceime/internal/ibus"
 )
@@ -133,160 +132,41 @@ func componentEnvironmentVerdict(systemInstalled, componentInstalled, environmen
 	}
 }
 
-// unitExecStart extracts the command a systemd unit starts. The binary is the first word and
-// the rest are its arguments; the unit that runs audio.cpp names the config file in them, and
-// a check that only looked at the binary could not tell that the file it points at is gone.
-func unitExecStart(path string) ([]string, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	for _, line := range strings.Split(string(raw), "\n") {
-		value, found := strings.CutPrefix(strings.TrimSpace(line), "ExecStart=")
-		if !found {
-			continue
-		}
-		fields := splitUnitCommand(value)
-		if len(fields) == 0 {
-			return nil, fmt.Errorf("%s: ExecStart is empty", path)
-		}
-		return fields, nil
-	}
-	return nil, fmt.Errorf("%s: no ExecStart line", path)
-}
-
-// splitUnitCommand splits an ExecStart value the way systemd's word splitter does for the one
-// form it has to read back: whitespace-separated words, with one layer of single or double
-// quotes removed. serverUnit quotes a path when it contains a space, and a plain split would
-// turn such a path into two words and report a file that does not exist.
-func splitUnitCommand(value string) []string {
-	var fields []string
-	var current strings.Builder
-	var quote rune
-	started := false
-	for _, r := range value {
-		switch {
-		case quote != 0:
-			if r == quote {
-				quote = 0
-				continue
-			}
-			current.WriteRune(r)
-		case r == '\'' || r == '"':
-			quote = r
-			started = true
-		case r == ' ' || r == '\t':
-			if started || current.Len() > 0 {
-				fields = append(fields, current.String())
-				current.Reset()
-				started = false
-			}
-		default:
-			current.WriteRune(r)
-		}
-	}
-	if started || current.Len() > 0 {
-		fields = append(fields, current.String())
-	}
-	return fields
-}
-
-// unitArgument returns the value after the first occurrence of flag in a command.
-func unitArgument(fields []string, flag string) string {
-	for index, field := range fields {
-		if field == flag && index+1 < len(fields) {
-			return fields[index+1]
-		}
-	}
-	return ""
-}
-
-// residentKind is one of the two long-lived processes this tool owns: how to find it, which
-// executable it has to be, and where the binary it is supposed to run is recorded.
-type residentKind struct {
-	name    string
-	pattern string
-	// binaryName is the second filter on the match: the pattern is looked for in a
-	// process's whole command line, and a shell that merely mentions it is not the process.
-	binaryName string
-	// configured is that record: the exec of the component file for the engine, the
-	// ExecStart of the unit for the service.
-	configured func() (string, bool)
-}
-
-var residentKinds = []residentKind{
-	{"the engine", "ibus-engine", "voiceime", componentBinaryPath},
-	// A model service holds the models in memory, so a stale one serves old inference while
-	// every other check passes. It is not this program's: it is found by the executable it
-	// runs, and the reference it is compared against is the path that executable is named by
-	// in its own unit.
-	{"a model service on this machine", modelServiceBinary, modelServiceBinary, servedBinaryPath},
-}
-
+// componentBinaryPath is the binary the component file tells ibus-daemon to start. It is the
+// record of what this machine was configured to run, which is what a running process is compared
+// against.
 func componentBinaryPath() (string, bool) {
 	exec, err := ibus.ComponentExec(ibus.ComponentPath())
 	return exec, err == nil && exec != ""
 }
 
-// servedBinaryPath is the audio.cpp a model unit on this machine says it runs.
-func servedBinaryPath() (string, bool) {
-	service, found := modelServiceInstalled()
-	return service.Binary, found
-}
-
-func firstField(fields []string) string {
-	if len(fields) == 0 {
-		return ""
-	}
-	return fields[0]
-}
-
-// runningBuildCheck answers one question - do the resident processes run the binaries this
-// machine is configured to run - as one finding with one fix.
+// runningBuildCheck answers one question about the one long-lived process this tool owns: is the
+// engine running the binary this machine is configured to run?
 //
-// The reference is those recorded paths, never os.Executable(). Doctor is usually run from
-// a build directory, which makes it a third copy of the program: measured against itself it
-// reported the engine, the service and the unit as three warnings pointing at two different
-// commands, and no action made them go away.
+// The reference is the exec recorded in the component file, never os.Executable(). Doctor is
+// usually run from a build directory, which makes it a third copy of the program: measured
+// against itself it reported warnings pointing at two different commands, and no action made
+// them go away.
 func runningBuildCheck(report func(Check)) {
-	var healthy, stale []string
-	worst := "ok"
-	for _, kind := range residentKinds {
-		processes := processesRunning(kind.pattern, kind.binaryName)
-		if len(processes) == 0 {
-			continue
-		}
-		want, recorded := kind.configured()
-		if !recorded {
-			// component_exec and server_unit already report a missing component or unit;
-			// a second finding about the same absence would only lengthen the report.
-			continue
-		}
-		status, detail := runningBinaryVerdict(processes[0], want, kind.name)
-		switch status {
-		case "ok":
-			healthy = append(healthy, detail)
-		case "fail":
-			worst = "fail"
-			stale = append(stale, detail)
-		default:
-			if worst != "fail" {
-				worst = "warn"
-			}
-			stale = append(stale, detail)
-		}
-	}
-	if len(healthy)+len(stale) == 0 {
+	processes := processesRunning("ibus-engine", "voiceime")
+	if len(processes) == 0 {
 		return
 	}
-	if len(stale) == 0 {
-		report(Check{ID: "running_build", Status: "ok", Detail: strings.Join(healthy, "; ")})
+	want, recorded := componentBinaryPath()
+	if !recorded {
+		// component_exec already reports a missing component file; a second finding about the
+		// same absence would only lengthen the report.
+		return
+	}
+	status, detail := runningBinaryVerdict(processes[0], want, "the engine")
+	if status == "ok" {
+		report(Check{ID: "running_build", Status: "ok", Detail: detail})
 		return
 	}
 	// The fix is only offered when something is wrong: printing a restart command under an
 	// ok finding invites an agent to restart a healthy process, which would drop the user's
 	// current dictation session.
-	report(Check{ID: "running_build", Status: worst, Detail: strings.Join(stale, "; "), Fix: "voiceime apply"})
+	report(Check{ID: "running_build", Status: status, Detail: detail, Fix: "voiceime apply"})
 }
 
 // runningBinaryVerdict classifies the binary a running process came from against the path
@@ -380,80 +260,4 @@ func atoi(value string) int {
 func isExecutable(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir() && info.Mode()&0o111 != 0
-}
-
-// modelServiceCheck reads back what a model service on this machine says about itself: a unit
-// runs one audio.cpp, that audio.cpp exists, and the audio.cpp config it is handed exists. The
-// unit was written by whatever installed the model, so its name is looked for rather than known
-// and its config path is read from its own command line.
-//
-// What it does not decide is whether a model on this machine is wanted: the settings' address
-// decides that, and asrEndpointCheck is the finding that asks it. So a missing unit is a failure
-// only when the address is this machine - and a unit that is up, or would start at login, while
-// the settings post elsewhere is a warning, because it is a model loaded into memory that nothing
-// sends audio to. A unit that is neither is a record someone can start again, and saying so twice
-// a year is not a finding.
-func modelServiceCheck(report func(Check), cfg *config.Config, state serviceState) {
-	const id = "server_unit"
-	install := installModelService
-	service, found := modelServiceInstalled()
-	local := endpointIsLocal(strings.TrimSpace(cfg.ASRServerURL))
-	if !found {
-		if !local {
-			// Nothing to say: this setup has no model on this machine, by design.
-			return
-		}
-		report(Check{
-			ID:     id,
-			Status: "fail",
-			Detail: fmt.Sprintf("nothing on this machine runs a model, and %s is this machine", cfg.ASRServerURL),
-			Fix:    install,
-		})
-		return
-	}
-	if !isExecutable(service.Binary) {
-		report(Check{
-			ID:     id,
-			Status: "fail",
-			Detail: fmt.Sprintf("%s runs %s, which does not exist; systemd will restart it forever with status=203/EXEC", service.UnitFile, service.Binary),
-			Fix:    install,
-		})
-		return
-	}
-	// The audio.cpp config is not an input anyone edits here: the project that wrote the unit
-	// rendered it and the unit names it. A missing one means the service belongs to an install
-	// that has since been moved or deleted, and systemd's restart loop is silent.
-	if service.Config == "" {
-		report(Check{
-			ID:     id,
-			Status: "fail",
-			Detail: fmt.Sprintf("%s runs %s without naming the audio.cpp config to serve", service.UnitFile, service.Binary),
-			Fix:    install,
-		})
-		return
-	}
-	if !fileExists(service.Config) {
-		report(Check{
-			ID:     id,
-			Status: "fail",
-			Detail: fmt.Sprintf("%s points %s at %s, which does not exist: audio.cpp would refuse to start", service.UnitFile, service.Binary, service.Config),
-			Fix:    install,
-		})
-		return
-	}
-	if !local {
-		startsAtLogin, up := state(service.Unit)
-		if !startsAtLogin && !up {
-			return
-		}
-		report(Check{
-			ID: id, Status: "warn",
-			Detail: fmt.Sprintf("%s starts a model here, and the settings post to %s instead: nothing sends this machine's audio to it",
-				service.Binary, cfg.ASRServerURL),
-			Fix: "systemctl --user disable --now " + service.Unit,
-		})
-		return
-	}
-	report(Check{ID: id, Status: "ok",
-		Detail: fmt.Sprintf("%s: %s serving from %s", service.Unit, service.Binary, service.Config)})
 }

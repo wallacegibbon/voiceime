@@ -46,20 +46,20 @@ the id in the `model` setting because nothing in the program asks an address wha
 A model list is a catalogue, not a promise about what this account accepts, and an endpoint may
 publish none at all.
 
-So this document describes the request, and the rest of what makes a local model answer it
-belongs to the script that installs one (`scripts/asr-service.sh`). Two facts about that service
-are worth knowing from here, because they are what this request assumes:
+So this document describes the request, and where a local model comes from is a deployment
+step described in [DEPLOY.md](DEPLOY.md) (`scripts/asr-service.sh`). Two facts about what the
+address is assumed to do are worth writing down here, because they are what this request
+assumes:
 
 * The weights are loaded before the first request, not during it. That is why a dictation's
   latency is a decode and not a load.
 * The served entry is configured not to cut the upload up. A recording is sent whole, and a
   service that decoded the pieces separately would answer a different question.
 
-`voiceime doctor`'s `server_unit` finding reads back whatever such a service on this machine
-says about itself - the unit that runs an audio.cpp, and the binary and config that unit names -
-because a unit whose paths have gone missing restarts forever and says nothing. The names are
-that service's, in the two files the script writes; the engine looks for a unit by the binary it
-runs (`audiocpp_server`) and takes the rest from its own `ExecStart`.
+Nothing in the program asks whether either of those holds, and nothing in it knows which kind of
+answer is on the end: it checks one thing, that a request naming an id gets a text back. That
+check is `voiceime doctor`'s `asr_endpoint` finding, and an address that does not answer is
+reported as an address that does not answer.
 
 ## Failure
 

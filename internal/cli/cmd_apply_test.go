@@ -74,8 +74,8 @@ func TestDoctorNamesAWrongSettingWithAFixThatNamesTheFile(t *testing.T) {
 	if !strings.Contains(detail, "model") {
 		t.Errorf("the finding does not name the setting: %q", detail)
 	}
-	if !strings.Contains(detail, "scripts/asr-service.sh") {
-		t.Errorf("the finding does not say where a model file belongs instead: %q", detail)
+	if !strings.Contains(detail, "not a model id") {
+		t.Errorf("the finding does not say what the key holds instead: %q", detail)
 	}
 	if !strings.Contains(fix, "write model = ") {
 		t.Fatalf("the fix does not say which line to write: %q", fix)
@@ -235,148 +235,6 @@ func TestWithCurrentEngineChangesOnlyTheEngineIdentity(t *testing.T) {
 	if read != updated {
 		t.Errorf("round trip changed the component:\n got %+v\nwant %+v", read, updated)
 	}
-}
-
-// A model on this machine is a unit the script in scripts/ wrote: its name is not known here,
-// it is found by the executable it runs, and what it was told to serve is read out of its own
-// command
-// line. A moved checkout or a deleted audio.cpp config breaks it silently - the service keeps
-// starting and keeps failing - so this reads the record back. Whether this machine wants a model
-// at all is the settings' decision, so every case states one, and a model service that is
-// installed but stopped is left out of the report entirely.
-func TestModelServiceCheckReadsTheRecordBack(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", home)
-	// A built audio.cpp in a checkout: this is what the machine considers its own.
-	built := filepath.Join(home, "playground", "audio.cpp", "build", "linux-cpu-release", "bin", modelServiceBinary)
-	if err := os.MkdirAll(filepath.Dir(built), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(built, []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", t.TempDir())
-
-	// The unit's name is that script's to choose. Nothing here gave it, and nothing here
-	// has to know it.
-	const serviceUnit = "audiocpp-asr.service"
-	unitNamed := func(t *testing.T, name, binary, arguments string) {
-		t.Helper()
-		dir := config.UserUnitDir()
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		unit := "[Unit]\nDescription=x\n\n[Service]\nType=simple\nExecStart=" + binary + " " + arguments +
-			" --log\n\n[Install]\nWantedBy=default.target\n"
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(unit), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	withAddress := func(raw string) *config.Config {
-		cfg := config.Default()
-		cfg.ASRServerURL = raw
-		return cfg
-	}
-	findings := func(t *testing.T, cfg *config.Config, state serviceState) []Check {
-		t.Helper()
-		var checks []Check
-		modelServiceCheck(func(c Check) { checks = append(checks, c) }, cfg, state)
-		return checks
-	}
-	oneFinding := func(t *testing.T, cfg *config.Config, state serviceState) Check {
-		t.Helper()
-		checks := findings(t, cfg, state)
-		if len(checks) != 1 {
-			t.Fatalf("%d findings, want one", len(checks))
-		}
-		return checks[0]
-	}
-	wanted := func(string) (bool, bool) { return true, false }
-	quiet := func(string) (bool, bool) { return false, false }
-	local := "http://127.0.0.1:18080/v1/audio/transcriptions"
-	provider := "https://api.example.com/v1/audio/transcriptions"
-	served := filepath.Join(home, ".local", "share", "audiocpp-asr", "serve.json")
-
-	t.Run("the address is this machine and nothing runs a model", func(t *testing.T) {
-		check := oneFinding(t, withAddress(local), quiet)
-		if check.Status != "fail" || !strings.Contains(check.Detail, "this machine") {
-			t.Errorf("finding = %+v, want a failure naming the address that has nothing behind it", check)
-		}
-		if !strings.Contains(check.Fix, "scripts/asr-service.sh") {
-			t.Errorf("fix %q does not name what installs a model", check.Fix)
-		}
-	})
-
-	t.Run("the address is elsewhere and there is no model here", func(t *testing.T) {
-		if got := findings(t, withAddress(provider), quiet); len(got) != 0 {
-			t.Errorf("findings = %+v, want none: this setup has no model here, by design", got)
-		}
-	})
-
-	t.Run("a unit that runs something else is not a model service", func(t *testing.T) {
-		unitNamed(t, "something-else.service", "/bin/sleep", "3600")
-		check := oneFinding(t, withAddress(local), quiet)
-		if check.Status != "fail" || !strings.Contains(check.Detail, "nothing on this machine runs a model") {
-			t.Errorf("finding = %+v, want a model service to be recognized by what it runs", check)
-		}
-	})
-
-	t.Run("the config it names is gone", func(t *testing.T) {
-		unitNamed(t, serviceUnit, built, "--config "+served)
-		check := oneFinding(t, withAddress(local), wanted)
-		if check.Status != "fail" {
-			t.Fatalf("status = %q: the service would fail to start forever, and silently", check.Status)
-		}
-		if !strings.Contains(check.Detail, "serve.json") {
-			t.Errorf("detail %q does not name the file that is missing", check.Detail)
-		}
-	})
-
-	t.Run("what the script wrote", func(t *testing.T) {
-		if err := os.MkdirAll(filepath.Dir(served), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(served, []byte("{}\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		unitNamed(t, serviceUnit, built, "--config "+served)
-		check := oneFinding(t, withAddress(local), wanted)
-		if check.Status != "ok" {
-			t.Fatalf("status = %q, detail %q", check.Status, check.Detail)
-		}
-		for _, want := range []string{serviceUnit, built, served} {
-			if !strings.Contains(check.Detail, want) {
-				t.Errorf("detail %q does not name %s", check.Detail, want)
-			}
-		}
-	})
-
-	t.Run("a model is loaded that nothing posts to", func(t *testing.T) {
-		// The unit is valid and would start at login; the settings point at a provider. That is
-		// a model sitting in memory for nothing, which is worth saying once, with the command
-		// that stops the unit by the name that unit has.
-		unitNamed(t, serviceUnit, built, "--config "+served)
-		check := oneFinding(t, withAddress(provider), wanted)
-		if check.Status != "warn" {
-			t.Fatalf("status = %q, want a warning about a model nothing uses", check.Status)
-		}
-		if !strings.Contains(check.Detail, "api.example.com") {
-			t.Errorf("detail %q does not name the address the audio is going to instead", check.Detail)
-		}
-		if !strings.Contains(check.Fix, "disable --now "+serviceUnit) {
-			t.Errorf("fix %q does not name the running unit by the name it has", check.Fix)
-		}
-	})
-
-	t.Run("a model service that is installed and stopped is left alone", func(t *testing.T) {
-		// The command above was run: the unit is on disk, disabled and not up. Warning about it
-		// again would be a finding no command can clear.
-		unitNamed(t, serviceUnit, built, "--config "+served)
-		if got := findings(t, withAddress(provider), quiet); len(got) != 0 {
-			t.Errorf("findings = %+v, want none: a stopped model is not a cost", got)
-		}
-	})
 }
 
 // An installed file this version would write differently is rewritten once.

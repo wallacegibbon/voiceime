@@ -40,10 +40,11 @@ Chinese, `` Ctrl+` `` - so change what does not fit. What each key is for is the
 table in [AGENT.md](AGENT.md), and in the sample itself.
 
 A setting takes effect when the process that reads it next starts: the engine picks up a new
-key when it is next spawned, and a model service when it is next started - which is what
-`voiceime apply` does. Nothing about the machine is asked here - which audio.cpp to run,
-which backend it was built for, how many workers it deserves - because those are answered by
-looking at the machine once, in the step that starts a model. A file that reads correctly but
+key when it is next spawned, which is what `voiceime apply` does. Nothing outside this program
+reads this file - the model service in §3 runs from two files of its own - and nothing about the
+machine is asked here: which audio.cpp to run, which backend it was built for, how many workers
+it deserves are answered by looking at the machine once, in the step that starts a model. A file
+that reads correctly but
 cannot work is `doctor`'s `config` finding, which names the key, the reason, and the line
 that would fix it; the same refusal stops `apply`, `transcribe` and the engine itself before
 any audio or request is involved.
@@ -136,14 +137,6 @@ Four things about that service belong to this deploy:
   dies with the user's session. Whether it therefore starts at boot or only at login is
   lingering, and the script says which this machine is instead of changing it:
   `loginctl enable-linger <user>` moves every service that user owns, which is their decision.
-* It asks this project's own program what the settings say - `voiceime capabilities --json`,
-  read with `jq` - rather than matching the file with a pattern. Two ordinary hand-edits are
-  what that buys: a comment after a value is invisible to a hand-rolled parser, and a key
-  written twice reads as whichever line that parser happened to look at first. The program that
-  owns the format refuses both, and the script repeats the refusal and stops, because starting a
-  model on a port it guessed is a wrong answer rather than an unknown one. Measured: an address
-  with a trailing `# comment` was read correctly, and a file with the same key twice printed the
-  client's own parse error and started nothing (exit 3).
 * It asks, rather than assumes: the family from the checkpoint, the backend from the build, the
   cores from the kernel. A build without `cpu` in its banner is refused by name, a
   checkpoint with no model spec in it is refused by name, and two checkpoints that would be
@@ -151,9 +144,10 @@ Four things about that service belong to this deploy:
   convert, rebuild or rename, not to point the service at it harder.
 * It is idempotent, and says what it changed: running it again with nothing changed prints
   `unchanged:` twice, and rewriting the unit is what heals a moved checkout or a newer build.
-* It starts nothing when the address is not this machine: with `asr_server_url` a provider's, it
-  reports `https://… is not this machine: no model is started here.` and leaves the settings
-  exactly as they were. That is the whole of "the local model is optional".
+
+Whether a machine wants a model at all is not something either half decides: this script starts
+one because it was run, and the client posts to whatever address its settings hold. The two meet
+at one string - the address - and nothing else.
 
 Switching among the ids it served is not a redeploy: it is editing the one `model` line in the
 settings file and running `voiceime apply`, which is why those two lines are printed rather than
@@ -161,9 +155,8 @@ written. What the first request to a model that is not loaded costs is measured 
 [measurements.md](measurements.md#what-starting-a-model-costs).
 
 None of those three names - the unit, the audio.cpp config, the checkpoint - is a voiceime
-setting, and none is a path this program knows. `voiceime doctor` looks for a unit by the binary
-its `ExecStart` runs, `audiocpp_server`, and reads the rest out of that line: which is why the
-finding below describes a service this program has never heard of.
+setting, and none is a path this program knows. It has no name for this service at all: the
+assertion below is made of the unit and the address, not of a `doctor` finding.
 
 The unit is where those answers ended up, so reading it back is the assertion that they were
 written down at all:
@@ -254,11 +247,11 @@ done
 
 `doctor=0` and seven lines ending in `ok` is the deployable state: an endpoint that answers
 and would be named correctly in a request, capture available, the engine registered and
-selected for the session, and nothing stale running. A machine that runs its own model
-asserts one more - `server_unit`, which reads back what the model service on this machine says
-in its own unit: the binary it runs and the audio.cpp config it was handed, both of which exist.
-What no command can assert is a human seeing text in a focused window: dictate one sentence into
-a text editor.
+selected for this session, and nothing stale running. What a model behind that endpoint is
+doing is not in the list, and no `doctor` finding can put it there: a machine that runs its
+own model asserts it separately, with `systemctl --user status` and the `curl` above. What no
+command can assert is a human seeing text in a focused window: dictate one sentence into a text
+editor.
 
 ## Removing an installation
 
@@ -267,13 +260,11 @@ a text editor.
 ```
 
 Stops the engine, and deletes the component file, the `environment.d` file and the
-input-source entry this tool added. A model service on this machine is not part of that
-install: its unit runs audio.cpp, not this program, and it may be answering clients other than
-this engine. `remove` leaves it running and says so, naming the unit it found and the command
-that stops it (`systemctl --user disable --now <unit>`) - an uninstall of the engine is not
-permission to stop a model someone else may be using. The user's other input methods are left
-alone, the checkpoint file is left alone, and so is `config.toml`: what was configured may be an
-endpoint someone pays for, and an uninstall is not permission to delete what they wrote.
+input-source entry this tool added. Nothing else is part of that install, so nothing else is
+looked at: what answers the address may be a model this machine runs or a provider someone pays
+for, and `remove` has no name for either and no opinion about either. The user's other input
+methods are left alone, and so is `config.toml`: what was configured is what a person wrote, and
+an uninstall is not permission to delete it.
 
 ## Updating an installed copy
 
@@ -287,16 +278,16 @@ A running process keeps the binary it was started from, so `doctor` reports a st
 the input method again afterwards, for the reason given in §4. A rebuilt **audio.cpp** is a
 different pair of commands, and they belong to the model service rather than to this program:
 running `scripts/asr-service.sh` again rewrites that unit with the build that exists now, and
-`systemctl --user cat <the unit server_unit names>` shows which one it points at now.
+`systemctl --user cat audiocpp-asr.service` shows which one it points at now.
 
 ## Recovery
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `asr_endpoint` fails with `no address is configured` | `asr_server_url` is empty, and recognition is an address | write the provider's URL, or run `scripts/asr-service.sh` with a checkpoint (a model on this machine) |
-| `asr_endpoint` fails with `nothing names the model to ask it for` | an address was written without the id it is asked for | write the `model = "<id>"` line the finding names; for a model on this machine, `scripts/asr-service.sh` prints that line next to the address |
-| `asr_endpoint` fails with a connection error and `server_unit` says the unit runs a binary that does not exist | the audio.cpp build was moved, cleaned or never built | `scripts/asr-service.sh /path/to/audiocpp_server /path/to/model.gguf`, which rewrites both files |
-| `server_unit` warns that a model starts here while the settings post elsewhere | the endpoint moved to a provider and the local model stayed loaded | `systemctl --user disable --now <the unit `server_unit` names>` |
+| `asr_endpoint` fails with `no address is configured` | recognition is an address, and none is written | the finding names the line: `asr_server_url = "…"`, whole, path included - a provider's URL, or the address `scripts/asr-service.sh` prints when it starts a model on this machine |
+| `asr_endpoint` fails with `nothing names the model to ask it for` | an address was written without the id it is asked for | the finding names the line: `model = "<id>"`, which is what `scripts/asr-service.sh` prints beside the address, and what a provider's documentation gives |
+| `asr_endpoint` fails with `cannot be reached` | nothing is listening at that address, and the program was never told what should be | if the address is meant to be a model here: `systemctl --user status audiocpp-asr.service`, and `scripts/asr-service.sh /path/to/audiocpp_server /path/to/model.gguf` to write both files again if the build moved; if it is meant to be a provider: read the address back out of the settings file, because that is the only place it is written |
+| a model is loaded into memory here that nothing sends audio to | the settings post to a provider and a local model was left running | `systemctl --user disable --now audiocpp-asr.service` - no voiceime command reports this, because no voiceime command knows a model was ever meant to be here |
 | no text, log shows `no audio was recorded` | the sound server is not giving the microphone | `"$BIN" doctor`, then the `capture_source` line it names |
 | no text, log shows `transcribe …: …` | the endpoint refused, timed out, or the model id is wrong | `"$BIN" doctor` (the `asr_endpoint` finding), then `"$BIN" transcribe --file sample_16k.wav` |
 | `"$BIN" transcribe` answers `the settings cannot work: <key>: …` and exits 3, and no key reaches the engine | the file parses, but the values do not work as a pair | the message names the key and the line that completes it, in the file that holds the rest of the pair; the engine logs the same reason in `~/.cache/voiceime/engine.log` and stays down until the file works |

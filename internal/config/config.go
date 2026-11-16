@@ -27,19 +27,16 @@ const TargetRate = 16000
 // Recognition is an address. The engine posts one recording to it and reads text back; the
 // address is used exactly as written, because an address that names a route is the thing being
 // configured. Whether it is a model on this machine or a provider across a network is not the
-// engine's concern, and starting a model on this machine is a script's doing
-// (scripts/asr-service.sh), needed only when the address is this machine's. A setting that
-// deployment can work out is a question asked of the wrong person: which audio.cpp binary runs,
-// which backend it was built for and how many workers it wants are answers about the machine,
-// and they are recorded where they are used - the service unit and the audio.cpp config that
-// unit names.
+// engine's concern, and what stands behind the address - a service on this machine, another
+// machine's, a provider's - is not something the program asks about. A setting that deployment
+// can work out is a question asked of the wrong person: which audio.cpp binary runs, which
+// backend it was built for and how many workers it wants are answers about a machine that this
+// program has no reason to look at.
 type Config struct {
 	// Model is the id named in the request, and it is required: the program does not ask an
 	// address what it serves, because a model list is a catalogue and not a promise about what
-	// this account accepts, and an endpoint may publish none at all. For a model on this
-	// machine the id is the one the script that starts the service prints, and the two lines
-	// belong in the settings together.
-	Model string `toml:"model" desc:"The model id to name in the request. Required; scripts/asr-service.sh prints the id of a model it starts on this machine."`
+	// this account accepts, and an endpoint may publish none at all.
+	Model string `toml:"model" desc:"The model id to name in the request. Required."`
 
 	// APIKey is sent as `Authorization: Bearer <value>`. A credential lives here rather
 	// than in an environment the engine never starts.
@@ -53,7 +50,7 @@ type Config struct {
 
 	// The whole request address, used verbatim: no route is appended, nothing is derived from
 	// it, and the same string is what `curl` would be pointed at.
-	ASRServerURL       string `toml:"asr_server_url" desc:"The address a recording is POSTed to, used exactly as written: http://127.0.0.1:18080/v1/audio/transcriptions for a model on this machine (scripts/asr-service.sh prints that line), a provider's full URL otherwise."`
+	ASRServerURL       string `toml:"asr_server_url" desc:"The address a recording is POSTed to, used exactly as written: the whole address, path included, of anything that answers the transcription protocol."`
 	ASRServerTimeoutMS int    `toml:"asr_server_timeout_ms" desc:"Deadline for one transcription."`
 
 	CaptureSource string `toml:"capture_source" desc:"PipeWire source name; empty uses the default input."`
@@ -95,7 +92,8 @@ func xdg(env, fallback string) string {
 // ConfigDir is ~/.config/voiceime by default.
 func ConfigDir() string { return filepath.Join(xdg("XDG_CONFIG_HOME", ".config"), AppName) }
 
-// CacheDir holds the model inspection cache and other disposable state.
+// CacheDir holds disposable state that is nobody's input: the engine's log, and nothing the
+// program reads back.
 func CacheDir() string { return filepath.Join(xdg("XDG_CACHE_HOME", ".cache"), AppName) }
 
 // DataDir holds installed component definitions such as the IBus XML.
@@ -131,18 +129,6 @@ func RuntimeDir() string {
 // written there is named after the program (environment.d/voiceime.conf).
 func EnvironmentDir() string {
 	return filepath.Join(xdg("XDG_CONFIG_HOME", ".config"), "environment.d")
-}
-
-func UserUnitDir() string {
-	base := os.Getenv("XDG_CONFIG_HOME")
-	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return ""
-		}
-		base = filepath.Join(home, ".config")
-	}
-	return filepath.Join(base, "systemd", "user")
 }
 
 // DefaultPath is the config file every command reads when --config is absent.
@@ -255,12 +241,12 @@ func (c *Config) Validate() []Issue {
 	if raw := strings.TrimSpace(c.ASRServerURL); raw != "" {
 		if err := checkServerURL(raw); err != nil {
 			add("error", "asr_server_url", err.Error(),
-				c.writeIn("asr_server_url", `"http://127.0.0.1:18080/v1/audio/transcriptions"`))
+				c.writeIn("asr_server_url", `"https://api.example.com/v1/audio/transcriptions"`))
 		} else if strings.TrimSpace(c.Model) == "" {
 			// An address and a name to ask it for are one decision: nothing here asks an
 			// address what it serves, so an address on its own cannot be used.
 			add("error", "model", fmt.Sprintf("%s is configured, and nothing names the model to ask it for", raw),
-				c.writeIn("model", `"<id>"`)+"   # the id that address serves; for a model on this machine, the id scripts/asr-service.sh prints when it starts one")
+				c.writeIn("model", `"<id>"`)+"   # the id that address is asked for")
 		}
 	}
 	if strings.TrimSpace(c.PushToTalk) == "" {
@@ -269,11 +255,10 @@ func (c *Config) Validate() []Issue {
 	}
 	// A model is named, never chosen. Nothing is scanned, nothing is downloaded, and no file
 	// is read: what belongs here is the id the address is asked for. A path in this key is the
-	// one mistake worth catching, because it is what this key used to hold - and the file it
-	// names belongs to the service, which this script starts and this program only posts to.
+	// one mistake worth catching, because it is what this key used to hold.
 	if named := strings.TrimSpace(c.Model); named != "" {
 		if strings.HasPrefix(named, "/") || strings.HasPrefix(named, "~") || strings.EqualFold(filepath.Ext(named), ".gguf") {
-			add("error", "model", fmt.Sprintf("%q looks like a file, not a model id: the file belongs to the service on this machine (scripts/asr-service.sh), this key names what the address is asked for", named),
+			add("error", "model", fmt.Sprintf("%q looks like a file, not a model id: this key names what the address is asked for, and a file on a disk is not an id", named),
 				c.writeIn("model", `"<id>"`)+"   # the id that address serves, not a path")
 		}
 	}

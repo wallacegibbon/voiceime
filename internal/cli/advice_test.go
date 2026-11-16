@@ -104,6 +104,10 @@ var configSettingRE = regexp.MustCompile(`write ([a-z_]+) = `)
 // a path with a directory in it, and a bare script name, which is a claim that the script meant
 // is the one this project ships. Absolute paths and `~/…` are claims about whoever's machine it
 // is run on, and are left alone.
+//
+// What the program prints names almost no files any more - a deployment step it is not part of
+// stopped being advice it could give - so this is a guard rather than a survey: it is here for
+// the day a fix or a written-out comment names a file that is not in this checkout.
 func TestAdviceNamesAFileThatIsHere(t *testing.T) {
 	root := repositoryRoot(t)
 	checked := 0
@@ -123,11 +127,11 @@ func TestAdviceNamesAFileThatIsHere(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("reading the source: %v", err)
 	}
-	// scripts/asr-service.sh is named from several places, so this is not near zero; the count
-	// is there for the same reason the others are - a pattern that stopped matching is a check
-	// that passed without looking.
-	if checked < 10 {
-		t.Fatalf("only %d paths checked: the pattern stopped matching", checked)
+	// The comment `apply` writes into the session's environment file names one document here,
+	// so the count is one and not zero: it exists to catch the pattern stopping, not to hold a
+	// number.
+	if checked < 1 {
+		t.Fatalf("no paths checked: the pattern stopped matching")
 	}
 	t.Logf("checked %d paths against this checkout", checked)
 }

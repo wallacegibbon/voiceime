@@ -10,51 +10,6 @@ import (
 	"github.com/wallacegibbon/voiceime/internal/ibus"
 )
 
-func TestUnitExecStartReadsTheCommand(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "audiocpp-asr.service")
-	unit := `[Unit]
-Description=audio.cpp ASR server (model resident)
-
-[Service]
-Type=simple
-ExecStart=/home/u/playground/audio.cpp/build/linux-cpu-release/bin/audiocpp_server --config /home/u/.local/share/audiocpp-asr/serve.json --log
-Restart=on-failure
-
-[Install]
-WantedBy=default.target
-`
-	if err := os.WriteFile(path, []byte(unit), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	fields, err := unitExecStart(path)
-	if err != nil {
-		t.Fatalf("unitExecStart: %v", err)
-	}
-	want := "/home/u/playground/audio.cpp/build/linux-cpu-release/bin/audiocpp_server"
-	if firstField(fields) != want {
-		t.Errorf("the unit names %q, want %q", firstField(fields), want)
-	}
-	configFile := "/home/u/.local/share/audiocpp-asr/serve.json"
-	if got := unitArgument(fields, "--config"); got != configFile {
-		t.Errorf("--config = %q, want %q", got, configFile)
-	}
-	// A flag with nothing after it is not a value: reporting the empty string as the
-	// config it names would send the reader to a file called nothing.
-	if got := unitArgument(fields, "--log"); got != "" {
-		t.Errorf("unitArgument(--log) = %q, want nothing", got)
-	}
-}
-
-func TestUnitExecStartRejectsAUnitWithoutOne(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "broken.service")
-	if err := os.WriteFile(path, []byte("[Unit]\nDescription=nothing\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := unitExecStart(path); err == nil {
-		t.Error("a unit with no ExecStart was accepted; systemd would report 203/EXEC with no explanation")
-	}
-}
-
 // An install that is only in the session's activation environment is the one that stops
 // working at the next login, so the four states have to be distinguishable.
 func TestComponentEnvironmentVerdict(t *testing.T) {
@@ -142,21 +97,6 @@ func TestRunningBinaryVerdict(t *testing.T) {
 
 // One finding covers both resident processes, so a table of kinds is what keeps them in
 // the report rather than a list of check IDs.
-func TestResidentKindsCoverTheResidentProcesses(t *testing.T) {
-	names := map[string]bool{}
-	for _, kind := range residentKinds {
-		names[kind.name] = true
-		if kind.pattern == "" || kind.binaryName == "" || kind.configured == nil {
-			t.Errorf("%s needs a process pattern, an executable name and a configured-binary lookup", kind.name)
-		}
-	}
-	for _, name := range []string{"the engine", "a model service on this machine"} {
-		if !names[name] {
-			t.Errorf("residentKinds lost %s: a stale %s is then invisible to doctor", name, name)
-		}
-	}
-}
-
 // processesRunning reads /proc, so this checks it does not match a process that merely has the
 // pattern in the command line it was launched with - which, for the recognition service, is a
 // path this tool wrote rather than one of its own executables.
@@ -167,7 +107,7 @@ func TestProcessesRunningRequiresTheBinaryToBeOurs(t *testing.T) {
 	// The pattern here is the file the service is started with, which on a running machine
 	// does match a live process: what has to keep a shell, an editor or a `grep` out of the
 	// finding is the executable name.
-	for _, running := range processesRunning(modelServiceBinary, "no-such-binary-name") {
+	for _, running := range processesRunning("audiocpp_server", "no-such-binary-name") {
 		t.Errorf("matched a process that is not the audio.cpp this tool started: %+v", running)
 	}
 	if atoi("12") != 12 || isDigits("1a") || isDigits("") {
@@ -208,7 +148,7 @@ func TestCommandLineNormalizesNulSeparatedArguments(t *testing.T) {
 // A process that merely mentions the pattern is not an engine.
 func TestProcessesRunningIgnoresProcessesThatMerelyMentionThePattern(t *testing.T) {
 	// A shell whose command line contains the pattern: exactly what pkill -f matched.
-	command := exec.Command("/bin/sh", "-c", "sleep 5 # voiceime ibus-engine "+modelServiceBinary)
+	command := exec.Command("/bin/sh", "-c", "sleep 5 # voiceime ibus-engine audiocpp_server")
 	if err := command.Start(); err != nil {
 		t.Fatalf("start the decoy: %v", err)
 	}
@@ -217,12 +157,10 @@ func TestProcessesRunningIgnoresProcessesThatMerelyMentionThePattern(t *testing.
 		_, _ = command.Process.Wait()
 	}()
 
-	for _, kind := range residentKinds {
-		for _, found := range processesRunning(kind.pattern, kind.binaryName) {
-			if found.PID == command.Process.Pid {
-				t.Fatalf("pid %d mentions %q but was taken for %s (exe %s)",
-					found.PID, kind.pattern, kind.name, found.Binary)
-			}
+	for _, found := range processesRunning("ibus-engine", "voiceime") {
+		if found.PID == command.Process.Pid {
+			t.Fatalf("pid %d mentions the pattern but was taken for the engine (exe %s)",
+				found.PID, found.Binary)
 		}
 	}
 }

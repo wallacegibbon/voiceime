@@ -337,3 +337,179 @@ var commandMentionRE = regexp.MustCompile("`voiceime ([a-z][a-z-]+)")
 // fenceCommandRE matches the first word of a line inside a fenced block, which is where the
 // docs put a whole command.
 var fenceCommandRE = regexp.MustCompile(`^voiceime ([a-z][a-z-]+)`)
+
+// The engine's log is the only account of a dictation, and the contract has to say what each
+// line means: the recovery table in DEPLOY.md starts from "no text, log shows …". Both
+// directions are checked. A line the engine can write and the table does not name is a line a
+// reader has to guess the meaning of - and a table row for a line this build cannot write is a
+// description of a program that is not running, which is how a renamed log line used to survive
+// its own rename.
+func TestAGENTExplainsEveryLineTheEngineCanWrite(t *testing.T) {
+	root := repositoryRoot(t)
+	logged, err := engineLogLines(root)
+	if err != nil {
+		t.Fatalf("reading the engine's log calls: %v", err)
+	}
+	// The count is here to catch the walk stopping, not to hold a number.
+	if len(logged) < 10 {
+		t.Fatalf("only %d log lines found: the walk stopped matching", len(logged))
+	}
+	rows := documentedLogLines(t, root)
+	if len(rows) < 10 {
+		t.Fatalf("only %d log rows found in AGENT.md: the table stopped matching", len(rows))
+	}
+
+	for _, line := range logged {
+		if !anyPatternMatches(line, rows) {
+			t.Errorf("the engine can write %q and AGENT.md does not say what it means", shortLine(line))
+		}
+	}
+	for _, pattern := range rows {
+		// A row naming a value the sample line cannot carry (`server <address>`) is a shape,
+		// not a sentence; the forward direction has nothing to compare it with.
+		if strings.ContainsAny(pattern, "<") {
+			continue
+		}
+		found := false
+		for _, line := range logged {
+			if logPatternRE(pattern).MatchString(line) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("AGENT.md explains %q, which this build cannot write", pattern)
+		}
+	}
+	t.Logf("checked %d log lines the engine can write against %d documented rows", len(logged), len(rows))
+}
+
+// engineLogLines is every line the engine can put in its log: the first argument of each
+// logf call, with each conversion replaced by a fixed token so a line can be compared with a
+// documented pattern. A call whose format is nothing but conversions (the server description)
+// carries no words of its own, and is left out.
+func engineLogLines(root string) ([]string, error) {
+	var lines []string
+	fset := token.NewFileSet()
+	err := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.IsDir() {
+			if name := info.Name(); name == "bin" || name == ".git" || name == "docs" || name == "tools" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		file, parseErr := parser.ParseFile(fset, path, nil, 0)
+		if parseErr != nil {
+			return parseErr
+		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			name := ""
+			switch fun := call.Fun.(type) {
+			case *ast.Ident:
+				name = fun.Name
+			case *ast.SelectorExpr:
+				name = fun.Sel.Name
+			}
+			if name != "logf" || len(call.Args) == 0 {
+				return true
+			}
+			literal, ok := call.Args[0].(*ast.BasicLit)
+			if !ok || literal.Kind != token.STRING {
+				return true
+			}
+			text, quoteErr := strconv.Unquote(literal.Value)
+			if quoteErr != nil {
+				return true
+			}
+			if strings.TrimSpace(logConversionRE.ReplaceAllString(text, "")) == "" {
+				return true
+			}
+			// The session writer prefixes every line it is given.
+			lines = append(lines, "session: "+logConversionRE.ReplaceAllString(text, "x"))
+			return true
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(lines)
+	return lines, nil
+}
+
+// documentedLogLines is the first column of the log table in AGENT.md - the table that follows
+// the sentence naming the log file.
+func documentedLogLines(t *testing.T, root string) []string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(root, "docs", "AGENT.md"))
+	if err != nil {
+		t.Fatalf("reading the contract: %v", err)
+	}
+	var rows []string
+	after := false
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.Contains(line, "The engine's own log") {
+			after = true
+			continue
+		}
+		if !after {
+			continue
+		}
+		if !strings.HasPrefix(line, "|") {
+			if len(rows) > 0 {
+				break
+			}
+			continue
+		}
+		cell, found := strings.CutPrefix(line, "| `")
+		if !found {
+			continue
+		}
+		pattern, _, found := strings.Cut(cell, "`")
+		if !found {
+			continue
+		}
+		rows = append(rows, pattern)
+	}
+	return rows
+}
+
+// logConversionRE is a Go conversion in a format string: `%.2fs` is the conversion `%.2f` and
+// a literal `s`, so only the conversion is replaced.
+var logConversionRE = regexp.MustCompile(`%[ +#\-0-9*]*(?:\.[0-9*]+)?[a-zA-Z]`)
+
+// logPatternRE turns a documented line into a matcher: `…` stands for whatever the conversion
+// carried, and the pattern matches anywhere in the line, since every line starts with the
+// writer's own prefix.
+func logPatternRE(pattern string) *regexp.Regexp {
+	quoted := regexp.QuoteMeta(pattern)
+	return regexp.MustCompile(strings.ReplaceAll(quoted, "…", ".*"))
+}
+
+func anyPatternMatches(line string, patterns []string) bool {
+	for _, pattern := range patterns {
+		if logPatternRE(pattern).MatchString(line) {
+			return true
+		}
+	}
+	return false
+}
+
+// shortLine keeps a failing message to the part of the line a reader would recognise.
+func shortLine(line string) string {
+	runes := []rune(line)
+	if len(runes) <= 72 {
+		return line
+	}
+	return string(runes[:72]) + "…"
+}

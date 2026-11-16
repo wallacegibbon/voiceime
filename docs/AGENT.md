@@ -21,7 +21,9 @@ numbers are in [measurements.md](measurements.md).
   for are the same thing, and `grep '"id":"asr_endpoint","status":"ok"'` only works when a
   record does not span lines.
 * **One JSON object per invocation**: `{"command":…,"ok":true,"data":{…}}` on stdout, or
-  `{"command":…,"ok":false,"error":{"kind":…,"message":…,"fix":…},"exit_code":N}` on stderr.
+  `{"command":…,"ok":false,"error":{"kind":…,"message":…,"fix":…},"exit_code":N}` on stderr,
+where `fix` is present exactly when there is something to run - which is why the table below
+has rows that say "read the message" rather than "run the fix".
 
 | Exit | Meaning | What to do |
 |---:|---|---|
@@ -171,7 +173,7 @@ voiceime transcribe --seconds 5   # one decode from the microphone, with timing
 | will the engine still be registered after the next login | `component_env` |
 | do this session's keys reach the engine at all | `session_engine` |
 | is an old build still running | `running_build` |
-| is the file holding a credential readable by other people | `config`, as a warning: it is reported and costs nothing, because nothing about it stops dictation working |
+| can these settings work at all, is the file readable only by its owner, and if not which line | `config`: a settings file that cannot work is a failure naming the key, the reason and the line that would fix it, and the engine refuses to start on the same list, so a file that cannot work never reaches a microphone; a credential in a file other people can read is a warning, reported and costing nothing, because nothing about it stops dictation working |
 
 `asr_endpoint` asks the question the engine asks, in the way the engine asks it: is the address
 reachable, and would a request to it carry the model id and the credential the settings hold. A
@@ -194,15 +196,39 @@ did not answer is reported as an address that did not answer: what should have b
 behind it is not something this program was told, so it names no command that would have started
 it.
 
-The engine's own log is `~/.cache/voiceime/engine.log` (ibus-daemon discards the process's
-stdout). `ready: hold … to dictate` on selection, then `recording`, `decoded …` and
-`committed N character(s)` per hold. The lines that are not routine are the ones worth
-reading: `the press before this one never saw its release` (a key event went to another
-input context), `discarded the recording in progress` (the engine was deselected mid-hold),
-`recording stopped at the …s limit` (the key was never released), `not starting: the
-settings cannot work: <key>: <reason> (<fix>)` (the settings the engine was started with
-cannot do what they ask, so no engine was started), and `engine process ending`
-(how this engine stopped, which matters because no engine process means no input method for
+The engine's own log is `~/.cache/voiceime/engine.log`: one file per engine lifetime, every
+line prefixed `session:`, because ibus-daemon discards the process's stdout. What a working hold
+writes, and everything that can go wrong instead:
+
+| The line begins | What it means |
+|---|---|
+| `server <address> (model <id>)` | once per engine: the address and the id this process will use, exactly as the settings hold them. It says nothing about whether anything is listening, and `asr_endpoint` is the finding that does |
+| `ready: hold … to dictate` | this input context is armed. Selecting the engine records nothing |
+| `recording` | the trigger was pressed |
+| `diagnostic: dictating` | this process was started with `--audio-file`: it dictated that file instead of waiting for a key |
+| `cannot dictate` | the same run could not read the file it was told to dictate |
+| `decoded … of audio in …` | the answer came back, and the line carries the text - which is why a decode that never reached the screen is still here |
+| `committed … character(s)` | the text was typed at the caret |
+| `not starting: the settings cannot work:` | the settings this process was started with cannot do what they ask, so no engine was started; the key, the reason and the line that would fix it are in the line |
+| `engine process ending:` | how this engine stopped, which matters because no engine process means no input method for the session |
+| `cannot record:` | the capture client would not start - no microphone, or a `capture_source` naming no device |
+| `capture ended:` | the stream died part-way through a hold |
+| `no audio was recorded; nothing was sent` | the stream produced nothing, so there was no request to make |
+| `capture dropped` | the capture client fell behind and audio is missing from what was sent; the line says how much |
+| `transcription queue full;` | dictation came faster than the decoder could take it, and that recording was dropped rather than queued without bound |
+| `recording stopped at the` | the key was never released, so the hold was cut at the `max_utterance_seconds` limit |
+| `discarded the recording in progress` | the engine was deselected while the key was still down: the text would have had no caret to go to |
+| `discarded the recording: the engine is no longer selected` | the same, noticed at the release |
+| `discarded the recording: the key was released before it started` | the press never reached this input context |
+| `the press before this one never saw its release` | a key event went to another input context, so a release was lost; the next press ends that recording and starts a new one |
+| `transcribe` | the request failed - the address refused it, the `asr_server_timeout_ms` deadline passed, the id names nothing that answers there - and the rest of the line is the reason. Nothing is typed |
+| `the model heard no words in` | an empty answer: the audio went in and came back as nothing |
+| `the model answered only punctuation` | an answer carrying no letter or a digit, which is what a recogniser returns for audio it could not read; nothing is typed |
+| `deliver` | the text was decoded and could not be committed - which is why a `decoded` line with no `committed` line after it still means nothing appeared at the cursor |
+
+A test compares this table with the calls that write that log, in both directions: a line the
+engine can write and the table does not name, or a row naming a line this build cannot write,
+fails `make check`.
 the session).
 
 `voiceime ibus-engine --ibus --audio-file speech.wav --trace /tmp/engine.log` runs the real

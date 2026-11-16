@@ -1,4 +1,5 @@
-// Package config holds every user-visible setting, the XDG paths they live in,
+// Package config holds every user-visible setting, the XDG paths they live in, and the
+// rules that say whether a set of them can work.
 package config
 
 import (
@@ -16,8 +17,6 @@ import (
 
 // AppName is the directory name under every XDG base directory.
 const AppName = "voiceime"
-
-const TargetRate = 16000
 
 // Config is what a person owns: which address to ask, what to call the model there, the
 // credential if one is needed, and how dictation behaves - the key, how long a hold may run,

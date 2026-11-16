@@ -1,0 +1,64 @@
+# voiceime settings.
+#
+# Copy this file to ~/.config/voiceime/config.toml and change only what is yours. The
+# exact path this program reads is printed by `voiceime config show` and by
+# `voiceime capabilities`.
+#
+# Nothing writes this file. Every value in it was put there by a person, and every value
+# in it is read again each time a process starts; `voiceime apply` is what puts a changed
+# value into the processes that are already running. A file that reads correctly but
+# cannot work - an address with no name beside it - is refused before a microphone is
+# opened, with the key and the reason named.
+#
+# What each key means, and what happens when it is wrong: docs/AGENT.md, section
+# "Settings". `voiceime capabilities` is the same list for a program to read.
+#
+# A credential can live here, so keep the file readable only by you: chmod 600.
+
+# ---- recognition ------------------------------------------------------------
+#
+# An address, and the name to ask that address for, are one decision. Neither is
+# searched for, downloaded, guessed at or asked about: nothing queries what a service
+# serves. Leaving both out is a valid file - the engine then has nowhere to send audio,
+# and `voiceime doctor` says so with the line to write.
+#
+# A model on this machine: use the two lines the model service's own script prints when
+# it starts that model. That script is a separate project; this program only posts to an
+# address.
+#   asr_server_url = "http://127.0.0.1:18080/v1/audio/transcriptions"
+#   model          = "sensevoice-small-q8-audiocpp-v1"
+#
+# A model across a network: the address and the id from that provider's own docs, used
+# exactly as written - nothing is appended to the address, and a path is part of it.
+#   asr_server_url = "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions"
+#   model          = "glm-asr-2512"
+asr_server_url = ""
+model = ""
+
+# Sent as `Authorization: Bearer <value>`. Empty sends no header. A wrong one is a
+# failing `voiceime doctor` finding, never a silent fallback to something else.
+api_key = ""
+
+# The language you dictate in. Empty asks the model to guess, which is usually worse for
+# Chinese and better for most other languages.
+language = "zh"
+
+# `simplified` writes what the model produced as Simplified Chinese; `preserve` leaves
+# whatever script it produced.
+text_script = "simplified"
+
+# One request's deadline, and the longest one recording. A held key whose release was
+# never seen ends at the second number.
+asr_server_timeout_ms = 30000
+max_utterance_seconds = 60
+
+# ---- the desktop ------------------------------------------------------------
+
+# The chord you hold to dictate; letting go transcribes. It needs a modifier, and it
+# must not be one the applications you use already claim - `voiceime apply` says when it
+# collides with something GNOME has bound.
+push_to_talk = "<Control>grave"
+
+# A PipeWire source name. Empty uses the default input; `voiceime doctor` prints the
+# sources there are to choose from.
+capture_source = ""

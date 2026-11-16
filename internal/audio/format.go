@@ -1,9 +1,10 @@
-// Package audio owns microphone capture, PCM arithmetic and endpointing.
+// Package audio owns microphone capture and the PCM arithmetic the pipeline works in:
+// one rate, one sample width, and whole recordings. Nothing here decides whether a
+// recording is worth sending - the engine sends every one it is given.
 package audio
 
 import (
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -15,8 +16,9 @@ const SampleRate = 16000
 // BytesPerSample is the width of one sample in the interchange format.
 const BytesPerSample = 2
 
-// FrameMS is the analysis frame used by the endpoint detector and the capture
-// chunk size. 20 ms keeps endpointing responsive without waking up constantly.
+// FrameMS is the block size the capture loop reads and replays in. 20 ms is small
+// enough that a stopped key is noticed promptly and a dropped block is a small loss,
+// and large enough that the loop is not woken per millisecond of audio.
 const FrameMS = 20
 
 // SamplesToBytes converts 16-bit samples to little-endian bytes.
@@ -45,7 +47,9 @@ func DurationSeconds(data []byte) float64 {
 	return float64(SampleCount(data)) / SampleRate
 }
 
-// RMS returns the root-mean-square amplitude of a block.
+// Resample linearly interpolates 16-bit PCM from one rate to another. A WAV file
+// recorded at another rate is played back through this, so a request always carries
+// the one rate the pipeline works in.
 func Resample(data []byte, fromRate, toRate int) []byte {
 	if fromRate == toRate || len(data) == 0 {
 		return data
@@ -191,6 +195,3 @@ func downmix(data []byte, channels int) []byte {
 	}
 	return SamplesToBytes(out)
 }
-
-// ErrNoAudio means a capture stream ended without producing anything usable.
-var ErrNoAudio = errors.New("capture produced no audio")

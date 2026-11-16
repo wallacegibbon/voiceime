@@ -28,18 +28,17 @@ const TargetRate = 16000
 // Recognition is an address. The engine posts one recording to it and reads text back; the
 // address is used exactly as written, because an address that names a route is the thing being
 // configured. Whether it is a model on this machine or a provider across a network is not the
-// engine's concern, and starting a local model is a separate thing
-// (scripts/asr-service.sh), needed only when the address is this machine's. A setting that
-// deployment can work out is a question asked of the wrong person: which audio.cpp binary
-// runs, which backend it was built for and how many workers it wants are answers about the
-// machine, and they are recorded where they are used - the service unit and the audio.cpp
-// config that unit names.
+// engine's concern, and starting a local model is a separate project's thing (asr-service.sh),
+// needed only when the address is this machine's. A setting that deployment can work out is a
+// question asked of the wrong person: which audio.cpp binary runs, which backend it was built
+// for and how many workers it wants are answers about the machine, and they are recorded where
+// they are used - the service unit and the audio.cpp config that unit names.
 type Config struct {
 	// Model is the id named in the request, and it is required: the program does not ask an
 	// address what it serves, because a model list is a catalogue and not a promise about what
 	// this account accepts, and an endpoint may publish none at all. A local service's id is
-	// written here by scripts/asr-service.sh, which is the program that chooses it.
-	Model string `toml:"model" desc:"The model id to name in the request. Required; scripts/asr-service.sh writes the id of a model it starts here."`
+	// written here by the script that starts the service, which is the program that chooses it.
+	Model string `toml:"model" desc:"The model id to name in the request. Required; asr-service.sh writes the id of a model it starts on this machine."`
 
 	// APIKey is sent as `Authorization: Bearer <value>`. A credential lives here rather
 	// than in an environment the engine never starts.
@@ -53,7 +52,7 @@ type Config struct {
 
 	// The whole request address, used verbatim: no route is appended, nothing is derived from
 	// it, and the same string is what `curl` would be pointed at.
-	ASRServerURL       string `toml:"asr_server_url" desc:"The address a recording is POSTed to, used exactly as written: http://127.0.0.1:18080/v1/audio/transcriptions for a model on this machine (scripts/asr-service.sh writes that), a provider's full URL otherwise."`
+	ASRServerURL       string `toml:"asr_server_url" desc:"The address a recording is POSTed to, used exactly as written: http://127.0.0.1:18080/v1/audio/transcriptions for a model on this machine (asr-service.sh writes that), a provider's full URL otherwise."`
 	ASRServerTimeoutMS int    `toml:"asr_server_timeout_ms" desc:"Deadline for one transcription."`
 
 	CaptureSource string `toml:"capture_source" desc:"PipeWire source name; empty uses the default input."`
@@ -302,7 +301,7 @@ func (c *Config) Validate() []Issue {
 			// An address and a name to ask it for are one decision: nothing here asks an
 			// address what it serves, so an address on its own cannot be used.
 			add("error", "model", fmt.Sprintf("%s is configured, and nothing names the model to ask it for", raw),
-				`voiceime config set model <id>   # or run scripts/asr-service.sh, which writes the id of a model it starts here`)
+				`voiceime config set model <id>   # or run asr-service.sh, which writes the id of a model it starts on this machine`)
 		}
 	}
 	if strings.TrimSpace(c.PushToTalk) == "" {
@@ -312,10 +311,10 @@ func (c *Config) Validate() []Issue {
 	// A model is named, never chosen. Nothing is scanned, nothing is downloaded, and no file
 	// is read: what belongs here is the id the address is asked for. A path in this key is the
 	// one mistake worth catching, because it is what this key used to hold - and the file it
-	// names belongs to the service, which is a different thing (scripts/asr-service.sh).
+	// names belongs to the service, which is a different project (asr-service.sh).
 	if named := strings.TrimSpace(c.Model); named != "" {
 		if strings.HasPrefix(named, "/") || strings.HasPrefix(named, "~") || strings.EqualFold(filepath.Ext(named), ".gguf") {
-			add("error", "model", fmt.Sprintf("%q looks like a file, not a model id: the file belongs to the service on this machine (scripts/asr-service.sh), this key names what the address is asked for", named),
+			add("error", "model", fmt.Sprintf("%q looks like a file, not a model id: the file belongs to the service on this machine (asr-service.sh), this key names what the address is asked for", named),
 				`voiceime config set model <id>   # the id that address serves, not a path`)
 		}
 	}

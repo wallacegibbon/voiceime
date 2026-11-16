@@ -235,14 +235,14 @@ func deadURL(t *testing.T) string {
 }
 
 // The unit is the record of a deployment decision: it names the audio.cpp binary and the
-// config file that decision resolved. The program does not write it - scripts/asr-service.sh
-// does - but it reads it back, because a unit whose paths have gone missing starts forever
-// and fails forever. So the reader has to survive what the writer writes, including a path
-// with a space in it.
+// config file that decision resolved. The program does not write it - the project that
+// installs a model service does - but it reads it back, because a unit whose paths have gone
+// missing starts forever and fails forever. So the reader has to survive what the writer
+// writes, including a path with a space in it.
 func TestUnitIsReadBackAsWritten(t *testing.T) {
-	unit := "[Unit]\nDescription=voiceime recognition server\n\n[Service]\n" +
+	unit := "[Unit]\nDescription=audio.cpp ASR server (model resident)\n\n[Service]\n" +
 		"ExecStart=/home/u/playground/audio.cpp/build/linux-cpu-release/bin/audiocpp_server " +
-		"--config /home/u/.local/share/voiceime/asr-server.json --log\n" +
+		"--config /home/u/.local/share/audiocpp-asr/serve.json --log\n" +
 		"Restart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=default.target\n"
 	fields, err := unitExecStart(writeUnitForTest(t, unit))
 	if err != nil {
@@ -251,7 +251,7 @@ func TestUnitIsReadBackAsWritten(t *testing.T) {
 	if firstField(fields) != "/home/u/playground/audio.cpp/build/linux-cpu-release/bin/audiocpp_server" {
 		t.Errorf("ExecStart runs %q", firstField(fields))
 	}
-	if got := unitArgument(fields, "--config"); got != "/home/u/.local/share/voiceime/asr-server.json" {
+	if got := unitArgument(fields, "--config"); got != "/home/u/.local/share/audiocpp-asr/serve.json" {
 		t.Errorf("the config reads back as %q", got)
 	}
 

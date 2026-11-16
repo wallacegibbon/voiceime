@@ -33,9 +33,10 @@ func cmdApply() *Command {
 
 // cmdRemove is its opposite: take the parts this project installed away again. One command
 // because they are one installation: the component file, the entry the desktop's switcher
-// reads, the environment entry that makes a user-level install survive a login - and the
-// model unit, which scripts/asr-service.sh writes but which is this project's, so leaving it
-// running after `remove` would mean an uninstall that kept a model loaded.
+// reads, the environment entry that makes a user-level install survive a login. A model
+// service is not part of it: that unit runs audio.cpp, not this program, and the project that
+// installed it is the one that can stop it. `remove` reports what it leaves running, and names
+// the command that stops it.
 func cmdRemove() *Command {
 	return &Command{
 		Name:    "remove",
@@ -50,8 +51,8 @@ func cmdRemove() *Command {
 
 // applyReport is one line per thing this command installs: the file that makes the engine
 // reachable, the desktop's list, the running engine processes. The recognition model is not
-// one of them. A model on this machine is started by scripts/asr-service.sh, and an endpoint
-// elsewhere needs nothing installed here at all.
+// one of them. A model on this machine is installed by another project's script, and an
+// endpoint elsewhere needs nothing installed here at all.
 type applyReport struct {
 	Component string `json:"component"`
 	// Desktop is the input-source list the desktop's own switcher reads. The entry the
@@ -84,7 +85,7 @@ func runApply(ctx *Context) error {
 		ctx.Print("desktop:   %v", report.Desktop)
 		ctx.Print("engine:    %v", report.Engine)
 		ctx.Print("")
-		ctx.Print("a model on this machine is a separate thing: scripts/asr-service.sh")
+		ctx.Print("a model on this machine is a separate thing: %s", installModelService)
 		ctx.Print("`voiceime doctor` re-checks all of it.")
 	}
 	return ctx.Emit("apply", report)

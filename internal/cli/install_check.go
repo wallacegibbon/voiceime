@@ -395,7 +395,7 @@ func isExecutable(path string) bool {
 // a year is not a finding.
 func modelServiceCheck(report func(Check), cfg *config.Config, state serviceState) {
 	const id = "server_unit"
-	install := "asr-service.sh <audiocpp_server> <model.gguf>"
+	install := installModelService
 	service, found := modelServiceInstalled()
 	local := endpointIsLocal(strings.TrimSpace(cfg.ASRServerURL))
 	if !found {

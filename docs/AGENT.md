@@ -40,8 +40,10 @@ voiceime capabilities                            # the surface: commands, settin
 ```
 
 Two more names appear in the surface and neither is a command to run by hand:
-`ibus-daemon` spawns `voiceime ibus-engine --ibus`, and the systemd unit's `ExecStart` runs
-`audio.cpp` itself, on the config `scripts/asr-service.sh` wrote.
+`ibus-daemon` spawns `voiceime ibus-engine --ibus`, and a model service's unit runs `audio.cpp`
+itself, on a config that service's own project wrote. voiceime names neither: it recognizes a
+model service by the binary its unit runs (`audiocpp_server`) and reads the rest of that
+service's story from the unit itself.
 
 **Recognition is an endpoint.** The engine posts one recording to the address in the settings and
 reads the text back; that is the whole of what it asks of the machine. That address is used
@@ -52,19 +54,22 @@ way:
 
 ```
 voiceime apply                        # the desktop half: always needed, whatever answers
-scripts/asr-service.sh <audiocpp_server> <model.gguf>   # a model on this machine: only if the endpoint is this machine
+asr-service.sh <audiocpp_server> <model.gguf>   # a model on this machine: only if the endpoint is this machine
 ```
 
-* An endpoint elsewhere needs nothing installed here. `scripts/asr-service.sh` says so and
+The second command is not part of this program. A model service is a separate project - one
+script, its own unit name, its own audio.cpp config - and the only contact between the two is
+the pair of settings it records here.
+
+* An endpoint elsewhere needs nothing installed here. The model service's script says so and
   starts nothing when `asr_server_url` is not a loopback address. What such a setup needs is
   in the settings and nowhere else: the address the provider gave you, whole, the `model` id
   that address is asked for, and a credential in `api_key`.
-* A model on this machine is one GGUF file, and the script is what puts it where it will be
+* A model on this machine is one GGUF file, and that script is what puts it where it will be
   served: it asks `audiocpp_gguf --inspect` for the family the file carries, asks the build
-  which backends it has and the CPU how many workers fit, writes the two files the service
-  consists of - `~/.local/share/voiceime/asr-server.json` and the unit - and then records, in
-  the settings, the address that serves and the id it serves it under. voiceime **fetches
-  nothing and scans nothing**: a checkpoint that is not named is not used.
+  which backends it has and the CPU how many workers fit, writes the two files that service
+  consists of, and then records here the address that serves and the id it serves it under.
+  Nothing is fetched and nothing is scanned here: a checkpoint that is not named is not used.
 * `apply` is the whole desktop side, in one command: it writes the component file and the
   search path to `~/.config/environment.d/voiceime.conf`, **appends** `('ibus', voiceime)` to
   GNOME's input-source list (which is what makes the desktop able to select and show the
@@ -74,10 +79,12 @@ scripts/asr-service.sh <audiocpp_server> <model.gguf>   # a model on this machin
 * The input-source list belongs to the user. Nothing already configured is removed or
   reordered, and the recent-use order is not written; `remove` takes out voiceime's own
   entry and leaves the others.
-* `remove` is `apply`'s opposite: the component file, the `environment.d` file, the input
-  source this tool added, and - if this machine has one - the model service and its two
-  files. It leaves the checkpoint itself alone, because that file was never the
-  installation's.
+* `remove` is `apply`'s opposite: the component file, the `environment.d` file and the input
+  source this tool added. A model service on this machine is not part of that install - it runs
+  `audio.cpp`, not this program, and it may be answering clients other than this engine - so
+  `remove` leaves it running, reports the unit it found, and names the command that stops it
+  (`systemctl --user disable --now <unit>`). It leaves the checkpoint alone too: that file was
+  never the installation's.
 * There is no `server` command at all, and no `server install`, `server restart` or
   `engine install`: one command per half, and `doctor` answers "is it there" with findings.
   Asking the same question through several commands, each with its own idea of what "installed"
@@ -90,7 +97,7 @@ scripts/asr-service.sh <audiocpp_server> <model.gguf>   # a model on this machin
 | Key | Default | Notes |
 |---|---|---|
 | `asr_server_url` | `""` | The whole address a recording is posted to, used exactly as it is written: `http://127.0.0.1:18080/v1/audio/transcriptions` for a model on this machine, the provider's own URL for a model across a network. **Nothing is appended to it** - the path is part of the address, and is not guessed at. |
-| `model` | `""` | The id named in the request. Nothing asks an address what it serves, so **an address and an id are one decision**: `scripts/asr-service.sh` writes both for a model on this machine, and a provider's id comes from its documentation. A path in this key is refused: the file belongs to the service, not to the settings. |
+| `model` | `""` | The id named in the request. Nothing asks an address what it serves, so **an address and an id are one decision**: the model service's own script writes both for a model on this machine, and a provider's id comes from its documentation. A path in this key is refused: the file belongs to the service, not to the settings. |
 | `api_key` | `""` | Sent as `Authorization: Bearer <value>`. Empty sends no header. A credential lives here rather than in an environment the engine never starts - and because it can live here, the file is written `0600`. A wrong one is a failing `asr_endpoint` finding, never a silent fallback. |
 | `language` | `zh` | **The user's, not the program's.** Passed to the model; empty asks it to auto-detect, which is usually worse for Chinese and better for most other languages. |
 | `text_script` | `simplified` | Chinese output script: `simplified` or `preserve`. The default is what the reference user writes; `preserve` keeps whatever script the repair model produced. |
@@ -106,15 +113,16 @@ usable together with the id to ask it for, and nothing in the program goes looki
 
 **What is not here, and where it went.** Which audio.cpp runs, which checkpoint it serves,
 which backend it was built for and how many workers that deserves are properties of the
-machine, not choices, and only matter when the endpoint is this machine: `scripts/asr-service.sh`
-works them out once and records them where they are used - the binary in the unit's
-`ExecStart`, the checkpoint, family and worker count in the audio.cpp config that unit names, at
-`~/.local/share/voiceime/asr-server.json`. Ask the machine, not the file:
+machine, not choices, and they only matter when the endpoint is this machine. They belong to
+the project that installs a model service, and none of that project's names - its unit, its
+audio.cpp config - are settings here or constants in this program. What the engine knows is the
+binary such a service runs, and everything else it reads out of the unit's own `ExecStart`. Ask
+the machine, not a name:
 
 ```
-systemctl --user cat voiceime-asr-server.service      # which audio.cpp runs, and what it was told to serve
-curl -s http://127.0.0.1:18080/v1/models             # the service's own list of what it has loaded
-voiceime doctor --json                                # and whether those files, that id and that address agree
+voiceime doctor --json                             # names the unit it found, the binary it runs, and the config it was handed
+systemctl --user cat <that unit>                   # the same facts, from the unit itself
+curl -s http://127.0.0.1:18080/v1/models          # the service's own list of what it has loaded
 ```
 
 Things every setting shares: `voiceime config set` writes the file atomically, validates
@@ -167,10 +175,11 @@ engine's whole say about where it posts, so asking somewhere else about it is as
 the settings did not ask.
 
 A failing finding is exit 3 with a `fix` an agent can run: `voiceime apply` for the desktop
-half, `systemctl --user restart voiceime-asr-server.service` or `scripts/asr-service.sh` for a
-model on this machine, `voiceime config set api_key …` for a credential the address refused,
+half, `systemctl --user restart <the unit the server_unit finding names>` for a model service
+this machine already has, `voiceime config set api_key …` for a credential the address refused,
 `voiceime config set model …` for an address with nothing to ask it for, `curl -s <address>` for
-an address that did not answer at all.
+an address that did not answer at all. A model that is not installed yet is the model service's
+own project, not a command here.
 
 The engine's own log is `~/.cache/voiceime/engine.log` (ibus-daemon discards the process's
 stdout). `ready: hold … to dictate` on selection, then `recording`, `decoded …` and

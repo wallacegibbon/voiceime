@@ -9,13 +9,16 @@ side is [ibus-protocol.md](ibus-protocol.md).
 A dictation is one recording and one HTTP request:
 
 ```
-POST /v1/audio/transcriptions
+POST <asr_server_url>
 Content-Type: multipart/form-data
 
-model     = the entry the server publishes (its model file's name)
+model     = config.model        # the id this address is asked for
 language  = config.language
-file      = recording.wav   (16 kHz mono s16le, in memory)
+file      = recording.wav       (16 kHz mono s16le, in memory)
 ```
+
+The address is used exactly as it is written: no route is appended to it, nothing is derived
+from it, and it is the same string `curl` would be pointed at.
 
 The whole recording goes up, unchanged: no trimming, no voice-activity gate, no window.
 The server decodes it offline and answers once:
@@ -34,49 +37,35 @@ back as `"我。"` ([measurements.md](measurements.md#what-the-models-do-with-no
 and a recording that contains only punctuation is dropped rather than typed, because a lone
 `"。"` is punctuation from audio the model could not read, not a transcript.
 
-## The service
+## The address, and what may be behind it
 
-`voiceime apply` resolves what this machine adds up to - which audio.cpp to run, which
-backend it was compiled for, how many workers its CPU has - and writes the answer into two
-files: the systemd user unit, whose `ExecStart` is
+The engine has one requirement: the address in `asr_server_url` answers that POST. A provider
+and a model on this machine are both answers, and the engine's code does not distinguish
+them - no route is appended to the address, no model is guessed for it, and the request names
+the id in the `model` setting because nothing in the program asks an address what it serves.
+A model list is a catalogue, not a promise about what this account accepts, and an endpoint may
+publish none at all.
 
-```
-audiocpp_server --config ~/.local/share/voiceime/asr-server.json --log
-```
+So this document describes the request, and the rest of what makes a local model answer it
+belongs to the project that installs one (`asr-service.sh`). Two facts about that service are
+worth knowing from here, because they are what this request assumes:
 
-and that `asr-server.json`, the audio.cpp config. Nothing re-derives either at start-up: a
-service systemd starts at login reads what the install decided months earlier. The file lives
-where a login can read it, not in a session directory that is emptied at logout, and it is
-never hand-edited - `voiceime remove` deletes it, and the next `apply` renders it again.
+* The weights are loaded before the first request, not during it. That is why a dictation's
+  latency is a decode and not a load.
+* The served entry is configured not to cut the upload up. A recording is sent whole, and a
+  service that decoded the pieces separately would answer a different question.
 
-It names **one entry**, in offline mode, with the request options a multipart upload has no
-field for:
-
-```json
-{
-  "host": "127.0.0.1", "port": 18080, "backend": "cpu", "threads": 8,
-  "lazy_load": false,
-  "models": [{ "id": "qwen3-asr-0.6b-q8_0", "family": "qwen3_asr",
-               "path": "/home/u/models/Qwen3-ASR-0.6B-GGUF/qwen3-asr-0.6b-q8_0.gguf",
-               "task": "asr", "mode": "offline",
-               "default_request_options": { "audio_chunk_mode": "none" } }]
-}
-```
-
-`lazy_load: false` is the point of the service: the weights belong to its startup, so a
-request never waits for a load. `audio_chunk_mode: none` is the other half of "every
-recording is sent whole": the served entry has to be told not to cut the upload up and decode
-the pieces separately.
-
-The id is the model file's name (`server.EntryID`). The client does not need it
-configured: it asks `GET /v1/models` and uses the single entry it finds, which is also
-how it reports which model is actually being served.
+`voiceime doctor`'s `server_unit` finding reads back whatever such a service on this machine
+says about itself - the unit that runs an audio.cpp, and the binary and config that unit names -
+because a unit whose paths have gone missing restarts forever and says nothing. The names are
+that project's; the engine looks for a unit by the binary it runs (`audiocpp_server`) and takes
+the rest from its own `ExecStart`.
 
 ## Failure
 
 | Failure | What happens |
 |---|---|
-| no service, wrong address | the request fails; the engine log names it, and `doctor` reports it before a dictation |
+| the address does not answer | the request fails; the engine log names it, and `doctor` reports it before a dictation |
 | the server refuses (bad model id, unloadable checkpoint) | the request fails and the reason is logged; nothing is typed |
 | the decode exceeds `asr_server_timeout_ms` | the request is abandoned; nothing is typed |
 | the answer is empty | nothing is typed |

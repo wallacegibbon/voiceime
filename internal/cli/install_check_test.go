@@ -11,13 +11,13 @@ import (
 )
 
 func TestUnitExecStartReadsTheCommand(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "voiceime-asr-server.service")
+	path := filepath.Join(t.TempDir(), "audiocpp-asr.service")
 	unit := `[Unit]
-Description=voiceime recognition server
+Description=audio.cpp ASR server (model resident)
 
 [Service]
 Type=simple
-ExecStart=/home/u/playground/audio.cpp/build/linux-cpu-release/bin/audiocpp_server --config /home/u/.local/share/voiceime/asr-server.json --log
+ExecStart=/home/u/playground/audio.cpp/build/linux-cpu-release/bin/audiocpp_server --config /home/u/.local/share/audiocpp-asr/serve.json --log
 Restart=on-failure
 
 [Install]
@@ -34,7 +34,7 @@ WantedBy=default.target
 	if firstField(fields) != want {
 		t.Errorf("the unit names %q, want %q", firstField(fields), want)
 	}
-	configFile := "/home/u/.local/share/voiceime/asr-server.json"
+	configFile := "/home/u/.local/share/audiocpp-asr/serve.json"
 	if got := unitArgument(fields, "--config"); got != configFile {
 		t.Errorf("--config = %q, want %q", got, configFile)
 	}
@@ -186,7 +186,7 @@ func contains(haystack, needle string) bool {
 
 func TestCommandLineNormalizesNulSeparatedArguments(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cmdline")
-	raw := []byte("/home/u/audio.cpp/build/linux-cpu-release/bin/audiocpp_server\x00--config\x00/home/u/.local/share/voiceime/asr-server.json\x00--log\x00")
+	raw := []byte("/home/u/audio.cpp/build/linux-cpu-release/bin/audiocpp_server\x00--config\x00/home/u/.local/share/audiocpp-asr/serve.json\x00--log\x00")
 	if err := os.WriteFile(path, raw, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +194,7 @@ func TestCommandLineNormalizesNulSeparatedArguments(t *testing.T) {
 	if !ok {
 		t.Fatal("commandLine failed on a readable file")
 	}
-	if !contains(got, "--config /home/u/.local/share/voiceime/asr-server.json") {
+	if !contains(got, "--config /home/u/.local/share/audiocpp-asr/serve.json") {
 		t.Errorf("commandLine = %q, want it to contain the arguments", got)
 	}
 	if !strings.HasPrefix(got, "/home/u/audio.cpp/build/linux-cpu-release/bin/audiocpp_server ") {

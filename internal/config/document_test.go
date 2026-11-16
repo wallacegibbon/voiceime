@@ -15,7 +15,7 @@ import (
 func TestSaveKeepsTheCommentsAPersonWrote(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	handwritten := `# my voiceime settings
-# local model: scripts/asr-service.sh wrote this; bigmodel is what I use now
+# local model: asr-service.sh wrote this; bigmodel is what I use now
 asr_server_url = "http://127.0.0.1:18080/v1/audio/transcriptions"   # keep until the token runs out
 # asr_server_url = "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions"
 # model = "glm-asr-2512"
@@ -46,7 +46,7 @@ push_to_talk = "<Control>grave"
 	text := string(written)
 	for _, keep := range []string{
 		"# my voiceime settings",
-		"# local model: scripts/asr-service.sh wrote this; bigmodel is what I use now",
+		"# local model: asr-service.sh wrote this; bigmodel is what I use now",
 		`# asr_server_url = "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions"`,
 		`# model = "glm-asr-2512"`,
 		"# keep until the token runs out",

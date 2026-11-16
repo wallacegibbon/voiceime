@@ -76,7 +76,8 @@ func runApply(ctx *Context) error {
 	// Not fatal on its own: an engine missing from this list still receives keystrokes,
 	// it just cannot be shown by the desktop or switched to from its menu.
 	report.Desktop, _ = addInputSource(ibus.EngineName)
-	report.Engine = dropEngines()
+	engineLine, engineErr := dropEngines()
+	report.Engine = engineLine
 
 	if !ctx.JSON {
 		ctx.Print("component: %v", report.Component)
@@ -84,6 +85,13 @@ func runApply(ctx *Context) error {
 		ctx.Print("engine:    %v", report.Engine)
 		ctx.Print("")
 		ctx.Print("`voiceime doctor` re-checks all of it.")
+	}
+	if engineErr != nil {
+		// The three lines above stay printed because they are what happened; the exit code
+		// then says the job is not finished. Both are needed. A person reading the terminal
+		// wants to know the component was written; a caller branching on the contract has to
+		// be able to tell that keys will not arrive until something else is done.
+		return engineErr
 	}
 	return ctx.Emit("apply", report)
 }
@@ -278,30 +286,77 @@ func runRemove(ctx *Context) error {
 // Nothing puts it back by itself - the process is not respawned until an input method is
 // selected again - so the person at the keyboard finds the workaround on their own, switches
 // to another input method and back, and reasonably blames the engine for it.
-func dropEngines() string {
+func dropEngines() (string, error) {
 	// What the session is using has to be read before anything is stopped: afterwards there
 	// is nothing left to read.
-	current, known := "", false
+	drop := engineDrop{}
 	if name, err := currentEngine(); err == nil {
-		current, known = name, true
+		drop.Current, drop.Askable = name, true
 	}
-	stopped, forced := stopEngines()
+	drop.Stopped, drop.Forced = stopEngines()
+	if drop.Askable && reselectsEngine(drop.Current, drop.Askable) {
+		drop.NotReselected = selectEngine()
+	}
+	return engineDropResult(drop)
+}
 
-	outcome := "was not running"
-	if stopped > 0 {
-		outcome = fmt.Sprintf("%d dropped", stopped)
-		if forced {
+// engineDrop is what stopping the engine processes did, and what was known and done after it.
+type engineDrop struct {
+	Stopped int
+	Forced  bool
+	// Askable records whether the session's engine could be read at all. A shell that cannot
+	// reach a daemon cannot put the input method back either, and that has to be said rather
+	// than left as a line that reads like a completion.
+	Askable bool
+	Current string
+	// NotReselected is the failure of the attempt to route keys through the engine again, and
+	// is nil when it worked. The attempt is made by the caller so that this decision can be
+	// asked about without a desktop.
+	NotReselected error
+}
+
+// engineDropResult renders the report line and decides whether this command left the machine
+// unable to receive keys.
+//
+// The exit code carries that decision, and it has to: this command stops the engine processes
+// before it re-selects the input method, so the one failure it can cause is the one a person
+// feels - the desktop still shows the input method and no application receives a key. Reporting
+// that as a sentence among three lines while exiting 0 told whoever ran it that it had worked.
+//
+// A state this command did not cause is not reported as its own failure: a session that already
+// had no input method, and a daemon that could not be asked when nothing was stopped, are said
+// in the line and left to `doctor`, whose findings are where they belong.
+func engineDropResult(drop engineDrop) (outcome string, err error) {
+	outcome = "was not running"
+	if drop.Stopped > 0 {
+		outcome = fmt.Sprintf("%d dropped", drop.Stopped)
+		if drop.Forced {
 			outcome += " (one had to be killed)"
 		}
 	}
-	if !reselectsEngine(current, known) {
-		return outcome
+	if !drop.Askable {
+		detail, fix := ibusUnreachableVerdict(machineBusAccess())
+		if drop.Stopped == 0 {
+			return outcome + "; nothing could be asked of the daemon, so the input method was left as it was", nil
+		}
+		// Nothing could be asked of the daemon, so nothing can be put back: the engines are
+		// stopped and the session is left with no input method.
+		return outcome + "; the input method was left unselected: " + detail,
+			PreconditionError(fix, "the engine processes were stopped and no ibus daemon could be reached, so no application will receive keys: %s", detail)
 	}
-	if err := selectEngine(); err != nil {
-		return outcome + "; the input method could not be selected again (" + err.Error() +
-			"), so no application will receive keys until one is: ibus engine " + ibus.EngineName
+	if !reselectsEngine(drop.Current, drop.Askable) {
+		return outcome + "; the session's own input method was left as it was", nil
 	}
-	return outcome + "; the input method was selected again"
+	if drop.NotReselected != nil {
+		line := outcome + "; the input method could not be selected again (" + drop.NotReselected.Error() +
+			"), so no application will receive keys until one is"
+		if drop.Stopped == 0 {
+			return line, nil
+		}
+		return line, PreconditionError("ibus engine "+ibus.EngineName,
+			"the engine processes were stopped and the input method could not be selected again: %v", drop.NotReselected)
+	}
+	return outcome + "; the input method was selected again", nil
 }
 
 // reselectsEngine says whether the session's input method should be put back after the

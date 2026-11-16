@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,6 +29,94 @@ func TestReselectsEngineOnlyWhenItWasOursOrNone(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := reselectsEngine(tc.current, tc.known); got != tc.want {
 				t.Errorf("reselectsEngine(%q, %v) = %v, want %v", tc.current, tc.known, got, tc.want)
+			}
+		})
+	}
+}
+
+// `apply` stops the engine processes and only then puts the input method back, so the one
+// failure it can cause is the failure a person feels: the desktop still lists the input method
+// and no application receives a key. That has to reach the exit code rather than stay a
+// sentence among three report lines that end in "re-check it with doctor" - and the fix it
+// names depends on whether a daemon could be reached at all, which is a different situation
+// from one that refused.
+func TestEngineDropResultFailsWhenKeysStopArriving(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		drop     engineDrop
+		wantLine string
+		wantCode int
+		wantFix  string
+	}{
+		{
+			name:     "nothing was running, and nothing could be asked",
+			drop:     engineDrop{},
+			wantLine: "was not running; nothing could be asked of the daemon", wantCode: ExitOK,
+		},
+		{
+			// Nothing was running and the session had no input method either, which is the
+			// state an engine process that died leaves behind: selecting it is the whole fix,
+			// and saying that it happened is what the line is for.
+			name:     "nothing was running, and the input method was put back",
+			drop:     engineDrop{Askable: true, Current: ""},
+			wantLine: "was not running; the input method was selected again", wantCode: ExitOK,
+		},
+		{
+			name:     "nothing was running, and selecting it was refused",
+			drop:     engineDrop{Askable: true, NotReselected: errors.New("Set global engine failed.")},
+			wantLine: "the input method could not be selected again", wantCode: ExitOK,
+		},
+		{
+			name:     "dropped and put back",
+			drop:     engineDrop{Stopped: 1, Askable: true, Current: ibus.EngineName},
+			wantLine: "1 dropped; the input method was selected again", wantCode: ExitOK,
+		},
+		{
+			name:     "another engine is the person's choice",
+			drop:     engineDrop{Stopped: 1, Askable: true, Current: "libpinyin"},
+			wantLine: "the session's own input method was left as it was", wantCode: ExitOK,
+		},
+		{
+			name:     "a daemon was reached and refused",
+			drop:     engineDrop{Stopped: 1, Askable: true, Current: ibus.EngineName, NotReselected: errors.New("Set global engine failed.")},
+			wantLine: "the input method could not be selected again",
+			wantCode: ExitPrecondition, wantFix: "ibus engine voiceime",
+		},
+		{
+			name:     "no daemon could be asked, so nothing can be put back",
+			drop:     engineDrop{Stopped: 1},
+			wantLine: "the input method was left unselected",
+			wantCode: ExitPrecondition,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			line, err := engineDropResult(tc.drop)
+			if !strings.Contains(line, tc.wantLine) {
+				t.Errorf("report line %q does not contain %q", line, tc.wantLine)
+			}
+			if tc.wantCode == ExitOK {
+				if err != nil {
+					t.Errorf("a completed apply reported an error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("keys will not arrive and the exit code says the job is done")
+			}
+			if got := exitCode(err); got != tc.wantCode {
+				t.Errorf("exit code = %d, want %d", got, tc.wantCode)
+			}
+			var coded *codedError
+			if !errors.As(err, &coded) {
+				t.Fatal("the error carries no fix")
+			}
+			if tc.wantFix != "" && coded.fix != tc.wantFix {
+				t.Errorf("fix = %q, want %q", coded.fix, tc.wantFix)
+			}
+			// The same circular advice as the doctor finding: nothing that needs a daemon is
+			// the fix for not being able to reach one.
+			if !tc.drop.Askable && strings.Contains(coded.fix, "voiceime apply") {
+				t.Errorf("fix %q needs a daemon, which is what is missing", coded.fix)
 			}
 		})
 	}

@@ -51,8 +51,9 @@ func isFenceEdge(line string) bool {
 	return strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~")
 }
 
-// slugify produces the GitHub-style anchor for a heading: lowercase,
-// punctuation dropped, spaces to hyphens (so "D22 — One" is d22--one).
+// slugify produces the GitHub-style anchor for a heading: lowercase, punctuation
+// dropped, spaces to hyphens (so "The address, and what may be behind it" is
+// the-address-and-what-may-be-behind-it).
 func slugify(heading string) string {
 	text := linkInHeadingRE.ReplaceAllString(heading, "$1")
 	text = strings.NewReplacer("*", "", "_", "", "`", "", "~", "").Replace(text)

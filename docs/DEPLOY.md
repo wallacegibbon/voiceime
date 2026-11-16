@@ -12,7 +12,7 @@ BIN=~/.local/bin/voiceime
 ## 1. Build and install
 
 ```sh
-make check        # gofmt, vet, tests, unreachable code, unused code, doc links
+make check        # gofmt, vet, tests, unreachable code, unused code, docs, scripts
 make install      # ~/.local/bin/voiceime, ~/.local/docs
 "$BIN" doctor
 ```

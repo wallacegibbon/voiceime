@@ -153,7 +153,7 @@ unused: ## Fail if any code is unused - including code only a test could call
 	echo "unused: nothing unused, in the shipped code or in the tests"
 
 .PHONY: docs-check
-docs-check: ## Fail if a relative link or anchor in the documentation does not resolve
+docs-check: ## Fail if a link, anchor or named path in the documentation does not resolve
 	@# Build tooling, like deadcode above: it lives under tools/ rather than cmd/,
 	@# so it is not part of the shipped command surface and the unreachable-code
 	@# check (cmd/ and internal/ only) never reaches it. Go rather than python3:

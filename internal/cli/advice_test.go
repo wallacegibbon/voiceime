@@ -105,7 +105,9 @@ var configSettingRE = regexp.MustCompile(`write ([a-z_]+) = `)
 //
 // What the program prints names almost no files any more - a deployment step it is not part of
 // stopped being advice it could give - so this is a guard rather than a survey: it is here for
-// the day a fix or a written-out comment names a file that is not in this checkout.
+// the day a fix or a written-out comment names a file that is not in this checkout. The same
+// claim made in prose and in fenced commands is checked by `tools/check_docs`, which reads the
+// documentation; this one reads what a caller would act on.
 func TestAdviceNamesAFileThatIsHere(t *testing.T) {
 	root := repositoryRoot(t)
 	checked := 0

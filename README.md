@@ -90,7 +90,7 @@ with a test that compares the two lists it makes against what this build has. `v
 
 ```sh
 make build     # bin/voiceime
-make check     # gofmt, vet, tests, unreachable code, unused code, doc links
+make check     # gofmt, vet, tests, unreachable code, unused code, docs, scripts
 make install   # ~/.local/bin and ~/.local/docs
 ```
 

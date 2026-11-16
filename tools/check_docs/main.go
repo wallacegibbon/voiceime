@@ -5,6 +5,13 @@
 // be a heading in the target file (GitHub-style slug, with -1/-2 suffixes for
 // duplicate headings). External links (http, https, mailto) are skipped.
 //
+// A path named in prose or in a command block is the same claim in a form no
+// markdown parser sees, so those are checked too: `scripts/asr-service.sh`
+// appears in a dozen sentences and fenced commands, and a file that moved
+// leaves every one of them describing a checkout that no longer looks like
+// that. Absolute paths and `~/…` are claims about whoever's machine this is
+// run on, and are left alone.
+//
 // It is part of `make check`: the docs cross-reference each other densely and
 // an agent reads them the way it reads code, so a rotted reference is a
 // silent failure rather than a cosmetic one. It lives under tools/ rather
@@ -32,6 +39,10 @@ var (
 	linkRE = regexp.MustCompile(`\[[^\]]*\]\(([^)\s]+)\)`)
 	// A link embedded in a heading, reduced to its text for the slug.
 	linkInHeadingRE = regexp.MustCompile(`\[[^\]]*\]\([^)]*\)`)
+	// A path relative to this project's own directories, with the suffix of a file this
+	// project ships. The directories are named rather than any leading word matched:
+	// "the service/…" is prose, and a prose word is not a path to look for on disk.
+	projectPathRE = regexp.MustCompile(`(?:^|[^-~/\w])((?:docs|scripts|cmd|internal|tools)/[\w./-]+\.(?:md|sh|toml|go))`)
 )
 
 // isFenceEdge reports whether the line opens or closes a fenced code block.
@@ -166,6 +177,7 @@ func main() {
 
 	problems := 0
 	anchorsChecked := 0
+	pathsChecked := 0
 	for _, doc := range docs {
 		if !isFile(doc) {
 			fmt.Printf("docs-check: missing documentation file: %s\n", rel(root, doc))
@@ -181,6 +193,15 @@ func main() {
 			if isFenceEdge(line) {
 				inFence = !inFence
 				continue
+			}
+			// A path named in a fenced command is the strongest claim of the two: it is
+			// written as something to run.
+			for _, m := range projectPathRE.FindAllStringSubmatch(line, -1) {
+				pathsChecked++
+				if !isFile(filepath.Join(root, m[1])) {
+					fmt.Printf("%s:%d: no such file in this checkout: %s\n", rel(root, doc), i+1, m[1])
+					problems++
+				}
 			}
 			if inFence {
 				continue
@@ -216,5 +237,6 @@ func main() {
 		fmt.Printf("docs-check: %d broken reference(s)\n", problems)
 		os.Exit(1)
 	}
-	fmt.Printf("docs-check: %d files, %d anchors checked, all relative links and anchors resolve\n", len(docs), anchorsChecked)
+	fmt.Printf("docs-check: %d files, %d anchors and %d named paths checked, all resolve\n",
+		len(docs), anchorsChecked, pathsChecked)
 }

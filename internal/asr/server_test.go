@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/wallacegibbon/voiceime/internal/audio"
+	"github.com/wallacegibbon/voiceime/internal/config"
 )
 
 func TestServerTranscriberUploadsTheSegmentAndReturnsItsText(t *testing.T) {
@@ -287,5 +288,29 @@ func TestTranscribeReportsARefusedCredentialAsACredentialProblem(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "api_key") {
 		t.Errorf("error %q does not name the setting that fixes it", err)
+	}
+}
+
+// The settings keep a deadline in milliseconds and a request takes a time.Duration; that
+// conversion belongs to one function, because both halves of this program make this request -
+// the engine, and `voiceime transcribe` over a file - and a field listed in two places is a
+// field that can be forgotten in one of them.
+func TestTheSettingsBecomeOneRequest(t *testing.T) {
+	cfg := &config.Config{
+		ASRServerURL:       "https://api.example.com/api/paas/v4/audio/transcriptions",
+		Model:              "glm-asr-2512",
+		APIKey:             "sk-example",
+		Language:           "en",
+		ASRServerTimeoutMS: 2500,
+	}
+	got := NewServerTranscriber(cfg)
+	if got.BaseURL != cfg.ASRServerURL {
+		t.Errorf("BaseURL = %q, want the settings' address used exactly as written", got.BaseURL)
+	}
+	if got.Model != cfg.Model || got.APIKey != cfg.APIKey || got.Language != cfg.Language {
+		t.Errorf("the request carries %+v, want the id, credential and language the settings name", got)
+	}
+	if got.Timeout != 2500*time.Millisecond {
+		t.Errorf("Timeout = %v, want 2.5s: asr_server_timeout_ms is milliseconds", got.Timeout)
 	}
 }

@@ -436,13 +436,7 @@ func (h *PushToTalk) transcriber() asr.Transcriber {
 	if h.NewTranscriber != nil {
 		return h.NewTranscriber()
 	}
-	return asr.ServerTranscriber{
-		BaseURL:  h.Config.ASRServerURL,
-		Model:    h.Config.Model,
-		APIKey:   h.Config.APIKey,
-		Language: h.Config.Language,
-		Timeout:  time.Duration(h.Config.ASRServerTimeoutMS) * time.Millisecond,
-	}
+	return asr.NewServerTranscriber(h.Config)
 }
 
 // hasContent reports whether text carries a letter or a digit, which is what separates a

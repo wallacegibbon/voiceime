@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/wallacegibbon/voiceime/internal/audio"
+	"github.com/wallacegibbon/voiceime/internal/config"
 )
 
 // Transcriber turns one recording into text.
@@ -44,6 +45,23 @@ type ServerTranscriber struct {
 }
 
 var _ Transcriber = ServerTranscriber{}
+
+// NewServerTranscriber is the request the settings describe: the address exactly as it is
+// written, the id that address is asked for, the credential if there is one, the language if
+// one was named, and the deadline the settings set.
+//
+// One function, because two halves of this program make that request - the engine, and
+// `voiceime transcribe`, which is the same path asked of a file instead of a microphone -
+// and a second place that lists the fields is a second place where one can be forgotten.
+func NewServerTranscriber(cfg *config.Config) ServerTranscriber {
+	return ServerTranscriber{
+		BaseURL:  cfg.ASRServerURL,
+		Model:    cfg.Model,
+		APIKey:   cfg.APIKey,
+		Language: cfg.Language,
+		Timeout:  time.Duration(cfg.ASRServerTimeoutMS) * time.Millisecond,
+	}
+}
 
 // Transcribe uploads the recording and returns the text the server decoded.
 //

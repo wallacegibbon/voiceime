@@ -68,8 +68,9 @@ api_key        = "sk-…"                      # sent as Authorization: Bearer
 address with no id to ask it for, and it asks the address itself whether the credential is
 accepted - a refused credential is a failing finding rather than an ok one, and a wrong token and a
 missing token are reported differently, with the address's own reason kept. The file holds that
-token, so `config set` writes it `0600`; hand-editing it is fine and needs nothing extra. The
-proof is the same command as ever:
+token, so `config set` writes it `0600`; hand-editing it is fine and needs nothing extra -
+and a later `config set` edits the line it was asked about, leaving your comments and your
+commented-out alternatives in the file. The proof is the same command as ever:
 
 ```sh
 "$BIN" transcribe --file sample_16k.wav

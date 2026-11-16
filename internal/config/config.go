@@ -198,22 +198,37 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
-// Save writes the config so that a later Load returns an identical value.
+// Save writes the settings so that a later Load returns an identical value.
+//
+// A file that exists is edited, not regenerated. Its comments, its commented-out alternatives,
+// its blank lines and the order of its keys belong to whoever reads it: an endpoint that was
+// switched away from is kept as a comment precisely so it can be switched back, and a document
+// built from a parsed struct has nowhere to put that. Only the lines holding a key this program
+// owns are replaced, and a key the file does not have is added at the end. A file that is not
+// there is written whole, with the header that says where the key reference is.
 func Save(cfg *Config, path string) error {
-	var builder strings.Builder
-	builder.WriteString("# voiceime configuration.\n")
-	builder.WriteString("# Managed by `voiceime config set`; hand-editing is fine and supported.\n")
-	builder.WriteString("# Key reference: `voiceime capabilities`, docs/AGENT.md.\n\n")
-	if err := toml.NewEncoder(&builder).Encode(cfg); err != nil {
+	document, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
+	}
+	if strings.TrimSpace(string(document)) == "" {
+		document = []byte(settingsHeader)
+	}
+	text := string(document)
+	for _, field := range cfg.Fields() {
+		text = setKeyInDocument(text, field.Key, encodeValue(field.Value))
 	}
 	// 0600, not 0644: `api_key` is a bearer token, and a file that can hold a credential is
 	// not something everyone who can read this home directory should be able to read.
 	// CreateTemp already made the temporary file 0600; the chmod names it explicitly so that
 	// a file written before credentials could live here is tightened the next time anything
 	// is written to it.
-	return WriteFile(path, []byte(builder.String()), 0o600)
+	return WriteFile(path, []byte(text), 0o600)
 }
+
+const settingsHeader = "# voiceime configuration.\n" +
+	"# Managed by `voiceime config set`; hand-editing is fine and supported.\n" +
+	"# Key reference: `voiceime capabilities`, docs/AGENT.md.\n"
 
 // WriteFile replaces path with data atomically, creating its directory.
 func WriteFile(path string, data []byte, perm os.FileMode) error {

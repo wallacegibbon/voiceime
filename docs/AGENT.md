@@ -123,6 +123,12 @@ supported and needs the same command. No step comes first: the file appears with
 first value written, and `voiceime config show` prints what is on record (or the defaults,
 with `exists: false`, when there is no file).
 
+Writing the file edits it; it does not replace it. The line for the key being set is changed
+where it stands, a key the file does not have is added at the end, and everything else - the
+comment above a value, the endpoint someone switched away from and commented out instead of
+deleting, the blank lines and the order - is copied through. A settings file is where a setup
+keeps its reasons, and a write that regenerated it from the parsed values used to lose them.
+
 A settings file holding only what a person owns is a settings file an agent can write by hand.
 
 ## Verifying

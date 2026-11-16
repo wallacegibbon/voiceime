@@ -245,10 +245,10 @@ func runRemove(ctx *Context) error {
 		removed = append(removed, "the input source "+fmt.Sprint(inputSource["source"]))
 	}
 	// The settings file is left alone. What was configured may be an endpoint the user pays
-	// for, and "uninstall the program" is not permission to delete what they wrote: `config
-	// show` prints it, and removing the installation leaves a working file they can keep or
-	// edit. After this command the endpoint finding says what it always says: whether anything
-	// answers.
+	// for, and "uninstall the program" is not permission to delete what they wrote: nothing
+	// in this program wrote that file, nothing in it prints the file back, and after this
+	// command the file is still the whole record of the setup - the endpoint finding will go
+	// on saying whether anything answers what is written in it.
 
 	if !ctx.JSON {
 		if len(removed) == 0 {

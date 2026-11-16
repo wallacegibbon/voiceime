@@ -1,8 +1,8 @@
 # Measured numbers
 
 Every figure below was measured on the reference machine (AMD Ryzen 7 5800U, 8 physical
-cores, an audio.cpp build for the cpu backend, 8 workers - which is what `voiceime apply`
-derives here), with the model each row names.
+cores, an audio.cpp build for the cpu backend, 8 workers - which is what
+`scripts/asr-service.sh` counts here from `/proc/cpuinfo`), with the model each row names.
 
 ## Decode speed
 
@@ -12,14 +12,19 @@ The offline entry reads the whole recording and answers once. Wall time from
 | Model | Audio | Decode | RTF |
 |---|---|---|---|
 | SenseVoice small q8 (default) | 3.0 s | 0.11 s | 0.04 |
+| SenseVoice small q8 | 7.5 s | 0.25 s | 0.03 |
 | SenseVoice small q8 | 34.5 s | 1.58 s | 0.05 |
+| SenseVoice small q8 | 120 s (a 7.5 s clip repeated) | 12.3 s | 0.10 |
 | Qwen3-ASR 0.6B q8 | 3.36 s | 0.66 s | 0.20 |
 | Qwen3-ASR 0.6B q8 | 10.5 s | 1.35 s | 0.13 |
 | Qwen3-ASR 0.6B q8 | 34.5 s | 4.42 s | 0.13 |
 
-RTF falls as the recording grows (fixed overhead amortises), so the wait after a release is
-`RTF × the length of what you said`: about 1.6 s for a 35 s sentence with SenseVoice, 4.4 s
-with Qwen3-0.6B. `asr_server_timeout_ms` (30 s) is the ceiling on one decode.
+The wait after a release is about `RTF × the length of what you said`: 1.6 s for a 35 s
+sentence with SenseVoice, 4.4 s with Qwen3-0.6B. RTF does not keep falling as the recording
+grows: SenseVoice amortises down to 0.03-0.05 out to 35 s and came back up to 0.10 at two
+minutes. `asr_server_timeout_ms` (30 s) is the ceiling on one decode, and with
+`max_utterance_seconds` (60 s) it is never reached on this machine: the worst measured rate
+times the longest allowed hold is about 6 s.
 
 ## What starting a model costs
 
@@ -50,12 +55,14 @@ SenseVoice small refuses a recording longer than its encoder can hold, in its ow
 |---|---|
 | 28 s (real speech) | decodes |
 | 90 s (a 7.5 s clip repeated) | decodes |
+| 120 s (the same clip) | decodes |
 | 418 s | `500 … SenseVoice encoder input exceeds positional capacity` |
 
-The boundary was not narrowed. Nothing in the model's metadata or in the service's
-`/v1/models` answer states a maximum, so voiceime cannot name one and passes the refusal
-through as the server's own sentence. `max_utterance_seconds` (60 s) is inside what was
-accepted here, which is the only reason that default is safe.
+The boundary is somewhere above two minutes and below seven; it was not narrowed further.
+Nothing in the model's metadata or in the service's `/v1/models` answer states a maximum, so
+voiceime cannot name one and passes the refusal through as the server's own sentence.
+`max_utterance_seconds` (60 s) is inside what was accepted here, which is the only reason
+that default is safe.
 
 ## What the models do with non-speech
 
@@ -202,12 +209,11 @@ The reference machine holds two runnable audio.cpp servers, dated the same hour:
 Both answer `/health`; both were built from the same tree. A tool that re-derived the answer
 at every start - search the machine, pick the first hit, run it - therefore had two different
 answers depending on which directory it happened to look in first, and every command it then
-printed said "ok" about whichever inference it had picked. That is why the answer is settled
-once, by `voiceime apply`, and written into the unit's `ExecStart`: the file systemd reads is
-the record of the decision, and `doctor` compares that record with the machine instead of
-making the decision again. A build tree is preferred over `PATH` because the installed copy is
-usually the older one; both paths are named in `apply`'s output when the machine holds more
-than one.
+printed said "ok" about whichever inference it had picked. That is why nothing searches: the
+path is an argument, named once by the person who runs `scripts/asr-service.sh`, and what
+systemd starts is the file that argument named - the unit's `ExecStart` is the record of that
+decision, not something re-derived at boot. voiceime never sees the question at all: it posts
+to an address.
 
 The two builds are not equivalent in any way that can be seen from the outside - same banner,
 same reported backends, same model served - which is the reason the choice is reported rather

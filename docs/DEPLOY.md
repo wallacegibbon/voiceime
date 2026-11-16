@@ -101,8 +101,10 @@ scripts/asr-service.sh \
   ~/models/SenseVoice-Small-GGUF/sensevoice-small-q8-audiocpp-v1.gguf
 # assert: wrote:     /home/<user>/.local/share/audiocpp-asr/serve.json
 #         wrote:     /home/<user>/.config/systemd/user/audiocpp-asr.service
-#         serving: sensevoice-small-q8-audiocpp-v1 (cpu, 8 threads) from <the checkpoint>
-#         write these two lines in /home/<user>/.config/voiceime/config.toml:
+#         serving: 1 model(s) on this machine (backend cpu, 8 threads)
+#           sensevoice-small-q8-audiocpp-v1   loaded at start-up     <- <that checkpoint>
+#         write these two lines in /home/<user>/.config/voiceime/config.toml; this
+#         script does not edit that file:
 #           asr_server_url = "http://127.0.0.1:18080/v1/audio/transcriptions"
 #           model          = "sensevoice-small-q8-audiocpp-v1"
 ```

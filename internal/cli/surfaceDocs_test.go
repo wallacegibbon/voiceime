@@ -99,9 +99,9 @@ func documentedSurface(doc string) surfaceDocument {
 			}
 			name := fields[1]
 			actions := []string{}
-			// Only `voiceime config show|get|set` states actions, and it states them as the
-			// second word. Anything else that comes next is a flag, a placeholder or a
-			// comment, and belongs to the person reading the block, not to the surface.
+			// A command with actions states them as its second word, separated by `|`.
+			// Anything else that comes next is a flag, a placeholder or a comment, and
+			// belongs to the person reading the block, not to the surface.
 			if len(fields) > 2 && !strings.ContainsAny(fields[2], "#-[<") {
 				for _, action := range strings.Split(fields[2], "|") {
 					if action != "" {

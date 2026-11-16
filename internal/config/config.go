@@ -332,18 +332,6 @@ func (c *Config) Fields() []Field {
 	return fields
 }
 
-// Get returns one setting by its TOML key.
-func (c *Config) Get(key string) (any, error) {
-	value := reflect.ValueOf(c).Elem()
-	typ := value.Type()
-	for i := 0; i < typ.NumField(); i++ {
-		if strings.Split(typ.Field(i).Tag.Get("toml"), ",")[0] == key {
-			return value.Field(i).Interface(), nil
-		}
-	}
-	return nil, fmt.Errorf("unknown setting %q; run `voiceime capabilities` for the list", key)
-}
-
 // --------------------------------------------------------------------------- //
 
 // FindExecutable returns the first of names present on PATH, or "".

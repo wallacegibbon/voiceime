@@ -91,10 +91,9 @@ func TestAdviceNamesASettingThatExists(t *testing.T) {
 }
 
 // configSettingRE matches the advice form, not the code: a Fix or message sentence that tells
-// someone which key to write. It is written two ways now - "write <key> = ..." for the
-// settings file, and `voiceime config get <key>` for reading it - and both name a key the
-// program has to have.
-var configSettingRE = regexp.MustCompile(`voiceime config get ([a-z_]+)|write ([a-z_]+) = `)
+// someone which key to write, in the file that holds it. A key renamed or dropped is the
+// drift this catches.
+var configSettingRE = regexp.MustCompile(`write ([a-z_]+) = `)
 
 // walkStringLiterals calls visit with the value of every string literal in the module's Go
 // files. Only literals are read: those are the sentences a caller acts on. Comments may talk

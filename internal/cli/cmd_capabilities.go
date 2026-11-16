@@ -9,74 +9,19 @@ import (
 	"github.com/wallacegibbon/voiceime/internal/ibus"
 )
 
-// configActions is the whole of the configuration command: look at the file, read one
-// value. Nothing here writes it - the settings are a file a person owns, and the project
-// ships `config.example.toml` for them to copy - and nothing here applies it: that is
-// `voiceime apply`, which converges everything that reads the file at once. Asking where
-// the file is is not an action either: `show` starts with its path, and `capabilities`
-// prints it without running any action at all.
-var configActions = []string{"show", "get"}
-
-func cmdConfig() *Command {
-	return &Command{
-		Name:    "config",
-		Summary: "Read the configuration file",
-		Actions: configActions,
-		Usage:   usageLine("config", configActions, "[args]"),
-		Run: func(ctx *Context, args []string) error {
-			return runConfig(ctx, args)
-		},
-	}
-}
-
-func runConfig(ctx *Context, args []string) error {
-	if len(args) == 0 {
-		return UsageError("config needs an action: %s", strings.Join(configActions, ", "))
-	}
-	action, rest := args[0], args[1:]
-
-	switch action {
-	case "show":
-		fields := ctx.Config.Fields()
-		ctx.Print("%s", ctx.ConfigPath)
-		if !fileExists(ctx.ConfigPath) {
-			// The shape of a fresh install. Saying so is what keeps "these are the
-			// defaults" and "these are your settings" distinguishable - and the file is
-			// not written for them, because the file belongs to the person who reads it.
-			ctx.Print("(no file yet: these are the defaults. copy the example the project ships,")
-			ctx.Print("config.example.toml, to that path and edit it; `voiceime doctor` then names")
-			ctx.Print("what is still missing)")
-		}
-		for _, field := range fields {
-			ctx.Print("%-22s %v", field.Key, field.Value)
-		}
-		return ctx.Emit("config show", map[string]any{
-			"path":   ctx.ConfigPath,
-			"exists": fileExists(ctx.ConfigPath),
-			"fields": fields,
-		})
-
-	case "get":
-		if len(rest) != 1 {
-			return UsageError("config get needs exactly one key")
-		}
-		value, err := ctx.Config.Get(rest[0])
-		if err != nil {
-			return UsageError("%v", err)
-		}
-		ctx.Print("%v", value)
-		return ctx.Emit("config get", map[string]any{"key": rest[0], "value": value})
-
-	}
-
-	return UsageError("unknown config action %q; config takes %s", action, strings.Join(configActions, ", "))
-}
-
+// fileExists is asked of the filesystem, never of a memory of it: the component file, the
+// settings file and a model service's config can each have been moved by hand.
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
 }
 
+// cmdCapabilities is the whole of what this program will do, and what it will do it with: the
+// commands, the settings with the values currently on record, the paths, the exit codes, the
+// documents. It is one command because it is one question - "what would this program do, and
+// with what values" - and a second command over the same answers is how a tool ends up
+// describing itself differently in two places. The settings have no reader but this program,
+// and their file has no writer but the person editing it.
 func cmdCapabilities() *Command {
 	return &Command{
 		Name:    "capabilities",
@@ -150,8 +95,18 @@ func runCapabilities(ctx *Context, args []string) error {
 	if !ctx.JSON {
 		ctx.Print("voiceime %s", Version)
 		ctx.Print("config: %s", ctx.ConfigPath)
+		if !fileExists(ctx.ConfigPath) {
+			// The shape of a fresh install. Saying so is what keeps "these are the
+			// defaults" and "these are your settings" distinguishable - and nothing is
+			// written for the person: the file is theirs to copy and keep.
+			ctx.Print("  (no file: those are the defaults. copy config.example.toml from the project to")
+			ctx.Print("   that path and edit it; `voiceime doctor` names what is still missing)")
+		}
+		for _, field := range ctx.Config.Fields() {
+			ctx.Print("  %-22s %v", field.Key, field.Value)
+		}
 		ctx.Print("commands: %s", commandNames())
-		ctx.Print("set `--json` for the full surface")
+		ctx.Print("set `--json` for the same thing with what each setting is for, the paths, and the exit codes")
 	}
 	return ctx.Emit("capabilities", document)
 }

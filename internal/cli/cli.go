@@ -117,27 +117,12 @@ type Command struct {
 	Run     func(ctx *Context, args []string) error
 }
 
-// usageLine builds a command's usage from its declared actions, so the list of accepted
-// actions is written once: the same list appears in the usage line, in the error that says
-// what was accepted, and in `capabilities`.
-func usageLine(name string, actions []string, arguments string) string {
-	line := "voiceime " + name
-	if len(actions) > 0 {
-		line += " <" + strings.Join(actions, "|") + ">"
-	}
-	if arguments != "" {
-		line += " " + arguments
-	}
-	return line
-}
-
 // commands is the registry. It is a function rather than a package variable so
 // the list cannot be mutated accidentally, and so tests can call it twice.
 func commands() []*Command {
 	return []*Command{
 		cmdCapabilities(),
 		cmdApply(),
-		cmdConfig(),
 		cmdDoctor(),
 		cmdRemove(),
 		cmdIBusEngine(),

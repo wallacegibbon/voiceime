@@ -33,7 +33,6 @@ numbers are in [measurements.md](measurements.md).
 ```
 voiceime apply                                   # install the engine: component, desktop entry, session
 voiceime remove                                  # take back what apply installed
-voiceime config show|get
 voiceime doctor                                  # every prerequisite, machine-readable
 voiceime transcribe [--file recording.wav | --seconds N]
 voiceime capabilities                            # the surface: commands, settings, paths, exit codes
@@ -140,11 +139,11 @@ same `Load` the engine calls, by a test that fails when the sample and the defau
 apart - so the file a person copies is checked the way the code is. A comment in that file
 can hold the endpoint someone switched away from instead of deleting it, which is the whole
 reason the file is edited by hand rather than generated: a settings file is where a setup
-keeps its reasons. `voiceime config show` prints the path and what is on record (the
-defaults, with `exists: false`, when there is no file); `voiceime config get <key>` is the
-only reader of one effective value, which is why the model service's script asks for an
-address through this program instead of parsing the TOML itself. Neither writes anything, and
-`voiceime apply` is what puts a changed value into processes that are already running.
+keeps its reasons. `voiceime capabilities` is the only place any of it is reported - the
+path, whether a file exists there at all, and every key with the value that would be used -
+because a second command over the same answers is how a tool comes to describe itself
+differently in two places. Nothing here writes the file, and `voiceime apply` is what puts a
+changed value into processes that are already running.
 
 A settings file holding only what a person owns is a settings file a person can keep by
 hand - and one an agent can write from scratch, which is what the sample is for.

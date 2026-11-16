@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -278,32 +277,4 @@ func writeUnitForTest(t *testing.T, unit string) string {
 		t.Fatal(err)
 	}
 	return path
-}
-
-// Reading is the half of this command that stays: every setting is reachable by key, and a
-// key that is not one is refused rather than answered with an empty string. A deployment
-// script asks for an address this way instead of parsing the file itself - which is the
-// only way there is one owner of the format - and a person typing it by hand gets the same
-// answer `config show` prints.
-func TestConfigGetReadsEverySetting(t *testing.T) {
-	configPath := freshConfig(t)
-	onRecord, err := config.Load(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, field := range onRecord.Fields() {
-		code, stdout, stderr := runForTest(t, "--config", configPath, "config", "get", field.Key)
-		if code != ExitOK {
-			t.Errorf("config get %s: exit %d, stderr %s", field.Key, code, stderr)
-			continue
-		}
-		if strings.TrimSpace(stdout) != fmt.Sprint(field.Value) {
-			t.Errorf("config get %s printed %q, want the value on record (%q)", field.Key, stdout, field.Value)
-		}
-	}
-	if code, _, stderr := runForTest(t, "--config", configPath, "config", "get", "no_such_key"); code != ExitUsage {
-		t.Errorf("an unknown setting exited %d, want %d. stderr: %s", code, ExitUsage, stderr)
-	} else if !strings.Contains(stderr, "unknown setting") {
-		t.Errorf("stderr = %q, want it to name the problem", stderr)
-	}
 }

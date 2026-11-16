@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"strings"
 
@@ -36,28 +35,37 @@ type Config struct {
 	// Model is the id named in the request, and it is required: the program does not ask an
 	// address what it serves, because a model list is a catalogue and not a promise about what
 	// this account accepts, and an endpoint may publish none at all.
-	Model string `toml:"model" desc:"The model id to name in the request. Required."`
+	Model string `toml:"model"`
 
 	// APIKey is sent as `Authorization: Bearer <value>`. A credential lives here rather
-	// than in an environment the engine never starts.
-	APIKey string `toml:"api_key" desc:"Bearer token for the address; empty sends no Authorization header."`
+	// than in an environment the engine never starts; empty sends no header.
+	APIKey string `toml:"api_key"`
 
-	Language   string `toml:"language" desc:"Recognition language code, e.g. zh or en."`
-	TextScript string `toml:"text_script" desc:"Chinese output script: simplified converts Traditional characters to Simplified; preserve leaves them."`
+	// Language is the code passed to the model. Empty asks it to detect the language from
+	// the audio, which is usually worse for Chinese and better for most other languages.
+	Language string `toml:"language"`
+
+	// TextScript is what happens to Chinese output: simplified converts whatever script the
+	// model produced, preserve leaves it as it came.
+	TextScript string `toml:"text_script"`
 
 	// A hold whose key never comes up stops recording here.
-	MaxUtteranceSeconds float64 `toml:"max_utterance_seconds" desc:"Stop one recording after this many seconds."`
+	MaxUtteranceSeconds float64 `toml:"max_utterance_seconds"`
 
 	// The whole request address, used verbatim: no route is appended, nothing is derived from
 	// it, and the same string is what `curl` would be pointed at.
-	ASRServerURL       string `toml:"asr_server_url" desc:"The address a recording is POSTed to, used exactly as written: the whole address, path included, of anything that answers the transcription protocol."`
-	ASRServerTimeoutMS int    `toml:"asr_server_timeout_ms" desc:"Deadline for one transcription."`
+	ASRServerURL string `toml:"asr_server_url"`
 
-	CaptureSource string `toml:"capture_source" desc:"PipeWire source name; empty uses the default input."`
+	// The deadline for one transcription, from the end of the recording to the text.
+	ASRServerTimeoutMS int `toml:"asr_server_timeout_ms"`
+
+	// A PipeWire source name. Empty uses whatever the sound server says is the default
+	// input.
+	CaptureSource string `toml:"capture_source"`
 
 	// Held down to dictate. A modifier is required, so the press cannot also be ordinary
 	// typing.
-	PushToTalk string `toml:"push_to_talk" desc:"Combination held down to dictate; the release transcribes the recording."`
+	PushToTalk string `toml:"push_to_talk"`
 
 	// Where these values came from, recorded by Load so a validation finding can name the
 	// file to edit. Nothing in this program writes that file: a finding that says what to
@@ -92,36 +100,13 @@ func xdg(env, fallback string) string {
 // ConfigDir is ~/.config/voiceime by default.
 func ConfigDir() string { return filepath.Join(xdg("XDG_CONFIG_HOME", ".config"), AppName) }
 
-// CacheDir holds disposable state that is nobody's input: the engine's log, and nothing the
-// program reads back.
+// CacheDir holds state that is written and never read back by this program: the engine's
+// log, which ibus-daemon's child writes because its own stdout is discarded.
 func CacheDir() string { return filepath.Join(xdg("XDG_CACHE_HOME", ".cache"), AppName) }
 
 // DataDir holds installed component definitions such as the IBus XML.
 func DataDir() string {
 	return filepath.Join(xdg("XDG_DATA_HOME", filepath.Join(".local", "share")), AppName)
-}
-
-// RuntimeDir holds state that belongs to one session: the daemon socket, the
-// generated audio.cpp service config. A desktop session owns it (systemd's logind
-// sets XDG_RUNTIME_DIR to a private directory that is emptied at logout), and a
-// machine without one has nothing session-scoped to offer, so the answer degrades
-// to the cache directory - still disposable, just no longer per-login.
-//
-// It is never relative: a generated path that depended on the caller's working
-// directory would be a different file to the installer, the service and `doctor`.
-func RuntimeDir() string {
-	if base := os.Getenv("XDG_RUNTIME_DIR"); base != "" {
-		if info, err := os.Stat(base); err == nil && info.IsDir() {
-			return filepath.Join(base, AppName)
-		}
-	}
-	if cache := CacheDir(); filepath.IsAbs(cache) {
-		return filepath.Join(cache, "run")
-	}
-	// No session directory and no home: the cache answer would be relative. The
-	// temp directory is the only remaining answer that is the same file to
-	// whoever resolves it.
-	return filepath.Join(os.TempDir(), AppName)
 }
 
 // EnvironmentDir is the directory the systemd user manager reads the session
@@ -186,8 +171,7 @@ func Load(path string) (*Config, error) {
 	}
 	if len(unknown) > 0 {
 		sort.Strings(unknown)
-		return nil, fmt.Errorf("%s: unknown setting(s) %s (run `voiceime capabilities` for valid keys)",
-			path, strings.Join(unknown, ", "))
+		return nil, fmt.Errorf("%s: unknown setting(s) %s", path, strings.Join(unknown, ", "))
 	}
 	return cfg, nil
 }
@@ -209,12 +193,12 @@ type Issue struct {
 func (c *Config) FixLine(key, line string) string { return c.writeIn(key, line) }
 
 // writeIn is the fix for a value only a person changes: the line, and the file it belongs
-// to. Load records that path; a Config built inside a test has none, and says where to
-// find it rather than naming a file that does not exist.
+// to. Load records that path; a Config built inside a test has none, and says which file it
+// means in words rather than naming a file that does not exist.
 func (c *Config) writeIn(key, line string) string {
 	where := c.path
 	if where == "" {
-		where = "the settings file (`voiceime capabilities` prints its path)"
+		where = "the settings file"
 	}
 	return fmt.Sprintf("write %s = %s in %s", key, line, where)
 }
@@ -284,38 +268,6 @@ func Errors(issues []Issue) []Issue {
 		}
 	}
 	return out
-}
-
-// --------------------------------------------------------------------------- //
-
-// Field describes one setting for agents: its TOML key, Go type, current value
-// and what it does.
-type Field struct {
-	Key         string `json:"key"`
-	Type        string `json:"type"`
-	Value       any    `json:"value"`
-	Description string `json:"description"`
-}
-
-// Fields lists every setting in file order.
-func (c *Config) Fields() []Field {
-	value := reflect.ValueOf(c).Elem()
-	typ := value.Type()
-	fields := make([]Field, 0, typ.NumField())
-	for i := 0; i < typ.NumField(); i++ {
-		structField := typ.Field(i)
-		key := strings.Split(structField.Tag.Get("toml"), ",")[0]
-		if key == "" || key == "-" {
-			continue
-		}
-		fields = append(fields, Field{
-			Key:         key,
-			Type:        structField.Type.String(),
-			Value:       value.Field(i).Interface(),
-			Description: structField.Tag.Get("desc"),
-		})
-	}
-	return fields
 }
 
 // --------------------------------------------------------------------------- //

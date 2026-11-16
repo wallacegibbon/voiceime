@@ -1,8 +1,8 @@
 # voiceime settings.
 #
-# Copy this file to ~/.config/voiceime/config.toml and change only what is yours. The
-# exact path this program reads is printed by `voiceime config show` and by
-# `voiceime capabilities`.
+# Copy this file to ~/.config/voiceime/config.toml and change only what is yours. That path
+# is where this program looks; nothing writes the file, and nothing prints it back - what is
+# in it is what runs.
 #
 # Nothing writes this file. Every value in it was put there by a person, and every value
 # in it is read again each time a process starts; `voiceime apply` is what puts a changed
@@ -11,7 +11,7 @@
 # opened, with the key and the reason named.
 #
 # What each key means, and what happens when it is wrong: docs/AGENT.md, section
-# "Settings". `voiceime capabilities` is the same list for a program to read.
+# "Settings".
 #
 # A credential can live here, so keep the file readable only by you: chmod 600.
 

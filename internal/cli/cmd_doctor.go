@@ -105,23 +105,9 @@ func runDoctor(ctx *Context) []Check {
 		report(Check{ID: "capture", Status: "ok", Detail: detail})
 	}
 
-	// 4. Text delivery through IBus.
-	state := ibusState()
-	status := "ok"
-	detail := "IBus is running"
-	fix := ""
-	if installed, _ := state["installed"].(bool); !installed {
-		status, detail = "fail", "the ibus CLI is not installed; text delivery is impossible"
-		fix = "sudo apt install ibus"
-	} else if running, _ := state["daemon_running"].(bool); !running {
-		status, detail = "fail", "ibus-daemon is not reachable"
-		fix = "ibus-daemon -drx"
-	} else if registered, _ := state["engine_registered"].(bool); !registered {
-		status = "fail"
-		detail = "the engine is not registered with IBus"
-		fix = "voiceime apply"
-	}
-	report(Check{ID: "ibus", Status: status, Detail: detail, Fix: fix})
+	// 4. Text delivery through IBus: whether the bus is there, and whether it knows this
+	// engine.
+	ibusCheck(report)
 
 	// 5. Optional feedback tools. Missing ones degrade UX, never function.
 	var optional []string

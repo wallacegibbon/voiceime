@@ -24,15 +24,13 @@ fixes it. The rest of this page is those commands, in order.
 
 ```sh
 cp config.example.toml ~/.config/voiceime/config.toml
-"$BIN" capabilities
 ```
 
 The settings are one file, and the only thing that writes it is whoever edits it. The sample
 in this project is that file with every key present and its reason beside it; copy it and
-change what is yours. `capabilities` prints the path this program actually reads and every
-setting with the value on record - on a machine that has no file yet, the defaults, and a
-line saying which file to copy. There is no other command for the settings: one place
-reports them, and it is this one.
+change what is yours. Nothing prints the settings back: the file is the record, and the only
+question about it that has an answer - can this work, and if not which line - is `doctor`'s
+`config` finding.
 
 What belongs to the person using it: `language`, `text_script`, `push_to_talk`, and the
 safety limit on one recording. The sample's defaults are one machine's answers - Simplified

@@ -49,12 +49,22 @@ func TestTranscribeSaysWhenNothingWasRecognized(t *testing.T) {
 	}
 
 	// The machine-readable form already said this, and stays as it was: the empty string
-	// and the timing are the finding, and no caller wants to parse a sentence.
+	// and the timing are the finding, and no caller wants to parse a sentence. This is also
+	// where "a successful `--json` is one object on stdout and nothing on stderr" is
+	// asserted: it is the one command that answers without the desktop, the keyboard or a
+	// model service, so it is the one that can be run in a test.
 	code, stdout, stderr = runForTest(t, "--config", configPath, "--json", "transcribe", "--file", wavPath)
 	if code != ExitOK {
 		t.Fatalf("--json exited %d, stderr %s", code, stderr)
 	}
-	payload := decodeOne(t, stdout)["data"].(map[string]any)
+	if stderr != "" {
+		t.Errorf("a successful --json wrote to stderr: %s", stderr)
+	}
+	envelope := decodeOne(t, stdout)
+	if envelope["ok"] != true {
+		t.Errorf("ok = %v, want true", envelope["ok"])
+	}
+	payload := envelope["data"].(map[string]any)
 	if payload["text"] != "" {
 		t.Errorf("text = %v, want the empty string the server returned", payload["text"])
 	}

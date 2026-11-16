@@ -1,9 +1,11 @@
 # Agent guide
 
 Everything here is non-interactive and `--json` on request, so an agent can install,
-configure and verify voiceime by reading this file and running commands.
-`voiceime capabilities --json` prints the same surface at runtime, derived from the code
-(machine state is `doctor`'s, never repeated here); if the two disagree, the runtime wins.
+configure and verify voiceime by reading this file and running commands. The two lists below -
+the commands and the settings - are the whole surface, and a test compares them with what the
+build actually has, in both directions, because a document an agent follows has to be the program
+it is running. What is true of *this machine* is never written here: `voiceime doctor` reports
+that, with a fix beside each finding.
 
 **Scope.** Commands and settings. The procedure for a new machine is
 [DEPLOY.md](DEPLOY.md); the recognition path is [asr.md](asr.md); what the engine sends over
@@ -35,7 +37,6 @@ voiceime apply                                   # install the engine: component
 voiceime remove                                  # take back what apply installed
 voiceime doctor                                  # every prerequisite, machine-readable
 voiceime transcribe [--file recording.wav | --seconds N]
-voiceime capabilities                            # the surface: commands, settings, paths, exit codes
 ```
 
 One name appears in the surface that is not a command to run by hand: `ibus-daemon` spawns
@@ -139,11 +140,14 @@ same `Load` the engine calls, by a test that fails when the sample and the defau
 apart - so the file a person copies is checked the way the code is. A comment in that file
 can hold the endpoint someone switched away from instead of deleting it, which is the whole
 reason the file is edited by hand rather than generated: a settings file is where a setup
-keeps its reasons. `voiceime capabilities` is the only place any of it is reported - the
-path, whether a file exists there at all, and every key with the value that would be used -
-because a second command over the same answers is how a tool comes to describe itself
-differently in two places. Nothing here writes the file, and `voiceime apply` is what puts a
-changed value into processes that are already running.
+keeps its reasons.
+
+Nothing reports them either. There is no command that prints the settings back, because the
+file is the record and the only question worth asking about it - can this work? - is answered
+where the answer matters: `voiceime doctor`'s `config` finding, the engine refusing to start,
+`apply` refusing to change anything. A command that recites the settings is a second place
+they would be kept. `voiceime apply` is what puts a changed value into processes that are
+already running.
 
 A settings file holding only what a person owns is a settings file a person can keep by
 hand - and one an agent can write from scratch, which is what the sample is for.

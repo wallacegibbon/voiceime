@@ -11,8 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-
-	"github.com/wallacegibbon/voiceime/internal/config"
 )
 
 // Advice names commands, and the commands live in another file. Deleting one leaves every
@@ -49,10 +47,10 @@ func TestAdviceNamesACommandThatExists(t *testing.T) {
 	// count is part of the assertion.
 	// The number is below what the module holds today and far above zero: it exists to
 	// catch the pattern stopping, not to hold the count. It came down with the commands
-	// that were only ever used at deployment, and down again when advice about a setting
-	// stopped being written as a command to run - it is a line in a file now, and the test
-	// below is the one that reads those.
-	if checked < 25 {
+	// that were only ever used at deployment, again when advice about a setting stopped
+	// being written as a command to run - it is a line in a file now, and the test below
+	// is the one that reads those - and again with the command that recited the surface.
+	if checked < 20 {
 		t.Fatalf("only %d pieces of advice checked: the pattern stopped matching", checked)
 	}
 	t.Logf("checked %d pieces of advice across the module", checked)
@@ -64,8 +62,8 @@ func TestAdviceNamesACommandThatExists(t *testing.T) {
 // away, so the tree checks them, in whichever of the two forms the advice is written.
 func TestAdviceNamesASettingThatExists(t *testing.T) {
 	keys := map[string]bool{}
-	for _, field := range config.Default().Fields() {
-		keys[field.Key] = true
+	for _, key := range settingNames() {
+		keys[key] = true
 	}
 
 	root := repositoryRoot(t)
@@ -78,7 +76,7 @@ func TestAdviceNamesASettingThatExists(t *testing.T) {
 				key = match[2]
 			}
 			if !keys[key] {
-				t.Errorf("%s: %q names no setting (run `voiceime capabilities` for the list)", path, match[0])
+				t.Errorf("%s: %q names no setting; the settings are the toml keys of config.Config", path, match[0])
 			}
 		}
 	}); err != nil {

@@ -3,7 +3,6 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,19 +17,6 @@ func runForTest(t *testing.T, args ...string) (code int, stdout, stderr string) 
 	var out, err bytes.Buffer
 	code = Run(args, &out, &err)
 	return code, out.String(), err.String()
-}
-
-// freshConfig writes a config that is usable - an endpoint, and the model to ask it for - so
-// that a test fails for the reason it is about rather than for an unrelated missing setting.
-func freshConfig(t *testing.T) string {
-	t.Helper()
-	configPath := filepath.Join(t.TempDir(), "config.toml")
-	body := fmt.Sprintf("asr_server_url = %q\nmodel = %q\n",
-		"http://127.0.0.1:18080", "sensevoice-small-q8-audiocpp-v1")
-	if err := os.WriteFile(configPath, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return configPath
 }
 
 // bareConfig writes a config with nothing in it: the shape of a fresh install, before anyone
@@ -55,23 +41,6 @@ func decodeOne(t *testing.T, text string) map[string]any {
 		t.Errorf("output holds more than one JSON document:\n%s", text)
 	}
 	return object
-}
-
-// A successful --json invocation is exactly one object on stdout and nothing on
-// stderr, so a caller can parse it without looking anywhere else.
-func TestJsonSuccessIsOneObjectOnStdout(t *testing.T) {
-	configPath := freshConfig(t)
-	code, stdout, stderr := runForTest(t, "capabilities", "--json", "--config", configPath)
-	if code != ExitOK {
-		t.Fatalf("exit %d, stderr %s", code, stderr)
-	}
-	payload := decodeOne(t, stdout)
-	if payload["ok"] != true {
-		t.Errorf("ok = %v, want true", payload["ok"])
-	}
-	if stderr != "" {
-		t.Errorf("stderr = %q, want empty on success", stderr)
-	}
 }
 
 // A failure is one object on stderr carrying an exit code and a fix, which is what

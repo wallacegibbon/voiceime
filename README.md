@@ -82,8 +82,9 @@ the text with its timing.
 | the IBus engine protocol, as measured | [docs/ibus-protocol.md](docs/ibus-protocol.md) |
 | measured numbers | [docs/measurements.md](docs/measurements.md) |
 
-The runtime is authoritative: `voiceime capabilities --json` prints the command and setting
-surface, `voiceime doctor --json` the state of this machine.
+The contract is [docs/AGENT.md](docs/AGENT.md): every command, setting, exit code and finding,
+with a test that compares the two lists it makes against what this build has. `voiceime doctor
+--json` is the state of this machine.
 
 ## Build
 

@@ -92,16 +92,6 @@ func (c *Context) writeEnvelope(envelope map[string]any) error {
 	return encoder.Encode(envelope)
 }
 
-// orEmpty renders a nil list as the empty one. Machine-readable output is read by code
-// that iterates: making "there are none" and "nothing was said" the same value keeps that
-// code from branching on a distinction that has no meaning here.
-func orEmpty(values []string) []string {
-	if values == nil {
-		return []string{}
-	}
-	return values
-}
-
 // Command is one subcommand. FlagSet is built per invocation so repeated calls
 // (tests) never share flag state.
 type Command struct {
@@ -110,8 +100,8 @@ type Command struct {
 	Usage   string
 	// Actions are the accepted first arguments, for the commands that have sub-actions
 	// rather than arguments. They are declared here because the same list is needed in
-	// three places: the usage line, the error that says what was accepted, and the
-	// surface `capabilities` prints. Written out three times, they drift.
+	// two places: the usage line, and the error that says what was accepted. Written out
+	// twice, they drift.
 	Actions []string
 	Flags   func(*flag.FlagSet)
 	Run     func(ctx *Context, args []string) error
@@ -121,7 +111,6 @@ type Command struct {
 // the list cannot be mutated accidentally, and so tests can call it twice.
 func commands() []*Command {
 	return []*Command{
-		cmdCapabilities(),
 		cmdApply(),
 		cmdDoctor(),
 		cmdRemove(),

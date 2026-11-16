@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/wallacegibbon/voiceime/internal/config"
 	"github.com/wallacegibbon/voiceime/internal/gnome"
 	"github.com/wallacegibbon/voiceime/internal/ibus"
 )
@@ -15,6 +16,43 @@ func installChecks(report func(Check)) {
 	componentEnvironmentCheck(report)
 	sessionEngineCheck(report)
 	runningBuildCheck(report)
+}
+
+// ibusCheck asks the two questions the engine cannot answer from inside itself: is the bus
+// running at all, and does it know this engine. An engine process that is up while the daemon
+// does not know the component is the half that a moved or unscanned component directory
+// breaks, and `component_exec` and `component_env` are about exactly that.
+func ibusCheck(report func(Check)) {
+	if config.FindExecutable("ibus") == "" {
+		report(Check{
+			ID:     "ibus",
+			Status: "fail",
+			Detail: "the ibus CLI is not installed; text delivery is impossible",
+			Fix:    "sudo apt install ibus",
+		})
+		return
+	}
+	if _, err := probe("ibus", "version"); err != nil {
+		report(Check{
+			ID:     "ibus",
+			Status: "fail",
+			Detail: "ibus-daemon is not reachable",
+			Fix:    "ibus-daemon -drx",
+		})
+		return
+	}
+	if registered, why := engineRegistered(); !registered {
+		report(Check{ID: "ibus", Status: "fail", Detail: why, Fix: "voiceime apply"})
+		return
+	}
+	report(Check{ID: "ibus", Status: "ok", Detail: "IBus is running, and the engine is listed"})
+}
+
+// fileExists is asked of the filesystem, never of a memory of it: the component file and the
+// settings file can each have been moved by hand.
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 func componentExecCheck(report func(Check)) {

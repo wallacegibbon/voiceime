@@ -24,12 +24,12 @@ BIN_DIR     ?= bin
 # root. `make install PREFIX=/usr/local` still works and then needs sudo.
 PREFIX      ?= $(HOME)/.local
 DESTDIR     ?=
-PKG         := github.com/wallacegibbon/voiceime
-# A version is stamped into the binary so `voiceime capabilities` can report what
-# a user actually has; without it the field would just say "dev" on every build.
+# A version comes from `git describe` and appears in what make itself prints. Nothing is
+# stamped into the binary: no command reports one, and a field no command reads is a field
+# every build would have to keep correct for nothing.
 VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 GOFLAGS     ?=
-LDFLAGS     ?= -s -w -X $(PKG)/internal/cli.Version=$(VERSION)
+LDFLAGS     ?= -s -w
 # The whole project is cgo-free: capture is a subprocess and text delivery is
 # D-Bus. Pinned here rather than in the environment so a stray CGO_ENABLED=1
 # cannot quietly reintroduce a toolkit dependency.
@@ -192,10 +192,6 @@ doctor: build ## Check this machine against the built binary
 	@# `make verify` meaningful and what an automated caller relies on. The
 	@# report itself is printed either way.
 	$(BIN_DIR)/$(BINARY) doctor
-
-.PHONY: capabilities
-capabilities: build ## Print the machine-readable command and config surface
-	$(BIN_DIR)/$(BINARY) capabilities --json
 
 .PHONY: verify
 verify: check doctor ## Run the tests and then check the machine

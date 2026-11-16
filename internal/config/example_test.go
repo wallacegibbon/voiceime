@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -32,10 +33,15 @@ func TestTheShippedExampleIsAFileThisProgramReads(t *testing.T) {
 	}
 	// And it changes nothing by itself: a sample whose values drift from the defaults is
 	// a second place those values are decided.
-	got, want := fromExample.Fields(), Default().Fields()
-	for i := range want {
-		if got[i].Key != want[i].Key || fmt.Sprint(got[i].Value) != fmt.Sprint(want[i].Value) {
-			t.Errorf("the example sets %s to %v; the default is %v", got[i].Key, got[i].Value, want[i].Value)
+	got, want := settingsOf(t, fromExample), settingsOf(t, Default())
+	for key, wantValue := range want {
+		value, found := got[key]
+		if !found {
+			t.Errorf("the example says nothing about %s, which is a setting this program reads", key)
+			continue
+		}
+		if value != wantValue {
+			t.Errorf("the example sets %s to %s; the default is %s", key, value, wantValue)
 		}
 	}
 }
@@ -49,11 +55,30 @@ func TestTheShippedExampleCarriesEverySetting(t *testing.T) {
 		t.Fatalf("read the example: %v", err)
 	}
 	lines := strings.Split(string(raw), "\n")
-	for _, field := range Default().Fields() {
-		if !carriesKey(lines, field.Key) {
-			t.Errorf("the example says nothing about %q, which is a setting this program reads", field.Key)
+	for key := range settingsOf(t, Default()) {
+		if !carriesKey(lines, key) {
+			t.Errorf("the example says nothing about %q, which is a setting this program reads", key)
 		}
 	}
+}
+
+// settingsOf is the settings as this package reads them: every key the decoder accepts,
+// and the value on record for it. The list comes from the structure `Load` fills, so the
+// tests below cannot drift from it, and the field that holds the path the values came
+// from - which no settings file carries - is not a setting and is left out.
+func settingsOf(t *testing.T, cfg *Config) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	value := reflect.ValueOf(cfg).Elem()
+	typ := value.Type()
+	for i := 0; i < typ.NumField(); i++ {
+		key := strings.Split(typ.Field(i).Tag.Get("toml"), ",")[0]
+		if key == "" || key == "-" {
+			continue
+		}
+		out[key] = fmt.Sprint(value.Field(i).Interface())
+	}
+	return out
 }
 
 func carriesKey(lines []string, key string) bool {

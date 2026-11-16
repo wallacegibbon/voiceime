@@ -513,3 +513,107 @@ func shortLine(line string) string {
 	}
 	return string(runes[:72]) + "…"
 }
+
+// deadcode answers "can main reach this function", and staticcheck's U1000 skips exported
+// names - and every name under internal/ is exported to the rest of this module, which is the
+// blind spot. Two things sat in it: a second copy of the capture sample rate in the settings
+// package, and a sentinel error whose message is assembled somewhere else. Both were named by
+// nothing, and this is the check that finds that.
+func TestNothingInThisModuleNamesSomethingItNeverUses(t *testing.T) {
+	root := repositoryRoot(t)
+	fset := token.NewFileSet()
+
+	// Declarations come from non-test files; references are counted in every Go file,
+	// because a helper only a test calls is still a thing that exists and is not what this
+	// check is for.
+	type declaration struct {
+		name  string
+		where string
+	}
+	var declarations []declaration
+	var sources = map[string]string{}
+
+	err := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.IsDir() {
+			if name := info.Name(); name == "bin" || name == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+		raw, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		sources[path] = string(raw)
+		if strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		file, parseErr := parser.ParseFile(fset, path, nil, 0)
+		if parseErr != nil {
+			return parseErr
+		}
+		for _, decl := range file.Decls {
+			var names []string
+			switch d := decl.(type) {
+			case *ast.FuncDecl:
+				names = []string{d.Name.Name}
+			case *ast.GenDecl:
+				for _, spec := range d.Specs {
+					switch s := spec.(type) {
+					case *ast.TypeSpec:
+						names = append(names, s.Name.Name)
+					case *ast.ValueSpec:
+						for _, name := range s.Names {
+							names = append(names, name.Name)
+						}
+					}
+				}
+			}
+			for _, name := range names {
+				if token.IsExported(name) {
+					declarations = append(declarations, declaration{name: name, where: path})
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("reading the module: %v", err)
+	}
+	// The count is here to catch the walk stopping, not to hold a number.
+	if len(declarations) < 50 {
+		t.Fatalf("only %d exported names found: the walk stopped matching", len(declarations))
+	}
+
+	for _, found := range declarations {
+		if !mentionedOutsideItsDeclaration(sources, found.name, found.where) {
+			t.Errorf("%s declares %s, which nothing in this module references", found.where, found.name)
+		}
+	}
+	t.Logf("checked %d exported names declared under this module", len(declarations))
+}
+
+// mentionedOutsideItsDeclaration reports whether name appears as a whole word anywhere other
+// than on the line that declares it.
+func mentionedOutsideItsDeclaration(sources map[string]string, name, declaredIn string) bool {
+	mention := regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\b`)
+	declares := regexp.MustCompile(`^(?:func|type|var|const)?[[:space:]]*` + regexp.QuoteMeta(name) + `[[:space:]]*[(=:]`)
+	for path, text := range sources {
+		for _, line := range strings.Split(text, "\n") {
+			if !mention.MatchString(line) {
+				continue
+			}
+			if path == declaredIn && declares.MatchString(strings.TrimSpace(line)) {
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}

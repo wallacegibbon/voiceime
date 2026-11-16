@@ -1,7 +1,6 @@
 # Build output
 /bin/
 /voiceime
-/dist/
 *.test
 *.out
 

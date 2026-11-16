@@ -42,10 +42,6 @@ export CGO_ENABLED := 0
 DEADCODE    ?= golang.org/x/tools/cmd/deadcode@v0.36.0
 STATICCHECK ?= honnef.co/go/tools/cmd/staticcheck@2025.1
 
-# A speech file to measure against. `make measure AUDIO=speech.wav` replays it at
-# real time and prints latency and repair numbers; see docs/measurements.md.
-AUDIO       ?=
-
 # --- build ------------------------------------------------------------------ #
 
 .PHONY: all

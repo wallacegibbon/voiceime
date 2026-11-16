@@ -518,14 +518,17 @@ func shortLine(line string) string {
 // names - and every name under internal/ is exported to the rest of this module, which is the
 // blind spot. Two things sat in it: a second copy of the capture sample rate in the settings
 // package, and a sentinel error whose message is assembled somewhere else. Both were named by
-// nothing, and this is the check that finds that.
+// nothing, and this is the check that finds that. The same check now covers the values and
+// types an unexported block declares, because U1000 missed two interface names in a const
+// group that nothing referenced (make unused said "nothing unused" over both).
 func TestNothingInThisModuleNamesSomethingItNeverUses(t *testing.T) {
 	root := repositoryRoot(t)
 	fset := token.NewFileSet()
 
-	// Declarations come from non-test files; references are counted in every Go file,
-	// because a helper only a test calls is still a thing that exists and is not what this
-	// check is for.
+	// Declarations and references both come from non-test files. A production name that only
+	// a test still calls is not a thing the program does: the whole composition path -
+	// Control.Preedit, the sink method, NewPreeditText and the underline attribute it built -
+	// was reachable from nothing but its own tests, and survived exactly as long as they did.
 	type declaration struct {
 		name  string
 		where string
@@ -550,10 +553,10 @@ func TestNothingInThisModuleNamesSomethingItNeverUses(t *testing.T) {
 		if readErr != nil {
 			return readErr
 		}
-		sources[path] = string(raw)
 		if strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
+		sources[path] = string(raw)
 		file, parseErr := parser.ParseFile(fset, path, nil, 0)
 		if parseErr != nil {
 			return parseErr
@@ -576,7 +579,11 @@ func TestNothingInThisModuleNamesSomethingItNeverUses(t *testing.T) {
 				}
 			}
 			for _, name := range names {
-				if token.IsExported(name) {
+				// Exported names are the point of this check (staticcheck's U1000 skips
+				// them), but a group of unexported constants is the same case: two in
+				// internal/ibus were referenced by nothing and U1000 said nothing about
+				// them. Functions are left to deadcode and U1000, which both see those.
+				if _, isValueOrType := decl.(*ast.GenDecl); isValueOrType || token.IsExported(name) {
 					declarations = append(declarations, declaration{name: name, where: path})
 				}
 			}
@@ -588,7 +595,7 @@ func TestNothingInThisModuleNamesSomethingItNeverUses(t *testing.T) {
 	}
 	// The count is here to catch the walk stopping, not to hold a number.
 	if len(declarations) < 50 {
-		t.Fatalf("only %d exported names found: the walk stopped matching", len(declarations))
+		t.Fatalf("only %d names found: the walk stopped matching", len(declarations))
 	}
 
 	for _, found := range declarations {
@@ -596,7 +603,7 @@ func TestNothingInThisModuleNamesSomethingItNeverUses(t *testing.T) {
 			t.Errorf("%s declares %s, which nothing in this module references", found.where, found.name)
 		}
 	}
-	t.Logf("checked %d exported names declared under this module", len(declarations))
+	t.Logf("checked %d names declared under this module", len(declarations))
 }
 
 // mentionedOutsideItsDeclaration reports whether name appears as a whole word anywhere other

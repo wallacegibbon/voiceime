@@ -245,11 +245,15 @@ done
 
 `doctor=0` and seven lines ending in `ok` is the deployable state: an endpoint that answers
 and would be named correctly in a request, capture available, the engine registered and
-selected for this session, and nothing stale running. What a model behind that endpoint is
-doing is not in the list, and no `doctor` finding can put it there: a machine that runs its
-own model asserts it separately, with `systemctl --user status` and the `curl` above. What no
-command can assert is a human seeing text in a focused window: dictate one sentence into a text
-editor.
+selected for this session, and nothing stale running. The two findings not in that list are
+the two whose warning is never the reason something failed: `config` warns about a setting
+worth changing and about a credential in a file other people can read, `feedback` about a
+notification sound that is not installed. A settings file that is actually wrong makes the
+first line fail by itself, and a silent cue stops nothing working.
+What a model behind that endpoint is doing is not in the list, and no `doctor` finding can
+put it there: a machine that runs its own model asserts it separately, with `systemctl
+--user status` and the `curl` above. What no command can assert is a human seeing text in a
+focused window: dictate one sentence into a text editor.
 
 ## Removing an installation
 

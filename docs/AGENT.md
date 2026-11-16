@@ -164,6 +164,9 @@ voiceime transcribe --seconds 5   # one decode from the microphone, with timing
 | Question | Finding |
 |---|---|
 | does the address answer, is the credential accepted, and is there an id to name in the request | `asr_endpoint` |
+| is there something to record with, and does PipeWire name an input to record from | `capture` |
+| is the bus running, and does it know this engine is there | `ibus` |
+| are the notification and sound tools installed | `feedback`, as a warning: without them the status cues are silent, which stops nothing from working |
 | is the component installed, and does it name a binary that exists | `component_exec` |
 | will the engine still be registered after the next login | `component_env` |
 | do this session's keys reach the engine at all | `session_engine` |

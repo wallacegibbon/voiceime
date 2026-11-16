@@ -6,7 +6,6 @@ import (
 	"os"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/godbus/dbus/v5"
 )
@@ -16,18 +15,15 @@ const (
 	ifaceIBusFactory = "org.freedesktop.IBus.Factory"
 	ifaceIBusService = "org.freedesktop.IBus.Service"
 	ifaceDBusProps   = "org.freedesktop.DBus.Properties"
-	ifaceIntrospect  = "org.freedesktop.DBus.Introspectable"
 	signalCommitText = ifaceIBusEngine + ".CommitText"
-	signalPreedit    = ifaceIBusEngine + ".UpdatePreeditText"
-	signalForwardKey = ifaceIBusEngine + ".ForwardKeyEvent"
 )
 
-// IBusText is the payload of CommitText and UpdatePreeditText.
+// IBusText is the payload of CommitText.
 type IBusText struct {
 	TypeName    string                  // always "IBusText"
 	Attachments map[string]dbus.Variant // empty in practice
 	Text        string
-	Attributes  dbus.Variant // an IBusAttrList; empty list is fine
+	Attributes  dbus.Variant // an IBusAttrList; committed text carries an empty one
 }
 
 func NewText(text string) IBusText {
@@ -38,39 +34,6 @@ func NewText(text string) IBusText {
 		Attributes:  dbus.MakeVariant(newAttrList()),
 	}
 }
-
-func NewPreeditText(text string) IBusText {
-	payload := NewText(text)
-	length := uint32(utf8.RuneCountInString(text))
-	if length == 0 {
-		return payload
-	}
-	list := newAttrList()
-	list.Attributes = append(list.Attributes, dbus.MakeVariant(IBusAttribute{
-		TypeName:    "IBusAttribute",
-		Attachments: map[string]dbus.Variant{},
-		Type:        attrTypeUnderline,
-		Value:       attrUnderlineSingle,
-		StartIndex:  0,
-		EndIndex:    length,
-	}))
-	payload.Attributes = dbus.MakeVariant(list)
-	return payload
-}
-
-type IBusAttribute struct {
-	TypeName    string
-	Attachments map[string]dbus.Variant
-	Type        uint32 // IBUS_ATTR_TYPE_*
-	Value       uint32 // IBUS_ATTR_UNDERLINE_* for an underline
-	StartIndex  uint32
-	EndIndex    uint32
-}
-
-const (
-	attrTypeUnderline   = 1 // IBUS_ATTR_TYPE_UNDERLINE
-	attrUnderlineSingle = 1 // IBUS_ATTR_UNDERLINE_SINGLE
-)
 
 type ibusAttrList struct {
 	TypeName    string
@@ -100,18 +63,15 @@ func trace(format string, args ...interface{}) {
 	fmt.Fprintf(file, format+"\n", args...)
 }
 
-// Control is what a handler uses to publish text through the engine.
+// Control is what a handler uses to publish text through the engine. There is one way to
+// publish: text that is finished. A dictation is published whole, once the model has
+// answered, and nothing is shown while it is being worked out - so this engine sends no
+// composition updates, and an application has nothing at the caret between the release and
+// the text.
 type Control interface {
 	// Commit delivers text to the focused application. This is final: no
 	// application on this desktop supports having committed text rewritten.
 	Commit(text string) error
-	// Preedit shows text as an in-progress composition at the caret. It is the
-	// right home for provisional, still-correctable text.
-	Preedit(text string, cursor int, visible bool) error
-	// DeleteSurroundingText asks the application to drop the last n characters,
-	// which only some applications support. Present because it is cheap, not
-	// because anything relies on it. (Signature not verified on the wire.)
-	DeleteSurroundingText(offset int32, chars uint32) error
 }
 
 // Handler is the dictation pipeline seen from the engine's side.
@@ -357,17 +317,6 @@ func (c *engineControl) Commit(text string) error {
 		return nil
 	}
 	return c.conn.Emit(c.path, signalCommitText, dbus.MakeVariant(NewText(text)))
-}
-
-func (c *engineControl) Preedit(text string, cursor int, visible bool) error {
-	// mode 0 is IBus's "clear and replace" update; the engine has no other mode.
-	// The payload carries an underline attribute, which is what draws the
-	// composition underline in the application; see NewPreeditText.
-	return c.conn.Emit(c.path, signalPreedit, dbus.MakeVariant(NewPreeditText(text)), uint32(cursor), visible, uint32(0))
-}
-
-func (c *engineControl) DeleteSurroundingText(offset int32, chars uint32) error {
-	return c.conn.Emit(c.path, ifaceIBusEngine+".DeleteSurroundingText", offset, chars)
 }
 
 func (e *engineObject) control() Control {

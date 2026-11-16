@@ -33,10 +33,6 @@ func (c *recordingControl) Commit(text string) error {
 	return nil
 }
 
-func (c *recordingControl) Preedit(text string, cursor int, visible bool) error { return nil }
-
-func (c *recordingControl) DeleteSurroundingText(offset int32, chars uint32) error { return nil }
-
 func (c *recordingControl) delivered() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -625,9 +621,6 @@ func TestSwitchableSinkFollowsItsTarget(t *testing.T) {
 	sink := &switchableSink{}
 	if err := sink.Commit("ignored"); err != nil {
 		t.Fatalf("Commit with no target: %v", err)
-	}
-	if err := sink.Preedit("ignored", 0, false); err != nil {
-		t.Fatalf("Preedit with no target: %v", err)
 	}
 
 	first, second := &recordingControl{}, &recordingControl{}

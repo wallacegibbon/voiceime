@@ -221,10 +221,13 @@ Two consequences shape voiceime's use of it :
 * **A lost release is a recoverable failure, not a dead input method.** A release can go to
   a different input context than the one that took the press, and the engine cannot tell
   which. What it can use is time: `xset q` on this desktop reports a repeat delay of 500ms
-  and a rate of 33/s, so a press that follows the last one by more than that delay cannot
-  be a repeat of it (measurements.md). Such a press ends the recording the missing release
-  left open and starts the next one. The cap in `max_utterance_seconds` still stands behind
-  it: it is what keeps a key that is genuinely held down from holding a microphone open
+  and a rate of 33/s, so the repeats of a held key are a press at 500ms and then one every
+  30ms - which means the gap cannot simply be the delay, because the first repeat lands on
+  it. `autoRepeatGap` is 750ms, above the delay and below the pause a person makes before
+  pressing again deliberately; a 300ms gap was measured and split every hold longer than
+  half a second (measurements.md). Such a press ends the recording the missing release left
+  open and starts the next one. The cap in `max_utterance_seconds` still stands behind it:
+  it is what keeps a key that is genuinely held down from holding a microphone open
   forever.
 
 ## The wire format of committed text
@@ -253,6 +256,10 @@ So the signatures are:
 
 `UpdatePreeditText` carries the same text variant plus
 `(u cursor_pos, b visible, u mode)`; mode 0 means "replace the composition".
+
+voiceime commits finished text and sends no composition, so the payload it builds carries
+an empty attribute list. Everything from here down is what an engine that *does* compose has
+to build, and it is recorded because the difference below cost a measurement.
 
 Attributes are what draws the preedit underline; an empty attribute list is
 accepted (and is what a plain commit uses), but on X11 it means **no underline**:

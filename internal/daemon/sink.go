@@ -31,10 +31,3 @@ func (s *switchableSink) Commit(text string) error {
 	}
 	return nil
 }
-
-func (s *switchableSink) Preedit(text string, cursor int, visible bool) error {
-	if control := s.target(); control != nil {
-		return control.Preedit(text, cursor, visible)
-	}
-	return nil
-}

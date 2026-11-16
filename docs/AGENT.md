@@ -221,7 +221,8 @@ writes, and everything that can go wrong instead:
 | `discarded the recording in progress` | the engine was deselected while the key was still down: the text would have had no caret to go to |
 | `discarded the recording: the engine is no longer selected` | the same, noticed at the release |
 | `discarded the recording: the key was released before it started` | the press never reached this input context |
-| `the press before this one never saw its release` | a key event went to another input context, so a release was lost; the next press ends that recording and starts a new one |
+| `the press before this one never saw its release; ending that recording and starting a new one` | a release went to another input context while a recording was still open. The audio up to here was spoken as part of the same dictation, so it is sent rather than dropped, and a new recording starts |
+| `the press before this one never saw its release` | the same lost release, noticed on a press that found no recording open - it had already ended at the `max_utterance_seconds` cap, or never started. Only the belief that the key was down is cleared |
 | `transcribe` | the request failed - the address refused it, the `asr_server_timeout_ms` deadline passed, the id names nothing that answers there - and the rest of the line is the reason. Nothing is typed |
 | `the model heard no words in` | an empty answer: the audio went in and came back as nothing |
 | `the model answered only punctuation` | an answer carrying no letter or a digit, which is what a recogniser returns for audio it could not read; nothing is typed |

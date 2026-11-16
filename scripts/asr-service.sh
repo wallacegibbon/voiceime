@@ -88,7 +88,10 @@ done
 
 # What this machine is. The build's own banner is the only authority on which backends it
 # carries, and the CPU's topology on how many workers fit in it.
-backends=$("$server" --version | sed -n 's/^backends: //p')
+# audio.cpp joins that list with commas ("cpu,cuda"), so it is read as tokens before the
+# case below: matching a token inside a comma-separated list finds no token, and a build that
+# does offer cpu is refused for one that does not.
+backends=$("$server" --version | sed -n 's/^backends: //p' | tr ',' ' ')
 case " $backends " in
 *" cpu "*) backend=cpu ;;
 *) echo "this audio.cpp build offers no cpu backend (it offers: $backends)" >&2; exit 3 ;;

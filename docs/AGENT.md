@@ -157,7 +157,8 @@ hand - and one an agent can write from scratch, which is what the sample is for.
 ## Verifying
 
 ```
-voiceime doctor --json            # every finding carries a fix; data.checks[].id is stable
+voiceime doctor --json            # every finding; each one that is not ok carries its fix,
+                                  # and data.checks[].id is stable
 voiceime transcribe --seconds 5   # one decode from the microphone, with timing
 ```
 

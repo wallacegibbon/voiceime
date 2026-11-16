@@ -50,7 +50,7 @@ scripts/asr-service.sh \
 
 voiceime apply                   # register the engine with IBus, add the input
                                  # source, record the search path a login needs
-voiceime doctor                  # every finding carries a fix
+voiceime doctor                  # every finding; each one that is not ok carries its fix
 ```
 
 Nothing fetches a model, nothing searches the disk for one, and `doctor` checks the endpoint

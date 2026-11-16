@@ -32,13 +32,11 @@ func quote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `\'`) + "'"
 }
 
-// parseList pulls the quoted strings out of a GVariant value such as
-// `[('xkb', 'us'), ('ibus', 'pinyin')]` or `@as []`, in order.
+// parseList pulls the quoted strings out of a GVariant list in order. Both keys this
+// package reads hold ('type', 'id') pairs - `[('xkb', 'us'), ('ibus', 'pinyin')]`, or
+// `@a(ss) []` when nothing is configured - and an empty list simply carries no quotes,
+// which is what makes it come back as nothing.
 func parseList(raw string) []string {
-	raw = strings.TrimSpace(raw)
-	for _, prefix := range []string{"@as ", "@a(ss) ", "@a(sss) "} {
-		raw = strings.TrimSpace(strings.TrimPrefix(raw, prefix))
-	}
 	var out []string
 	for {
 		start := strings.Index(raw, "'")

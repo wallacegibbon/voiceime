@@ -111,7 +111,12 @@ func applyComponent(ctx *Context) (string, error) {
 	// and parsed (to keep the parts of it that are not this build's business).
 	raw, readErr := os.ReadFile(ibus.ComponentPath())
 	installed, parseErr := ibus.ParseComponent(raw)
-	component, changed := ibus.Component{}, false
+	// Every branch below decides both halves: which file is the one to write, and whether
+	// it has to be written at all.
+	var (
+		component ibus.Component
+		changed   bool
+	)
 	switch {
 	case readErr != nil || parseErr != nil:
 		// Nothing installed, or a file this version cannot read: write what a fresh

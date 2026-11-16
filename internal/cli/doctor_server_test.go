@@ -37,7 +37,7 @@ func TestASREndpointCheckStates(t *testing.T) {
 	cases := []struct {
 		name       string
 		mutate     func(*config.Config)
-		unit       bool
+		service    modelService
 		wantFix    string
 		wantStatus string
 		wantDetail string
@@ -98,15 +98,15 @@ func TestASREndpointCheckStates(t *testing.T) {
 			wantFix:    "asr-service.sh",
 		},
 		{
-			name: "nothing listening, but the unit exists",
+			name: "nothing listening, and this machine does run a model service",
 			mutate: func(c *config.Config) {
 				c.ASRServerURL = deadURL(t) + "/v1/audio/transcriptions"
 				c.Model = "x"
 			},
-			unit:       true,
+			service:    modelService{Unit: "audiocpp-asr.service"},
 			wantStatus: "fail",
 			wantDetail: "cannot be reached",
-			wantFix:    "systemctl --user restart",
+			wantFix:    "systemctl --user restart audiocpp-asr.service",
 		},
 		{
 			name: "a provider that answers, with its model named and its credential accepted",
@@ -165,7 +165,7 @@ func TestASREndpointCheckStates(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := config.Default()
 			tc.mutate(cfg)
-			check := asrEndpointCheck(cfg, tc.unit)
+			check := asrEndpointCheck(cfg, tc.service)
 			if check.ID != "asr_endpoint" {
 				t.Fatalf("check id = %q, want asr_endpoint", check.ID)
 			}
@@ -205,12 +205,12 @@ func TestEndpointCheckSendsTheCredential(t *testing.T) {
 	cfg := config.Default()
 	cfg.ASRServerURL = needsToken.URL + "/v1/audio/transcriptions"
 	cfg.Model = "glm-asr-2512"
-	if check := asrEndpointCheck(cfg, false); check.Status == "ok" {
+	if check := asrEndpointCheck(cfg, modelService{}); check.Status == "ok" {
 		t.Errorf("an endpoint that refuses the request was reported ok: %q", check.Detail)
 	}
 
 	cfg.APIKey = "sk-test"
-	check := asrEndpointCheck(cfg, false)
+	check := asrEndpointCheck(cfg, modelService{})
 	if check.Status != "ok" {
 		t.Fatalf("status = %q, detail %q: the credential was set and not used", check.Status, check.Detail)
 	}
@@ -273,7 +273,7 @@ func TestUnitIsReadBackAsWritten(t *testing.T) {
 // writeUnitForTest puts a unit where the check can read it back.
 func writeUnitForTest(t *testing.T, unit string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), unitName)
+	path := filepath.Join(t.TempDir(), "audiocpp-asr.service")
 	if err := os.WriteFile(path, []byte(unit), 0o644); err != nil {
 		t.Fatal(err)
 	}

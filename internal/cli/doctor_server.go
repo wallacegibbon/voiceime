@@ -6,26 +6,12 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/wallacegibbon/voiceime/internal/asr"
 	"github.com/wallacegibbon/voiceime/internal/config"
 )
-
-// unitInstalled reports whether a unit exists to start a model on this machine. It does not
-// decide whether one is wanted - the settings' endpoint does that - it decides what a finding
-// can say: "nothing here is installed to answer this" is a different situation from "the
-// service is installed and not answering".
-func unitInstalled() bool {
-	path := unitPath()
-	if path == "" {
-		return false
-	}
-	_, err := os.Stat(path)
-	return err == nil
-}
 
 // endpointIsLocal answers the one question about an address that changes what a finding
 // suggests: is the machine that has to answer this one the machine being looked at.
@@ -50,7 +36,11 @@ func endpointIsLocal(raw string) bool {
 // come from the settings - the program never asks an address what it serves - so the finding
 // can be read as what the engine would do, and the probe is the same request with ten
 // milliseconds of silence in place of the audio.
-func asrEndpointCheck(cfg *config.Config, unitExists bool) Check {
+//
+// `service` is the model service installed on this machine, if any. It changes only what a
+// failure suggests: an address on this machine that does not answer is a service to restart, and
+// one that was never installed is a command to run.
+func asrEndpointCheck(cfg *config.Config, service modelService) Check {
 	const id = "asr_endpoint"
 	raw := strings.TrimSpace(cfg.ASRServerURL)
 	if raw == "" {
@@ -58,7 +48,7 @@ func asrEndpointCheck(cfg *config.Config, unitExists bool) Check {
 			ID:     id,
 			Status: "fail",
 			Detail: "no address is configured, and dictation posts one recording to one",
-			Fix:    `asr_server_url = "http://127.0.0.1:18080/v1/audio/transcriptions" in the settings file, then scripts/asr-service.sh /path/to/audiocpp_server /path/to/model.gguf`,
+			Fix:    `asr_server_url = "http://127.0.0.1:18080/v1/audio/transcriptions" in the settings file, or ` + installModelService + ` for a model on this machine`,
 		}
 	}
 	url, err := asr.RequestURL(raw)
@@ -70,7 +60,7 @@ func asrEndpointCheck(cfg *config.Config, unitExists bool) Check {
 	if named == "" {
 		fix := "voiceime config set model <id>"
 		if local {
-			fix = "scripts/asr-service.sh /path/to/audiocpp_server /path/to/model.gguf, which writes the id it serves into the settings"
+			fix = installModelService + ", which writes the id it serves into the settings"
 		}
 		return Check{
 			ID:     id,
@@ -90,10 +80,10 @@ func asrEndpointCheck(cfg *config.Config, unitExists bool) Check {
 			// The address is there and said no to the credential: that is a settings file,
 			// not a service.
 			fix = "voiceime config set api_key <the token this endpoint gave you>"
-		case local && unitExists:
-			fix = "systemctl --user restart " + unitName
+		case local && service.Unit != "":
+			fix = "systemctl --user restart " + service.Unit
 		case local:
-			fix = "scripts/asr-service.sh /path/to/audiocpp_server /path/to/model.gguf"
+			fix = installModelService
 		}
 		return Check{ID: id, Status: "fail", Detail: fmt.Sprintf("%s: %v", url, err), Fix: fix}
 	}

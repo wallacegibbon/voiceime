@@ -4,7 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"time"
 
 	"github.com/wallacegibbon/voiceime/internal/config"
@@ -220,32 +219,19 @@ func withCurrentEngine(installed ibus.Component) ibus.Component {
 func runRemove(ctx *Context) error {
 	removed := []string{}
 
-	// A model service on this machine is started by scripts/asr-service.sh, but it is still
-	// this project's unit, so stopping it here is what makes `remove` mean "nothing of
-	// voiceime is left running".
-	if _, err := exec.LookPath("systemctl"); err == nil {
-		if fileExists(unitPath()) {
-			if err := runCommand("systemctl --user disable --now " + unitName); err != nil {
-				ctx.Print("could not stop %s: %v", unitName, err)
-			}
-		}
-	}
+	// A model service on this machine belongs to the project that installed it, and it may be
+	// answering clients other than this engine. Removing the engine does not stop it and does
+	// not delete its files: what is here is reported, with the command that stops it.
+	service, hasService := modelServiceInstalled()
+
 	// The engine processes go first: a running one holds the session's input method, and
 	// removing the component underneath it leaves the applications showing an input method
 	// that no longer exists.
 	stopped, _ := stopEngines()
 
 	// The files are removed through the package that owns them, so "which file is
-	// voiceime's" is written down once. The unit and the generated audio.cpp config are
-	// this command's own, so they are removed here.
-	for _, path := range []string{unitPath(), generatedConfigPath()} {
-		if path == "" {
-			continue
-		}
-		if err := os.Remove(path); err == nil {
-			removed = append(removed, path)
-		}
-	}
+	// voiceime's" is written down once. A model unit and the audio.cpp config it names are
+	// not among them: they belong to the project that installed the model.
 	if ibus.Installed() {
 		if err := ibus.Uninstall(); err != nil {
 			return FailureError("cannot remove %s: %v", ibus.ComponentPath(), err)
@@ -259,9 +245,6 @@ func runRemove(ctx *Context) error {
 	}
 	if cache := ibus.RegistryCachePath(); cache != "" {
 		_ = os.Remove(cache)
-	}
-	if _, err := exec.LookPath("systemctl"); err == nil {
-		_ = runCommand("systemctl --user daemon-reload")
 	}
 	removedSource, inputSource := removeInputSource(ibus.EngineName)
 	if removedSource {
@@ -280,10 +263,21 @@ func runRemove(ctx *Context) error {
 		for _, entry := range removed {
 			ctx.Print("removed %s", entry)
 		}
+		if hasService {
+			ctx.Print("left running: %s (%s serving from %s)", service.Unit, service.Binary, service.Config)
+			ctx.Print("a model on this machine is not the engine's to remove: stop it with `systemctl --user disable --now %s`", service.Unit)
+		}
 	}
-	return ctx.Emit("remove", map[string]any{
+	document := map[string]any{
 		"removed": removed, "engines_stopped": stopped, "input_source": inputSource,
-	})
+	}
+	if hasService {
+		document["model_service_left_running"] = map[string]any{
+			"unit": service.Unit, "binary": service.Binary, "config": service.Config,
+			"stop_with": "systemctl --user disable --now " + service.Unit,
+		}
+	}
+	return ctx.Emit("remove", document)
 }
 
 // dropEngines stops the engine processes, and puts the session's input method back.

@@ -31,7 +31,7 @@ func TestServerDescriptionNamesOnlyWhatTheEngineKnows(t *testing.T) {
 	if got != want {
 		t.Errorf("provider endpoint: %q, want %q", got, want)
 	}
-	if strings.Contains(got, unitName) || strings.Contains(got, "service") {
+	if strings.Contains(got, ".service") || strings.Contains(got, "systemctl") {
 		t.Errorf("%q names a service this process does not own", got)
 	}
 	if strings.Contains(got, cfg.APIKey) {

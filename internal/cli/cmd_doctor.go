@@ -75,11 +75,12 @@ func runDoctor(ctx *Context) []Check {
 		})
 	}
 
-	// 2. The endpoint the engine posts to, and - only when the endpoint is this machine -
-	// the unit that starts a model here. audio.cpp itself is not a prerequisite of the
-	// program: it is one way to have an endpoint, and `systemctl --user cat` says whether
-	// this machine has one.
-	report(asrEndpointCheck(ctx.Config, unitInstalled()))
+	// 2. The address the engine posts to, and - only when that address is this machine -
+	// the model service that answers it. A model service is found by what it runs, not by a
+	// name this program gave it: it is installed by a separate project, and a machine with a
+	// provider's address has none and is not missing anything.
+	service, _ := modelServiceInstalled()
+	report(asrEndpointCheck(ctx.Config, service))
 
 	// 3. Capture.
 	if tool := config.FindExecutable("parec", "pw-record"); tool == "" {
@@ -145,7 +146,7 @@ func runDoctor(ctx *Context) []Check {
 	// the unit still names files that do. A moved checkout breaks these silently
 	// (see install_check.go).
 	installChecks(report)
-	unitCheck(report, ctx.Config)
+	modelServiceCheck(report, ctx.Config, systemdServiceState)
 
 	return checks
 }

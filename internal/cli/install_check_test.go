@@ -11,7 +11,7 @@ import (
 )
 
 func TestUnitExecStartReadsTheCommand(t *testing.T) {
-	path := filepath.Join(t.TempDir(), unitName)
+	path := filepath.Join(t.TempDir(), "voiceime-asr-server.service")
 	unit := `[Unit]
 Description=voiceime recognition server
 
@@ -150,7 +150,7 @@ func TestResidentKindsCoverTheResidentProcesses(t *testing.T) {
 			t.Errorf("%s needs a process pattern, an executable name and a configured-binary lookup", kind.name)
 		}
 	}
-	for _, name := range []string{"the engine", "the recognition service"} {
+	for _, name := range []string{"the engine", "a model service on this machine"} {
 		if !names[name] {
 			t.Errorf("residentKinds lost %s: a stale %s is then invisible to doctor", name, name)
 		}
@@ -167,7 +167,7 @@ func TestProcessesRunningRequiresTheBinaryToBeOurs(t *testing.T) {
 	// The pattern here is the file the service is started with, which on a running machine
 	// does match a live process: what has to keep a shell, an editor or a `grep` out of the
 	// finding is the executable name.
-	for _, running := range processesRunning(generatedConfigName, "no-such-binary-name") {
+	for _, running := range processesRunning(modelServiceBinary, "no-such-binary-name") {
 		t.Errorf("matched a process that is not the audio.cpp this tool started: %+v", running)
 	}
 	if atoi("12") != 12 || isDigits("1a") || isDigits("") {
@@ -208,7 +208,7 @@ func TestCommandLineNormalizesNulSeparatedArguments(t *testing.T) {
 // A process that merely mentions the pattern is not an engine.
 func TestProcessesRunningIgnoresProcessesThatMerelyMentionThePattern(t *testing.T) {
 	// A shell whose command line contains the pattern: exactly what pkill -f matched.
-	command := exec.Command("/bin/sh", "-c", "sleep 5 # voiceime ibus-engine "+generatedConfigName)
+	command := exec.Command("/bin/sh", "-c", "sleep 5 # voiceime ibus-engine "+modelServiceBinary)
 	if err := command.Start(); err != nil {
 		t.Fatalf("start the decoy: %v", err)
 	}

@@ -305,14 +305,10 @@ func (h *PushToTalk) sawRelease() {
 // collect reads the capture to its end and hands the audio to the decoder.
 func (h *PushToTalk) collect(recording *hold) {
 	cfg := h.Config
-	// The cap always exists, whatever the setting says: it is what bounds a forgotten
-	// key, and an unbounded recording is a memory leak in a process that outlives every
-	// dictation. A zero or negative setting falls back to the detector's own default.
-	maxSeconds := cfg.MaxUtteranceSeconds
-	if maxSeconds <= 0 {
-		maxSeconds = 60
-	}
-	limit := int64(maxSeconds * audio.SampleRate)
+	// The cap bounds a forgotten key: an unbounded recording is a memory leak in a process
+	// that outlives every dictation. A setting that is not positive is refused where the
+	// config is read, so there is nothing to fall back to here.
+	limit := int64(cfg.MaxUtteranceSeconds * audio.SampleRate)
 
 	var (
 		pcm     []byte
@@ -325,7 +321,7 @@ func (h *PushToTalk) collect(recording *hold) {
 		// A forgotten key must not grow the recording without bound. The cap ends the
 		// capture here rather than at the key, because the key may not come up for
 		// another minute.
-		if limit > 0 && int64(audio.SampleCount(pcm)) >= limit {
+		if int64(audio.SampleCount(pcm)) >= limit {
 			capped = true
 			break
 		}
@@ -333,7 +329,7 @@ func (h *PushToTalk) collect(recording *hold) {
 	recording.detach(h)
 	if capped {
 		go recording.capture.Stop()
-		h.logf("recording stopped at the %.0fs limit (max_utterance_seconds)", maxSeconds)
+		h.logf("recording stopped at the %.0fs limit (max_utterance_seconds)", cfg.MaxUtteranceSeconds)
 	}
 	if err := recording.capture.Err(); err != nil {
 		h.logf("capture ended: %v", err)

@@ -97,6 +97,13 @@ func (s ServerTranscriber) Transcribe(ctx context.Context, pcm []byte) (string, 
 	if err != nil {
 		return "", fmt.Errorf("transcribe: read response: %w", err)
 	}
+	if refusedCredential(response) {
+		return "", fmt.Errorf("transcribe: %w", &CredentialError{
+			Status:  response.Status,
+			Missing: strings.TrimSpace(s.APIKey) == "",
+			Detail:  summarise(payload),
+		})
+	}
 	if response.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("transcribe: %s: %s", response.Status, summarise(payload))
 	}
@@ -109,49 +116,153 @@ func (s ServerTranscriber) Transcribe(ctx context.Context, pcm []byte) (string, 
 	return decoded.Text, nil
 }
 
-// ModelToUse answers, from the settings alone, which model id a request to this endpoint
-// would name: the one it was given, or the one the endpoint serves. `voiceime doctor` asks
-// the same question, so the finding is what dictation would do rather than an approximation
-// of it.
+// ModelToUse answers, from the settings, which model id a request to this endpoint would
+// name: the one it was given, or the one the endpoint serves. `voiceime doctor` asks the same
+// question, so the finding is what dictation would do rather than an approximation of it.
+//
+// A named model is taken from the settings and never cross-checked against the endpoint's
+// list: a provider's catalogue is not a promise about what this account is allowed to use, and
+// an endpoint with no list at all is a working endpoint. The credential is a separate
+// question, and the engine does not ask it - the request that carries it is the answer.
 func ModelToUse(ctx context.Context, endpoint, model, apiKey string) (string, error) {
 	base, err := Endpoint(endpoint)
 	if err != nil {
 		return "", err
 	}
-	if named := strings.TrimSpace(model); named != "" {
-		return named, nil
+	named := strings.TrimSpace(model)
+	if named == "" {
+		return askModels(ctx, base, apiKey)
 	}
-	return askModels(ctx, base, apiKey)
+	return named, nil
+}
+
+// CredentialError is the endpoint refusing the credential a request would carry. It is a type
+// because its fix is a different command from every other endpoint failure: a settings file,
+// not a service.
+type CredentialError struct {
+	// Status is the status line the endpoint answered with.
+	Status string
+	// Missing says no api_key is configured, so no header was sent at all.
+	Missing bool
+	// Detail is what the endpoint said, kept because providers write the reason there
+	// ("Incorrect API key provided", "no credentials were provided", ...) rather than
+	// leaving it to the status code.
+	Detail string
+}
+
+func (e *CredentialError) Error() string {
+	reason := "the endpoint refused the configured api_key"
+	if e.Missing {
+		reason = "the endpoint refused a request sent with no credential: this endpoint needs one, api_key in the settings"
+	}
+	if e.Detail != "" {
+		return fmt.Sprintf("%s (%s): %s", reason, e.Status, e.Detail)
+	}
+	return fmt.Sprintf("%s (%s)", reason, e.Status)
+}
+
+// refusedCredential is the one decision every request makes the same way.
+func refusedCredential(response *http.Response) bool {
+	return response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden
+}
+
+// CheckCredential asks an endpoint, with the credential a request would carry and the model
+// it would name, whether it accepts that credential. `voiceime doctor` asks it; dictation does
+// not, because its own request is the same question and costs one round trip instead of two.
+//
+// It posts ten milliseconds of silence to the route dictation uses and reads the status of the
+// answer and nothing else. That route, not a model list, because a provider's `/v1/models` may
+// not exist at all - and a refusal on the route the engine really uses is authoritative in a
+// way an answer on a route we invented is not. Anything else - 400 "the recording is empty",
+// 415, 200 with an empty text - says the endpoint is there and did not refuse the credential.
+func CheckCredential(ctx context.Context, endpoint, model, apiKey string) error {
+	base, err := Endpoint(endpoint)
+	if err != nil {
+		return err
+	}
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	silence := make([]byte, audio.SampleRate/100*2) // 10 ms, one channel, 16-bit
+	part, err := form.CreateFormFile("file", "probe.wav")
+	if err != nil {
+		return err
+	}
+	if _, err := part.Write(audio.EncodeWAV(silence, audio.SampleRate, 1)); err != nil {
+		return err
+	}
+	if err := form.WriteField("model", model); err != nil {
+		return err
+	}
+	if err := form.Close(); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/audio/transcriptions", &body)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", form.FormDataContentType())
+	// So an endpoint - or a person reading its log - can tell this from a dictation.
+	request.Header.Set("X-Voiceime", "credential-probe")
+	if token := strings.TrimSpace(apiKey); token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return fmt.Errorf("%s cannot be reached: %w", base, err)
+	}
+	defer response.Body.Close()
+	payload, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if refusedCredential(response) {
+		return &CredentialError{Status: response.Status, Missing: strings.TrimSpace(apiKey) == "", Detail: summarise(payload)}
+	}
+	return nil
+}
+
+// modelsRequest is the one request both questions above ask: the model list, with the
+// credential a real request would carry. The caller reads the body and closes both it and
+// the cancel.
+func modelsRequest(ctx context.Context, base, apiKey string) (*http.Response, context.CancelFunc, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1/models", nil)
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	if token := strings.TrimSpace(apiKey); token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	return response, cancel, nil
 }
 
 // askModels asks the endpoint which model it serves - the local case: one model, and nothing
 // in the settings naming it. A remote endpoint answers /v1/models with a catalogue instead,
 // so its setup names the id it wants and never comes here.
 func askModels(ctx context.Context, base, apiKey string) (string, error) {
-	client := http.DefaultClient
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	response, cancel, err := modelsRequest(ctx, base, apiKey)
+	if err != nil {
+		return "", fmt.Errorf("ask the endpoint which model it serves: %w", err)
+	}
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1/models", nil)
-	if err != nil {
-		return "", err
-	}
-	if token := strings.TrimSpace(apiKey); token != "" {
-		request.Header.Set("Authorization", "Bearer "+token)
-	}
-	ask := func(format string, args ...any) error {
-		return fmt.Errorf("ask the endpoint which model it serves: "+format, args...)
-	}
-	response, err := client.Do(request)
-	if err != nil {
-		return "", ask("%w", err)
-	}
 	defer response.Body.Close()
 	payload, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
-		return "", ask("%w", err)
+		return "", fmt.Errorf("ask the endpoint which model it serves: %w", err)
 	}
-	if response.StatusCode != http.StatusOK {
-		return "", ask("%s", response.Status)
+	switch response.StatusCode {
+	case http.StatusOK:
+	default:
+		if refusedCredential(response) {
+			return "", &CredentialError{Status: response.Status, Missing: strings.TrimSpace(apiKey) == "", Detail: summarise(payload)}
+		}
+		return "", fmt.Errorf("ask the endpoint which model it serves: %s", response.Status)
 	}
 	var listing struct {
 		Data []struct {
@@ -159,7 +270,7 @@ func askModels(ctx context.Context, base, apiKey string) (string, error) {
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(payload, &listing); err != nil {
-		return "", ask("%w", err)
+		return "", fmt.Errorf("ask the endpoint which model it serves: %w", err)
 	}
 	switch len(listing.Data) {
 	case 1:

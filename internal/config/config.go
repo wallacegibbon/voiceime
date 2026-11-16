@@ -204,7 +204,12 @@ func Save(cfg *Config, path string) error {
 	if err := toml.NewEncoder(&builder).Encode(cfg); err != nil {
 		return err
 	}
-	return WriteFile(path, []byte(builder.String()), 0o644)
+	// 0600, not 0644: `api_key` is a bearer token, and a file that can hold a credential is
+	// not something everyone who can read this home directory should be able to read.
+	// CreateTemp already made the temporary file 0600; the chmod names it explicitly so that
+	// a file written before credentials could live here is tightened the next time anything
+	// is written to it.
+	return WriteFile(path, []byte(builder.String()), 0o600)
 }
 
 // WriteFile replaces path with data atomically, creating its directory.

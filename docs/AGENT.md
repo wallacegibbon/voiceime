@@ -88,7 +88,7 @@ scripts/asr-service.sh <audiocpp_server> <model.gguf>   # a model on this machin
 |---|---|---|
 | `asr_server_url` | `""` | The endpoint the recording is posted to: `http://127.0.0.1:18080` for a model on this machine, `https://…` for a provider. The route is appended to it, so it is the root, not `/v1`. |
 | `model` | `""` | The model id to name in the request. **Empty asks the endpoint what it serves**, which is what a local single-model setup wants, and why a local setup names nothing here. A path in this key is refused: the file belongs to the service, not to the settings. |
-| `api_key` | `""` | Sent as `Authorization: Bearer <value>`. Empty sends no header. A credential lives here rather than in an environment the engine never starts. |
+| `api_key` | `""` | Sent as `Authorization: Bearer <value>`. Empty sends no header. A credential lives here rather than in an environment the engine never starts - and because it can live here, the file is written `0600`. A wrong one is a failing `asr_endpoint` finding, never a silent fallback. |
 | `language` | `zh` | **The user's, not the program's.** Passed to the model; empty asks it to auto-detect, which is usually worse for Chinese and better for most other languages. |
 | `text_script` | `simplified` | Chinese output script: `simplified` or `preserve`. The default is what the reference user writes; `preserve` keeps whatever script the repair model produced. |
 | `max_utterance_seconds` | `60` | A hold whose key never comes up stops recording here. |
@@ -144,15 +144,19 @@ cases that cost something: a unit whose recorded paths no longer exist, which re
 in the background, and a valid unit here while the settings post elsewhere, which is a model
 loaded into memory that nothing sends audio to.
 
-`asr_endpoint` asks the question the engine asks, in the way the engine asks it: with a model
-named in the settings it reports that id and contacts nothing, because a provider's model list
-is a catalogue rather than a promise about this account; with nothing named it asks the
-endpoint, because that is the only answer, and a local service left on another checkpoint is
-the failure that matters. A credential the endpoint refuses is a failing finding, not an ok one.
+`asr_endpoint` asks the question the engine asks, in the way the engine asks it. The endpoint
+is contacted either way, because its status is the one thing an answer can prove about a
+remote setup: 401 or 403 is the credential being refused, which is a failing finding whose fix
+is a settings file. What is never believed is the model list - with a model named in the
+settings, a 404, a 501 and a list of two hundred ids all mean the same nothing, because a
+provider's catalogue is not a promise about what this account accepts. With nothing named the
+list *is* the answer, and a local service left serving another checkpoint is the failure that
+matters there.
 
 A failing finding is exit 3 with a `fix` an agent can run: `voiceime apply` for the desktop
 half, `systemctl --user restart voiceime-asr-server.service` or `scripts/asr-service.sh` for a
-model on this machine.
+model on this machine, `voiceime config set api_key …` for a credential the endpoint refused,
+`curl -s <endpoint>/v1/models` for an endpoint that did not answer at all.
 
 The engine's own log is `~/.cache/voiceime/engine.log` (ibus-daemon discards the process's
 stdout). `ready: hold … to dictate` on selection, then `recording`, `decoded …` and

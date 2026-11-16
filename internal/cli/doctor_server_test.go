@@ -14,10 +14,11 @@ import (
 )
 
 // The endpoint finding answers the question dictation will ask: which model would a request
-// name, and can the endpoint answer at all. Which of those two questions applies is decided
-// by the settings: a remote endpoint names its model and is not asked anything, because its
-// model list is a catalogue; a local one usually names nothing, and the answer has to come
-// from the endpoint.
+// name, and can the endpoint answer at all. Which of the two naming questions applies is
+// decided by the settings: a setup that names its model is never cross-checked against the
+// endpoint's catalogue, a setup that names nothing has to be told. Either way the endpoint is
+// asked, because the status of that one request is the only evidence there is about the
+// credential - and a refused credential is the failure a remote setup really meets.
 func TestASREndpointCheckStates(t *testing.T) {
 	serving := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/models" {
@@ -32,6 +33,19 @@ func TestASREndpointCheckStates(t *testing.T) {
 		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"one"},{"id":"two"}]}`))
 	}))
 	defer listingMany.Close()
+
+	// A provider that has no model list at all: the model is named, so the list is not
+	// needed, and 501 says nothing about the credential.
+	noCatalogue := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Unsupported method", http.StatusNotImplemented)
+	}))
+	defer noCatalogue.Close()
+
+	refusing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"Incorrect API key provided"}}`))
+	}))
+	defer refusing.Close()
 
 	cases := []struct {
 		name       string
@@ -82,13 +96,45 @@ func TestASREndpointCheckStates(t *testing.T) {
 			wantFix:    "systemctl --user restart",
 		},
 		{
-			name: "a provider, named by its model",
+			name: "a provider with no model list, its model named, its credential accepted",
+			mutate: func(c *config.Config) {
+				c.ASRServerURL = noCatalogue.URL
+				c.Model = "gpt-4o-mini-transcribe"
+				c.APIKey = "sk-test"
+			},
+			wantStatus: "ok",
+			wantDetail: `would name "gpt-4o-mini-transcribe"`,
+		},
+		{
+			name: "a provider that refuses the credential",
+			mutate: func(c *config.Config) {
+				c.ASRServerURL = refusing.URL
+				c.Model = "gpt-4o-mini-transcribe"
+				c.APIKey = "sk-wrong"
+			},
+			wantStatus: "fail",
+			wantDetail: "Incorrect API key provided",
+			wantFix:    "config set api_key",
+		},
+		{
+			name: "a provider that needs a credential and was given none",
+			mutate: func(c *config.Config) {
+				c.ASRServerURL = refusing.URL
+				c.Model = "gpt-4o-mini-transcribe"
+			},
+			wantStatus: "fail",
+			wantDetail: "no credential",
+			wantFix:    "config set api_key",
+		},
+		{
+			name: "a provider whose host cannot be reached",
 			mutate: func(c *config.Config) {
 				c.ASRServerURL = "https://api.does-not-resolve.invalid/v1"
 				c.Model = "gpt-4o-mini-transcribe"
 			},
-			wantStatus: "ok",
-			wantDetail: `would name "gpt-4o-mini-transcribe"`,
+			wantStatus: "fail",
+			wantDetail: "cannot be reached",
+			wantFix:    "curl -s",
 		},
 	}
 
@@ -145,13 +191,13 @@ func TestEndpointCheckSendsTheCredential(t *testing.T) {
 	}
 }
 
-// A model named in the settings is used without asking the endpoint. A provider's list is not
-// a promise about what that account accepts, so a named model must win even when the list
-// would disagree - and no request is wasted finding that out.
-func TestNamedModelIsUsedWithoutAskingTheEndpoint(t *testing.T) {
-	asked := 0
+// A model named in the settings is the model a request names, whatever the endpoint's list
+// says: a provider's catalogue is not a promise about what that account accepts. The endpoint
+// is still asked once - for the credential - so the request that asks has to carry it.
+func TestNamedModelIsNotCrossCheckedWithTheEndpoint(t *testing.T) {
+	var gotAuth string
 	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		asked++
+		gotAuth = r.Header.Get("Authorization")
 		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"something-else"}]}`))
 	}))
 	defer endpoint.Close()
@@ -159,12 +205,16 @@ func TestNamedModelIsUsedWithoutAskingTheEndpoint(t *testing.T) {
 	cfg := config.Default()
 	cfg.ASRServerURL = endpoint.URL
 	cfg.Model = "sensevoice-small-q8-audiocpp-v1"
+	cfg.APIKey = "sk-test"
 	check := asrEndpointCheck(cfg, true)
 	if check.Status != "ok" {
 		t.Fatalf("status = %q, detail %q", check.Status, check.Detail)
 	}
-	if asked != 0 {
-		t.Errorf("the endpoint was asked %d times about a model this setup already names", asked)
+	if !strings.Contains(check.Detail, `"sensevoice-small-q8-audiocpp-v1"`) {
+		t.Errorf("detail %q: the settings name a model, and the endpoint's list overrode it", check.Detail)
+	}
+	if gotAuth != "Bearer sk-test" {
+		t.Errorf("asked the endpoint with Authorization %q, want the credential a real request would carry", gotAuth)
 	}
 }
 

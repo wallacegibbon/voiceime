@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -44,14 +45,15 @@ func endpointIsLocal(raw string) bool {
 	return false
 }
 
-// asrEndpointCheck reports on the endpoint dictation posts to, and on the one thing that can
-// make it unusable: no model id to name.
+// asrEndpointCheck reports on the endpoint dictation posts to: whether it can be reached at
+// all, whether it accepts the credential, and what a request would name there.
 //
-// The settings decide which kind of endpoint this is. A remote one names its model, and this
-// command asks it nothing - a provider's /v1/models is a catalogue, not a promise about what
-// this account accepts, and a working setup with a named model would fail a check that
-// trusted the catalogue. A local one usually names nothing, and then the answer has to come
-// from the endpoint, so the check asks it the question the engine will.
+// The settings decide which of the two questions about naming is asked. A setup that names a
+// model is not cross-checked against the endpoint's list - a provider's /v1/models is a
+// catalogue, not a promise about what this account accepts - but the endpoint is still asked,
+// because its answer's status is the only evidence there is about the credential, and a
+// refused credential is the failure a remote setup actually meets. A setup that names nothing
+// has to be told, so the check asks the endpoint the question the engine will.
 func asrEndpointCheck(cfg *config.Config, unitExists bool) Check {
 	raw := strings.TrimSpace(cfg.ASRServerURL)
 	if raw == "" {
@@ -70,16 +72,25 @@ func asrEndpointCheck(cfg *config.Config, unitExists bool) Check {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
+	named := strings.TrimSpace(cfg.Model)
 	model, err := asr.ModelToUse(ctx, base, cfg.Model, cfg.APIKey)
+	if err == nil && named != "" {
+		// The model itself is not cross-checked with the endpoint's list, but the credential
+		// it would travel with is tested, on the route the request would use.
+		err = asr.CheckCredential(ctx, cfg.ASRServerURL, named, cfg.APIKey)
+	}
 	if err != nil {
-		fix := "voiceime transcribe --file <wav>"
-		if local {
-			switch {
-			case unitExists:
-				fix = "systemctl --user restart " + unitName
-			default:
-				fix = "scripts/asr-service.sh /path/to/audiocpp_server /path/to/model.gguf"
-			}
+		var refused *asr.CredentialError
+		fix := fmt.Sprintf("curl -s %s/v1/models", base)
+		switch {
+		case errors.As(err, &refused):
+			// The endpoint is there and said no to the credential: that is a settings file,
+			// not a service.
+			fix = "voiceime config set api_key <the token this endpoint gave you>"
+		case local && unitExists:
+			fix = "systemctl --user restart " + unitName
+		case local:
+			fix = "scripts/asr-service.sh /path/to/audiocpp_server /path/to/model.gguf"
 		}
 		return Check{
 			ID:     "asr_endpoint",
@@ -89,8 +100,10 @@ func asrEndpointCheck(cfg *config.Config, unitExists bool) Check {
 		}
 	}
 	detail := fmt.Sprintf("%s, and a request would name %q", base, model)
-	if local {
-		detail += " - a model on this machine, which scripts/asr-service.sh starts"
+	if named == "" {
+		detail += " - the endpoint itself named it"
+	} else {
+		detail += " - named by the settings, and its credential was accepted"
 	}
 	return Check{ID: "asr_endpoint", Status: "ok", Detail: detail}
 }

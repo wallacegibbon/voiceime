@@ -258,3 +258,35 @@ func TestValidateRejectsUnknownTextCleanupValues(t *testing.T) {
 		t.Error("text_script was not reported")
 	}
 }
+
+// The settings file can hold a bearer token, so it is not readable by everyone who can read
+// this home directory. An older file that was world-readable is tightened by the next write:
+// that is the moment its contents are known to have changed, and the tool never writes the
+// file without meaning to.
+func TestSaveKeepsAFileHoldingACredentialPrivate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	cfg := Default()
+	cfg.APIKey = "sk-a-token-nobody-else-needs"
+	if err := Save(cfg, path); err != nil {
+		t.Fatal(err)
+	}
+	mode := func() os.FileMode {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return info.Mode().Perm()
+	}
+	if mode() != 0o600 {
+		t.Errorf("the settings file is %o, want 0600: it holds a credential", mode())
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(cfg, path); err != nil {
+		t.Fatal(err)
+	}
+	if mode() != 0o600 {
+		t.Errorf("a world-readable settings file stayed %o after being rewritten", mode())
+	}
+}

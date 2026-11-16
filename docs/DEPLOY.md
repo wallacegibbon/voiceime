@@ -64,7 +64,10 @@ api_key        = "sk-…"                      # sent as Authorization: Bearer
 ```
 
 `asr_endpoint` is the finding that says whether the endpoint can be used at all, and a refused
-credential is a failing finding rather than an ok one. The proof is the same command as ever:
+credential is a failing finding rather than an ok one - a wrong token and a missing token are
+reported differently, with the endpoint's own reason kept. The file holds that token, so
+`config set` writes it `0600`; hand-editing it is fine and needs nothing extra. The proof is
+the same command as ever:
 
 ```sh
 "$BIN" transcribe --file sample_16k.wav

@@ -194,7 +194,9 @@ measurements behind the search path and the component registry cache are in
   worth running a second later rather than immediately.
 * It ends by dropping the engine processes, so that the next activation runs the new binary,
   and selecting the input method again: an engine process that goes away takes the session's
-  input method with it, and nothing puts it back by itself.
+  input method with it, and nothing puts it back by itself. If that selection cannot be made,
+  the command exits 3 rather than reporting three lines and success - the state it has left the
+  desktop in is the one a person notices, and a script that ran it has to be able to see it.
 
 The input-source list is the user's. `apply` adds one entry and leaves the rest - their
 layouts, their other engines, their recent-use order - exactly as it found them. Assert it:
@@ -247,7 +249,10 @@ done
 
 `doctor=0` and every line ending in `ok` is the deployable state: the settings readable, an
 endpoint that answers and would be named correctly in a request, capture available, the engine
-registered and selected for this session, and nothing stale running. One finding can report a
+registered and selected for this session, and nothing stale running. Run it from inside the
+session being deployed: from a console or an ssh shell that holds no address for the IBus
+daemon, `ibus` fails as an unreachable daemon and `session_engine` is not reported at all,
+which is a report about the shell rather than the install. One finding can report a
 warning while nothing is broken: `config`, about a setting worth changing, or about a
 credential in a file other people can read. A settings file that cannot work makes that same
 line fail by itself.
@@ -294,7 +299,9 @@ running `scripts/asr-service.sh` again rewrites that unit with the build that ex
 | no text, log shows `no audio was recorded` | the sound server is not giving the microphone | `"$BIN" doctor`, then the `capture_source` line it names |
 | no text, log shows `transcribe …: …` | the endpoint refused, timed out, or the model id is wrong | `"$BIN" doctor` (the `asr_endpoint` finding), then `"$BIN" transcribe --file sample_16k.wav` |
 | `"$BIN" transcribe` answers `the settings cannot work: <key>: …` and exits 3, and no key reaches the engine | the file parses, but the values do not work as a pair | the message names the key and the line that completes it, in the file that holds the rest of the pair; the engine logs the same reason in `~/.cache/voiceime/engine.log` and stays down until the file works |
-| the desktop still shows the input method, but no application receives any key at all | no engine is selected for the session: an engine process ended, and the daemon clears the global engine when its bus name disappears (`ibus engine` answers `No engine is set.`) | `ibus engine voiceime`, which also starts the engine process (`doctor` reports `session_engine`; `apply` selects it again too) |
+| the desktop still shows the input method, but no application receives any key at all | no engine is selected for the session: an engine process ended, and the daemon clears the global engine when its bus name disappears (`ibus engine` answers `No engine is set.` - which a shell that never reached a daemon also answers, and the row above is that one) | `ibus engine voiceime`, which also starts the engine process (`doctor` reports `session_engine`; `apply` selects it again too) |
+| `doctor` says the ibus CLI cannot reach a daemon, while one is running | the command was run from a shell with no address for it: a console, another user's session, or ssh. An X session keys the daemon's address by display number, so a shell with no `DISPLAY` and no `IBUS_ADDRESS` has nothing to look up; a Wayland session needs neither and reaches the daemon over the session bus, which is why the same command answers there and not here | the fix the finding prints, which is the display the running daemon was itself started with; or run the command in a terminal inside the session. `voiceime apply` is not the fix, and from that shell it makes things worse: it drops the engine processes and cannot select the input method back |
+| `voiceime apply` ends with the component written and an exit 3 | it stopped the engine processes and could not put the input method back, so nothing routes keys until something does | the `fix` it prints: `ibus engine voiceime` when a daemon refused, the missing address when none could be reached |
 | the menu does not list Voiceime | not in the input-source list | `"$BIN" apply` |
 | `doctor` reports `ibus` or `component_exec` as not registered | the daemon has not read the component | `"$BIN" apply`, then `"$BIN" doctor` again |
 | the engine disappears after every login | `IBUS_COMPONENT_PATH` was set for one session only, not written to `~/.config/environment.d/voiceime.conf` | `"$BIN" apply` (`doctor` reports `component_env`) |

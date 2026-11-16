@@ -82,6 +82,11 @@ writes and are not settings here.
   engine), restarts IBus, then drops the engine processes and selects the input method again.
   It refuses to change anything if the configuration cannot work. Running it twice is how you
   check it: the second run reports everything unchanged.
+  It stops the engines before it puts the input method back, so the one failure it can cause is
+  the one a person feels: the desktop still lists the input method and no application receives
+  a key. That is an exit 3 with a `fix`, not a line in the report that ends in success - and
+  when the cause is that no daemon could be reached, the `fix` is the address that shell is
+  missing, never another `apply`.
 * The input-source list belongs to the user. Nothing already configured is removed or
   reordered, and the recent-use order is not written; `remove` takes out voiceime's own
   entry and leaves the others.
@@ -168,10 +173,10 @@ voiceime transcribe --seconds 5   # one decode from the microphone, with timing
 |---|---|
 | does the address answer, is the credential accepted, and is there an id to name in the request | `asr_endpoint` |
 | is there something to record with, and does PipeWire name an input to record from | `capture` |
-| is the bus running, and does it know this engine is there | `ibus` |
+| is the bus running, and does it know this engine is there | `ibus`: asked with `ibus list-engine`, which cannot answer without a connection. `ibus version` can - it prints the library's version from a shell that reaches no daemon at all, so it is not the test. **Not reaching a daemon is reported as itself**, with the reason the machine gives: no daemon running anywhere, a daemon running and this shell holding an address that does not lead to it, or a daemon running and this shell holding no address at all (an X session's terminal outside that session, where the display number is what the CLI looks the daemon up by - the same command answers on a Wayland session, which reaches the daemon over the session bus instead). None of those is fixed by `voiceime apply`, and none is reported as "not registered" |
 | is the component installed, and does it name a binary that exists | `component_exec` |
 | will the engine still be registered after the next login | `component_env` |
-| do this session's keys reach the engine at all | `session_engine` |
+| do this session's keys reach the engine at all | `session_engine`: a daemon that answers "no engine is selected" is a finding, because the desktop keeps showing an input method that receives nothing. A daemon that could not be asked is not: that is the `ibus` finding's state, and repeating it here would be reporting an answer to a question that was never put |
 | is an old build still running | `running_build` |
 | can these settings work at all, is the file readable only by its owner, and if not which line | `config`: a settings file that cannot work is a failure naming the key, the reason and the line that would fix it, and the engine refuses to start on the same list, so a file that cannot work never reaches a microphone; a credential in a file other people can read is a warning, reported and costing nothing, because nothing about it stops dictation working |
 
@@ -194,7 +199,10 @@ file>` for an address that is not written yet, `curl -s <address>` for an addres
 answer at all. A fix names the file because nothing in this program writes it. An address that
 did not answer is reported as an address that did not answer: what should have been listening
 behind it is not something this program was told, so it names no command that would have started
-it.
+it. The same care applies to a daemon that could not be reached: the fix is the address the
+shell is missing, read out of the running daemon's own environment when one is running
+(`export DISPLAY=:1`, say), and a machine with no daemon at all is told that instead. What is
+never offered is the command that needs the thing found to be missing.
 
 The engine's own log is `~/.cache/voiceime/engine.log`: one file per engine lifetime, every
 line prefixed `session:`, because ibus-daemon discards the process's stdout. What a working hold

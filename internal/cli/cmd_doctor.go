@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"sort"
 	"strings"
 
 	"github.com/wallacegibbon/voiceime/internal/config"
@@ -109,29 +108,7 @@ func runDoctor(ctx *Context) []Check {
 	// engine.
 	ibusCheck(report)
 
-	// 5. Optional feedback tools. Missing ones degrade UX, never function.
-	var optional []string
-	for id, tool := range map[string]string{
-		"notify": config.FindExecutable("notify-send"),
-		"sound":  config.FindExecutable("pw-play", "paplay", "canberra-gtk-play"),
-	} {
-		if tool == "" {
-			optional = append(optional, id)
-		}
-	}
-	if len(optional) > 0 {
-		sort.Strings(optional)
-		report(Check{
-			ID:     "feedback",
-			Status: "warn",
-			Detail: "missing " + strings.Join(optional, ", ") + "; status cues will be silent",
-			Fix:    "sudo apt install libnotify-bin pipewire-bin",
-		})
-	} else {
-		report(Check{ID: "feedback", Status: "ok", Detail: "notifications and sound cues available"})
-	}
-
-	// 6. Installed artifacts: the paths baked into the component file, and whether the
+	// 5. Installed artifacts: the paths baked into the component file, and whether the
 	// resident process runs that path. A moved checkout breaks these silently (see
 	// install_check.go).
 	installChecks(report)

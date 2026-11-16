@@ -1,4 +1,8 @@
 // Package asr is the client side of recognition: one recording, one request.
+//
+// The address in the settings is that request's whole URL, used exactly as it is written: the
+// path belongs to whoever set the endpoint, and the model id is the other thing they know about
+// it. Nothing here appends a route or asks an address what it serves.
 package asr
 
 import (
@@ -21,13 +25,14 @@ type Transcriber interface {
 	Transcribe(ctx context.Context, pcm []byte) (string, error)
 }
 
-// ServerTranscriber sends a recording to an endpoint that speaks the transcriptions route.
-// The endpoint may be a model on this machine or a provider across a network: nothing below
-// knows the difference, and nothing here starts one.
+// ServerTranscriber sends a recording to an address that answers a transcriptions request.
+// The address may be a model on this machine or a provider across a network: nothing below
+// knows the difference, nothing here starts one, and nothing here adds to the address.
 type ServerTranscriber struct {
+	// BaseURL is the whole address a recording is posted to, used exactly as it is written.
 	BaseURL string
-	// Model is the id named in the request. When it is empty the endpoint is asked what it
-	// serves: a local setup has one model and no reason to name it twice.
+	// Model is the id the request names. Nothing here finds it out: which id an address
+	// serves is a second thing a person knows about an endpoint, and the settings keep it.
 	Model    string
 	APIKey   string
 	Language string
@@ -38,17 +43,20 @@ type ServerTranscriber struct {
 var _ Transcriber = ServerTranscriber{}
 
 // Transcribe uploads the recording and returns the text the server decoded.
+//
+// The address is used exactly as it is written and the model id exactly as it is written: both
+// are things a person knows about an endpoint and this package cannot find out.
 func (s ServerTranscriber) Transcribe(ctx context.Context, pcm []byte) (string, error) {
 	if len(pcm) == 0 {
 		return "", nil
 	}
-	base, err := Endpoint(s.BaseURL)
+	address, err := RequestURL(s.BaseURL)
 	if err != nil {
 		return "", err
 	}
-	model, err := ModelToUse(ctx, base, s.Model, s.APIKey)
-	if err != nil {
-		return "", err
+	model := strings.TrimSpace(s.Model)
+	if model == "" {
+		return "", fmt.Errorf("no model is named for %s: name the one it serves (voiceime config set model <id>)", address)
 	}
 
 	var body bytes.Buffer
@@ -79,7 +87,7 @@ func (s ServerTranscriber) Transcribe(ctx context.Context, pcm []byte) (string, 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/audio/transcriptions", &body)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, address, &body)
 	if err != nil {
 		return "", err
 	}
@@ -116,26 +124,6 @@ func (s ServerTranscriber) Transcribe(ctx context.Context, pcm []byte) (string, 
 	return decoded.Text, nil
 }
 
-// ModelToUse answers, from the settings, which model id a request to this endpoint would
-// name: the one it was given, or the one the endpoint serves. `voiceime doctor` asks the same
-// question, so the finding is what dictation would do rather than an approximation of it.
-//
-// A named model is taken from the settings and never cross-checked against the endpoint's
-// list: a provider's catalogue is not a promise about what this account is allowed to use, and
-// an endpoint with no list at all is a working endpoint. The credential is a separate
-// question, and the engine does not ask it - the request that carries it is the answer.
-func ModelToUse(ctx context.Context, endpoint, model, apiKey string) (string, error) {
-	base, err := Endpoint(endpoint)
-	if err != nil {
-		return "", err
-	}
-	named := strings.TrimSpace(model)
-	if named == "" {
-		return askModels(ctx, base, apiKey)
-	}
-	return named, nil
-}
-
 // CredentialError is the endpoint refusing the credential a request would carry. It is a type
 // because its fix is a different command from every other endpoint failure: a settings file,
 // not a service.
@@ -166,17 +154,17 @@ func refusedCredential(response *http.Response) bool {
 	return response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden
 }
 
-// CheckCredential asks an endpoint, with the credential a request would carry and the model
-// it would name, whether it accepts that credential. `voiceime doctor` asks it; dictation does
-// not, because its own request is the same question and costs one round trip instead of two.
+// CheckCredential asks an address, with the credential a request would carry and the model id
+// it would be given, whether that credential is accepted. `voiceime doctor` asks it; dictation
+// does not, because its own request is the same question and costs one round trip instead of two.
 //
-// It posts ten milliseconds of silence to the route dictation uses and reads the status of the
-// answer and nothing else. That route, not a model list, because a provider's `/v1/models` may
-// not exist at all - and a refusal on the route the engine really uses is authoritative in a
-// way an answer on a route we invented is not. Anything else - 400 "the recording is empty",
-// 415, 200 with an empty text - says the endpoint is there and did not refuse the credential.
-func CheckCredential(ctx context.Context, endpoint, model, apiKey string) error {
-	base, err := Endpoint(endpoint)
+// It posts ten milliseconds of silence to the address dictation posts to - that one, not one
+// guessed at from its shape - and reads the status of the answer and nothing else. A refusal on
+// the address the engine really uses is authoritative in a way an answer on one we invented is
+// not. Anything else - 400 "the recording is empty", 415, 200 with an empty text - says the
+// address is there and did not refuse the credential.
+func CheckCredential(ctx context.Context, address, model, apiKey string) error {
+	target, err := RequestURL(address)
 	if err != nil {
 		return err
 	}
@@ -199,19 +187,19 @@ func CheckCredential(ctx context.Context, endpoint, model, apiKey string) error 
 
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/audio/transcriptions", &body)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target, &body)
 	if err != nil {
 		return err
 	}
 	request.Header.Set("Content-Type", form.FormDataContentType())
-	// So an endpoint - or a person reading its log - can tell this from a dictation.
+	// So an address - or a person reading its log - can tell this from a dictation.
 	request.Header.Set("X-Voiceime", "credential-probe")
 	if token := strings.TrimSpace(apiKey); token != "" {
 		request.Header.Set("Authorization", "Bearer "+token)
 	}
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
-		return fmt.Errorf("%s cannot be reached: %w", base, err)
+		return fmt.Errorf("%s cannot be reached: %w", target, err)
 	}
 	defer response.Body.Close()
 	payload, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
@@ -221,70 +209,6 @@ func CheckCredential(ctx context.Context, endpoint, model, apiKey string) error 
 	return nil
 }
 
-// modelsRequest is the one request both questions above ask: the model list, with the
-// credential a real request would carry. The caller reads the body and closes both it and
-// the cancel.
-func modelsRequest(ctx context.Context, base, apiKey string) (*http.Response, context.CancelFunc, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1/models", nil)
-	if err != nil {
-		cancel()
-		return nil, nil, err
-	}
-	if token := strings.TrimSpace(apiKey); token != "" {
-		request.Header.Set("Authorization", "Bearer "+token)
-	}
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		cancel()
-		return nil, nil, err
-	}
-	return response, cancel, nil
-}
-
-// askModels asks the endpoint which model it serves - the local case: one model, and nothing
-// in the settings naming it. A remote endpoint answers /v1/models with a catalogue instead,
-// so its setup names the id it wants and never comes here.
-func askModels(ctx context.Context, base, apiKey string) (string, error) {
-	response, cancel, err := modelsRequest(ctx, base, apiKey)
-	if err != nil {
-		return "", fmt.Errorf("ask the endpoint which model it serves: %w", err)
-	}
-	defer cancel()
-	defer response.Body.Close()
-	payload, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
-	if err != nil {
-		return "", fmt.Errorf("ask the endpoint which model it serves: %w", err)
-	}
-	switch response.StatusCode {
-	case http.StatusOK:
-	default:
-		if refusedCredential(response) {
-			return "", &CredentialError{Status: response.Status, Missing: strings.TrimSpace(apiKey) == "", Detail: summarise(payload)}
-		}
-		return "", fmt.Errorf("ask the endpoint which model it serves: %s", response.Status)
-	}
-	var listing struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(payload, &listing); err != nil {
-		return "", fmt.Errorf("ask the endpoint which model it serves: %w", err)
-	}
-	switch len(listing.Data) {
-	case 1:
-		if listing.Data[0].ID == "" {
-			return "", fmt.Errorf("the endpoint serves a model with no id")
-		}
-		return listing.Data[0].ID, nil
-	case 0:
-		return "", fmt.Errorf("the endpoint serves no model: for a model on this machine run scripts/asr-service.sh, or name model in the settings")
-	default:
-		return "", fmt.Errorf("the endpoint lists %d models, so this setup has to name one: model = \"...\" in the settings", len(listing.Data))
-	}
-}
-
 func (s ServerTranscriber) client() *http.Client {
 	if s.Client != nil {
 		return s.Client
@@ -292,19 +216,26 @@ func (s ServerTranscriber) client() *http.Client {
 	return http.DefaultClient
 }
 
-func Endpoint(raw string) (string, error) {
-	base := strings.TrimSpace(raw)
-	if base == "" {
-		return "", fmt.Errorf("no server configured: run `voiceime apply`")
+// RequestURL is the address a recording is posted to, exactly as it was written.
+//
+// Nothing is appended to it, and nothing is trimmed off it. A model on this machine and a
+// provider across a network put that address different numbers of path segments apart, and the
+// path is part of what a person had to find out about the endpoint they were given. Guessing at
+// it turns a working address into a 404 that names, in its own body, the path it looked for.
+// What is checked here is only the shape a request cannot be sent to at all.
+func RequestURL(raw string) (string, error) {
+	address := strings.TrimSpace(raw)
+	if address == "" {
+		return "", fmt.Errorf("no address is configured: asr_server_url names the one a recording is posted to")
 	}
-	parsed, err := url.Parse(base)
-	if err != nil {
-		return "", fmt.Errorf("asr_server_url %q: %v (needs a scheme and a host, e.g. http://127.0.0.1:18080)", base, err)
+	parsed, err := url.Parse(address)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", fmt.Errorf("asr_server_url %q: needs a scheme and a host, e.g. http://127.0.0.1:18080/v1/audio/transcriptions", address)
 	}
-	if parsed.Scheme == "" || parsed.Host == "" {
-		return "", fmt.Errorf("asr_server_url %q: needs a scheme and a host, e.g. http://127.0.0.1:18080", base)
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", fmt.Errorf("asr_server_url %q: %s is not a scheme a request is sent over", address, parsed.Scheme)
 	}
-	return strings.TrimRight(base, "/"), nil
+	return address, nil
 }
 
 // summarise keeps an error body to one short line.

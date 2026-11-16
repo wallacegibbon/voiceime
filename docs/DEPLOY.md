@@ -48,26 +48,28 @@ the setting and the command that corrects it.
 
 ## 3. Where recognition comes from
 
-The engine needs one thing: an endpoint that answers `POST /v1/audio/transcriptions`. Whether
-that endpoint is a model on this machine or a provider across a network is not the engine's
-concern, and the two ways of having one are separate. The settings say which one a machine is
-in - `asr_server_url`, plus `model` and `api_key` when the endpoint is not a model here.
+The engine needs one thing: an address that answers a POST with the recording. That address is
+used exactly as it is written, so a provider whose route is `/api/paas/v4/audio/transcriptions`
+and a model on this machine at `/v1/audio/transcriptions` are the same kind of setting. The
+settings say which of the two a machine is in - `asr_server_url` and the `model` id to name, plus
+`api_key` when the address asks for a credential.
 
 ### An endpoint elsewhere
 
 Nothing is installed here. Write the three keys and skip the rest of this section:
 
 ```toml
-asr_server_url = "https://api.example.com"   # the root: the route is appended to it
+asr_server_url = "https://api.example.com/v1/audio/transcriptions"  # the whole address: nothing is appended
 model          = "gpt-4o-mini-transcribe"    # what to ask for, by id
 api_key        = "sk-…"                      # sent as Authorization: Bearer
 ```
 
-`asr_endpoint` is the finding that says whether the endpoint can be used at all, and a refused
-credential is a failing finding rather than an ok one - a wrong token and a missing token are
-reported differently, with the endpoint's own reason kept. The file holds that token, so
-`config set` writes it `0600`; hand-editing it is fine and needs nothing extra. The proof is
-the same command as ever:
+`asr_endpoint` is the finding that says whether that address can be used at all: it reports an
+address with no id to ask it for, and it asks the address itself whether the credential is
+accepted - a refused credential is a failing finding rather than an ok one, and a wrong token and a
+missing token are reported differently, with the address's own reason kept. The file holds that
+token, so `config set` writes it `0600`; hand-editing it is fine and needs nothing extra. The
+proof is the same command as ever:
 
 ```sh
 "$BIN" transcribe --file sample_16k.wav
@@ -98,23 +100,28 @@ scripts/asr-service.sh \
 # assert: wrote:  /home/<user>/.local/share/voiceime/asr-server.json
 #         wrote:  /home/<user>/.config/systemd/user/voiceime-asr-server.service
 #         serving: sensevoice-small-q8-audiocpp-v1 (cpu, 8 threads) from <the checkpoint>
+#         settings: asr_server_url = http://127.0.0.1:18080/v1/audio/transcriptions, model = sensevoice-small-q8-audiocpp-v1
 ```
 
-The last line is the assertion, and it is the same request anyone can repeat afterwards with
-no tool of ours:
+The last two lines are the assertion, and the first half of it is the same request anyone can
+repeat afterwards with no tool of ours:
 
 ```sh
 curl -s http://127.0.0.1:18080/v1/models
 # assert: data[0].id is the entry named above
 ```
 
+That is the service's own list, not something the engine reads: the engine posts to the address
+and names the id the script just recorded.
+
 Four things about that script belong here:
 
-* It writes two files and starts them. The audio.cpp to run, the backend its own banner
-  reports, the worker count the CPU's topology allows (one per physical core: `nproc` counts
-  siblings and would ask the engine to queue half its threads) and the checkpoint go into
-  those files, and nothing looks them up again - a service started at login cannot fail for a
-  reason only another run could fix.
+* It writes two files and two settings keys, and starts them. The audio.cpp to run, the backend
+  its own banner reports, the worker count the CPU's topology allows (one per physical core:
+  `nproc` counts siblings and would ask the engine to queue half its threads) and the checkpoint go
+  into those files; the address and the id go into the settings, because a program that never asks
+  an address what it serves has to be told. Nothing looks any of them up again - a service started
+  at login cannot fail for a reason only another run could fix.
 * It asks, rather than assumes: the family from the checkpoint, the backend from the build, the
   cores from the kernel. A build without `cpu` in its banner is refused by name, and a
   checkpoint with no model spec in it is refused by name - the answer is to convert it with
@@ -122,8 +129,8 @@ Four things about that script belong here:
 * It is idempotent, and says what it changed: running it again after editing a checkpoint into
   the settings prints `unchanged:` twice, and rewriting the unit is what heals a moved
   checkout or a newer build.
-* It starts nothing when the endpoint is not this machine: `asr_server_url = "https://…"` makes
-  it report that and leave, which is the whole of "the local model is optional".
+* It starts nothing when the address is not this machine: `asr_server_url = "https://…"` makes it
+  report that and leave, which is the whole of "the local model is optional".
 
 The unit is where those answers ended up, so reading it back is the assertion that they were
 written down at all:
@@ -250,7 +257,8 @@ that is.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `asr_endpoint` fails with `no endpoint is configured` | `asr_server_url` is empty, and recognition is an endpoint | write the endpoint (provider) or run `scripts/asr-service.sh` with a checkpoint (this machine) |
+| `asr_endpoint` fails with `no address is configured` | `asr_server_url` is empty, and recognition is an address | write the provider's URL, or run `scripts/asr-service.sh` with a checkpoint (this machine) |
+| `asr_endpoint` fails with `nothing names the model to ask it for` | an address was written without the id it is asked for | `voiceime config set model <id>`, or run `scripts/asr-service.sh`, which writes both |
 | `asr_endpoint` fails with a connection error and `server_unit` says the unit runs a binary that does not exist | the audio.cpp build was moved, cleaned or never built | `scripts/asr-service.sh /path/to/audiocpp_server /path/to/model.gguf`, which rewrites both files |
 | `server_unit` warns that a model starts here while the settings post elsewhere | the endpoint moved to a provider and the local model stayed loaded | `systemctl --user disable --now voiceime-asr-server.service` |
 | no text, log shows `no audio was recorded` | the sound server is not giving the microphone | `"$BIN" doctor`, then `config set capture_source` |

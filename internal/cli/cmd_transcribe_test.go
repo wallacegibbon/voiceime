@@ -18,18 +18,16 @@ import (
 // person holding the microphone cannot tell which half of the path is missing.
 func TestTranscribeSaysWhenNothingWasRecognized(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/v1/models":
-			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"sensevoice-small"}]}`))
-		default:
-			_, _ = w.Write([]byte(`{"text":"","timing":{"wall_ms":12}}`))
-		}
+		_, _ = w.Write([]byte(`{"text":"","timing":{"wall_ms":12}}`))
 	}))
 	defer server.Close()
 
 	configPath := filepath.Join(t.TempDir(), "config.toml")
+	// An address and an id to name in it: the address is used exactly as written, so the path
+	// belongs to the settings and not to the client.
 	if err := os.WriteFile(configPath,
-		[]byte(fmt.Sprintf("asr_server_url = %q\n", server.URL)), 0o644); err != nil {
+		[]byte(fmt.Sprintf("asr_server_url = %q\nmodel = %q\n",
+			server.URL+"/v1/audio/transcriptions", "sensevoice-small")), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// Half a second of digital silence, in the format the tool reads.

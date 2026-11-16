@@ -14,17 +14,6 @@ import (
 	"github.com/wallacegibbon/voiceime/internal/audio"
 )
 
-// probeAnswer is how the tests here answer the credential probe (a request every named-model
-// call makes to /v1/models before it posts audio): a 204, which says nothing about the
-// credential and asks for no model list. Those tests are about the transcription request.
-func probeAnswer(w http.ResponseWriter, r *http.Request) bool {
-	if r.URL.Path != "/v1/models" {
-		return false
-	}
-	w.WriteHeader(http.StatusNoContent)
-	return true
-}
-
 func TestServerTranscriberUploadsTheSegmentAndReturnsItsText(t *testing.T) {
 	var (
 		gotModel    string
@@ -33,9 +22,6 @@ func TestServerTranscriberUploadsTheSegmentAndReturnsItsText(t *testing.T) {
 		gotWAV      []byte
 	)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if probeAnswer(w, r) {
-			return
-		}
 		if r.URL.Path != "/v1/audio/transcriptions" {
 			t.Errorf("posted to %s, want /v1/audio/transcriptions", r.URL.Path)
 		}
@@ -61,7 +47,7 @@ func TestServerTranscriberUploadsTheSegmentAndReturnsItsText(t *testing.T) {
 
 	pcm := audio.SamplesToBytes([]int16{1, -2, 3, -4, 5, -6})
 	transcriber := ServerTranscriber{
-		BaseURL:  server.URL,
+		BaseURL:  server.URL + "/v1/audio/transcriptions",
 		Model:    "refine-qwen3",
 		Language: "en",
 		Timeout:  5 * time.Second,
@@ -106,9 +92,6 @@ func TestServerTranscriberUploadsTheSegmentAndReturnsItsText(t *testing.T) {
 // commit the streaming text and let the user see unrefined words.
 func TestServerTranscriberReportsAServerError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if probeAnswer(w, r) {
-			return
-		}
 		http.Error(w, "model is busy\nsecond line", http.StatusServiceUnavailable)
 	}))
 	defer server.Close()
@@ -144,35 +127,63 @@ func TestServerTranscriberSkipsEmptyAudio(t *testing.T) {
 	}
 }
 
-// A model named in the settings is the id a request names, whatever the endpoint's list says,
-// and asking for the id costs no request when it is named. The endpoint's answer is not
-// believed about models: a list naming other ids, no list at all, and a list of two hundred
-// all give back the id from the settings.
-func TestNamedModelIsNeverTakenFromTheEndpointList(t *testing.T) {
-	servers := map[string]http.Handler{
-		"a list naming other ids": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_, _ = io.WriteString(w, `{"object":"list","data":[{"id":"other"},{"id":"another"}]}`)
-		}),
-		"no list at all": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			http.Error(w, "Unsupported method", http.StatusNotImplemented)
-		}),
+// The configured address is used exactly as written: its path is not ours to invent, its port
+// and host are not ours to guess, and nothing is appended to it. This is what makes a provider
+// whose route is /api/paas/v4/audio/transcriptions as usable as a local one.
+func TestTheAddressIsUsedExactlyAsWritten(t *testing.T) {
+	var gotPath, gotQuery, gotModel string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotQuery = r.URL.Path, r.URL.RawQuery
+		_ = r.ParseMultipartForm(1 << 20)
+		gotModel = r.FormValue("model")
+		_, _ = io.WriteString(w, `{"text":"what the provider said"}`)
+	}))
+	defer server.Close()
+
+	address := server.URL + "/api/paas/v4/audio/transcriptions"
+	transcriber := ServerTranscriber{BaseURL: address, Model: "glm-asr-2512"}
+	text, err := transcriber.Transcribe(context.Background(), audio.SamplesToBytes([]int16{1, 2}))
+	if err != nil {
+		t.Fatalf("%v", err)
 	}
-	for name, handler := range servers {
-		t.Run(name, func(t *testing.T) {
-			server := httptest.NewServer(handler)
-			defer server.Close()
-			model, err := ModelToUse(context.Background(), server.URL, "gpt-4o-mini-transcribe", "sk-test")
-			if err != nil {
-				t.Fatalf("%v", err)
-			}
-			if model != "gpt-4o-mini-transcribe" {
-				t.Errorf("a request would name %q, want the id the settings name", model)
-			}
-		})
+	if text != "what the provider said" {
+		t.Errorf("text %q", text)
+	}
+	if gotPath != "/api/paas/v4/audio/transcriptions" {
+		t.Errorf("posted to %s: something was appended to the configured address", gotPath)
+	}
+	if gotQuery != "" {
+		t.Errorf("query %q was added to the address", gotQuery)
+	}
+	if gotModel != "glm-asr-2512" {
+		t.Errorf("named model %q, want the id from the settings", gotModel)
 	}
 }
 
-// The credential question is asked separately, on the route dictation uses, and only the
+// Nothing is asked of an address beyond the request itself: no model list, no discovery, no
+// guessing. A setup that names no model is a settings gap, and the message says which key and
+// which command, rather than picking one silently.
+func TestNoModelNamedSaysSoAndGuessesNothing(t *testing.T) {
+	asked := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked++
+		_, _ = io.WriteString(w, `{"object":"list","data":[{"id":"whatever-it-serves"}]}`)
+	}))
+	defer server.Close()
+
+	_, err := (ServerTranscriber{BaseURL: server.URL}).Transcribe(context.Background(), audio.SamplesToBytes([]int16{1, 2}))
+	if err == nil {
+		t.Fatal("a request with no model named reported no error")
+	}
+	if !strings.Contains(err.Error(), "voiceime config set model") {
+		t.Errorf("error %q does not name the command that fixes it", err)
+	}
+	if asked != 0 {
+		t.Errorf("%d requests were made: nothing about an address is guessed at", asked)
+	}
+}
+
+// The credential question is asked separately, at the configured address, and only the
 // status of the answer is read: an endpoint that answers 400, 501 or 200 was reached and did
 // not refuse the credential. The two refusals are told apart from each other, because a
 // missing key and a wrong key have different fixes, and the endpoint's own reason is kept.
@@ -202,7 +213,7 @@ func TestCredentialProbeReadsOnlyTheStatus(t *testing.T) {
 			var gotAuth, gotModel, gotMarker, gotFilename string
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != "/v1/audio/transcriptions" {
-					t.Errorf("the credential was probed on %s, not on the route dictation uses", r.URL.Path)
+					t.Errorf("the credential was probed at %s, not at the configured address", r.URL.Path)
 				}
 				gotAuth, gotMarker = r.Header.Get("Authorization"), r.Header.Get("X-Voiceime")
 				_ = r.ParseMultipartForm(1 << 20)
@@ -216,7 +227,7 @@ func TestCredentialProbeReadsOnlyTheStatus(t *testing.T) {
 			}))
 			defer server.Close()
 
-			err := CheckCredential(context.Background(), server.URL, "gpt-4o-mini-transcribe", tc.apiKey)
+			err := CheckCredential(context.Background(), server.URL+"/v1/audio/transcriptions", "gpt-4o-mini-transcribe", tc.apiKey)
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("an endpoint that did not refuse the credential reported %v", err)
@@ -263,9 +274,6 @@ func TestCredentialProbeNamesAnEndpointThatCannotBeReached(t *testing.T) {
 // with the provider's own reason kept: this is the error an engine log shows a person.
 func TestTranscribeReportsARefusedCredentialAsACredentialProblem(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if probeAnswer(w, r) {
-			return
-		}
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = io.WriteString(w, `{"error":{"message":"Incorrect API key provided"}}`)
 	}))

@@ -33,12 +33,13 @@ microphone ──► capture (parec, 16 kHz mono) ── hold ── release
 ```sh
 make install                     # ~/.local/bin, no root needed
 
-# recognition from an endpoint elsewhere — nothing else is installed here:
-voiceime config set asr_server_url https://api.example.com
+# recognition from an endpoint elsewhere — the whole address, and nothing else installed here:
+voiceime config set asr_server_url https://api.example.com/v1/audio/transcriptions
 voiceime config set model          gpt-4o-mini-transcribe
 voiceime config set api_key        sk-…
 
-# recognition from a model on this machine — two arguments, nothing to configure:
+# recognition from a model on this machine — two arguments; the script records the address and
+# the model id for you, and starts it:
 scripts/asr-service.sh \
   ~/playground/audio.cpp/build/linux-cpu-release/bin/audiocpp_server \
   ~/models/SenseVoice-Small-GGUF/sensevoice-small-q8-audiocpp-v1.gguf

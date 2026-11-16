@@ -13,33 +13,20 @@ import (
 	"github.com/wallacegibbon/voiceime/internal/config"
 )
 
-// The endpoint finding answers the question dictation will ask: which model would a request
-// name, and can the endpoint answer at all. Which of the two naming questions applies is
-// decided by the settings: a setup that names its model is never cross-checked against the
-// endpoint's catalogue, a setup that names nothing has to be told. Either way the endpoint is
-// asked, because the status of that one request is the only evidence there is about the
-// credential - and a refused credential is the failure a remote setup really meets.
+// The endpoint finding reports on the address dictation posts to: is it reachable, does it
+// accept the credential, and is there a model id to name. The address and the id are used
+// exactly as configured - the program asks an address nothing - so the finding is the request
+// the engine would make, with ten milliseconds of silence in place of the audio.
 func TestASREndpointCheckStates(t *testing.T) {
-	serving := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/models" {
-			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"qwen3-asr-0.6b-q8_0"}]}`))
-			return
-		}
-		http.NotFound(w, r)
+	answering := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"text":""}`))
 	}))
-	defer serving.Close()
+	defer answering.Close()
 
-	listingMany := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"one"},{"id":"two"}]}`))
-	}))
-	defer listingMany.Close()
-
-	// A provider that has no model list at all: the model is named, so the list is not
-	// needed, and 501 says nothing about the credential.
-	noCatalogue := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	noRoute := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unsupported method", http.StatusNotImplemented)
 	}))
-	defer noCatalogue.Close()
+	defer noRoute.Close()
 
 	refusing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -59,57 +46,93 @@ func TestASREndpointCheckStates(t *testing.T) {
 			name:       "nothing configured",
 			mutate:     func(c *config.Config) { c.ASRServerURL = "" },
 			wantStatus: "fail",
-			wantDetail: "no endpoint is configured",
+			wantDetail: "no address is configured",
 			wantFix:    "asr-service.sh",
 		},
 		{
-			name:       "a model on this machine, named by nothing",
-			mutate:     func(c *config.Config) { c.ASRServerURL = serving.URL },
-			wantStatus: "ok",
-			wantDetail: `would name "qwen3-asr-0.6b-q8_0"`,
-		},
-		{
-			name:       "a local endpoint listing more than one model",
-			mutate:     func(c *config.Config) { c.ASRServerURL = listingMany.URL },
+			// A model on this machine has its id written by the script that starts it; a
+			// provider's id is a person's to write. Different situations, different fixes.
+			name: "an address on this machine with nothing to ask it for",
+			mutate: func(c *config.Config) {
+				c.ASRServerURL = answering.URL + "/v1/audio/transcriptions"
+			},
 			wantStatus: "fail",
-			wantDetail: "lists 2 models",
+			wantDetail: "nothing names the model",
+			wantFix:    "asr-service.sh",
 		},
 		{
-			name:       "an address the client cannot use",
-			mutate:     func(c *config.Config) { c.ASRServerURL = "127.0.0.1:18080" },
+			name: "a provider with nothing to ask it for",
+			mutate: func(c *config.Config) {
+				c.ASRServerURL = "https://api.example.com/v1/audio/transcriptions"
+			},
+			wantStatus: "fail",
+			wantDetail: "nothing names the model",
+			wantFix:    "config set model",
+		},
+		{
+			name: "an address on this machine, and the id it serves",
+			mutate: func(c *config.Config) {
+				c.ASRServerURL = answering.URL + "/v1/audio/transcriptions"
+				c.Model = "sensevoice-small-q8-audiocpp-v1"
+			},
+			wantStatus: "ok",
+			wantDetail: `would name "sensevoice-small-q8-audiocpp-v1"`,
+		},
+		{
+			name: "an address that is not a URL",
+			mutate: func(c *config.Config) {
+				c.ASRServerURL = "127.0.0.1:18080"
+				c.Model = "x"
+			},
 			wantStatus: "fail",
 			wantDetail: "asr_server_url",
 		},
 		{
-			name:       "nothing listening, and nothing installed to listen",
-			mutate:     func(c *config.Config) { c.ASRServerURL = deadURL(t) },
+			name: "nothing listening, and nothing installed to listen",
+			mutate: func(c *config.Config) {
+				c.ASRServerURL = deadURL(t) + "/v1/audio/transcriptions"
+				c.Model = "x"
+			},
 			wantStatus: "fail",
-			wantDetail: "connection refused",
+			wantDetail: "cannot be reached",
 			wantFix:    "asr-service.sh",
 		},
 		{
-			name:       "nothing listening, but the unit exists",
-			mutate:     func(c *config.Config) { c.ASRServerURL = deadURL(t) },
+			name: "nothing listening, but the unit exists",
+			mutate: func(c *config.Config) {
+				c.ASRServerURL = deadURL(t) + "/v1/audio/transcriptions"
+				c.Model = "x"
+			},
 			unit:       true,
 			wantStatus: "fail",
-			wantDetail: "connection refused",
+			wantDetail: "cannot be reached",
 			wantFix:    "systemctl --user restart",
 		},
 		{
-			name: "a provider with no model list, its model named, its credential accepted",
+			name: "a provider that answers, with its model named and its credential accepted",
 			mutate: func(c *config.Config) {
-				c.ASRServerURL = noCatalogue.URL
-				c.Model = "gpt-4o-mini-transcribe"
+				c.ASRServerURL = answering.URL + "/api/paas/v4/audio/transcriptions"
+				c.Model = "glm-asr-2512"
 				c.APIKey = "sk-test"
 			},
 			wantStatus: "ok",
-			wantDetail: `would name "gpt-4o-mini-transcribe"`,
+			wantDetail: `would name "glm-asr-2512"`,
+		},
+		{
+			name: "an address that has no such route, which is not about the credential",
+			mutate: func(c *config.Config) {
+				c.ASRServerURL = noRoute.URL + "/v1/audio/transcriptions"
+				c.Model = "x"
+				c.APIKey = "sk-test"
+			},
+			wantStatus: "ok",
+			wantDetail: "would name",
 		},
 		{
 			name: "a provider that refuses the credential",
 			mutate: func(c *config.Config) {
-				c.ASRServerURL = refusing.URL
-				c.Model = "gpt-4o-mini-transcribe"
+				c.ASRServerURL = refusing.URL + "/v1/audio/transcriptions"
+				c.Model = "glm-asr-2512"
 				c.APIKey = "sk-wrong"
 			},
 			wantStatus: "fail",
@@ -119,18 +142,18 @@ func TestASREndpointCheckStates(t *testing.T) {
 		{
 			name: "a provider that needs a credential and was given none",
 			mutate: func(c *config.Config) {
-				c.ASRServerURL = refusing.URL
-				c.Model = "gpt-4o-mini-transcribe"
+				c.ASRServerURL = refusing.URL + "/v1/audio/transcriptions"
+				c.Model = "glm-asr-2512"
 			},
 			wantStatus: "fail",
 			wantDetail: "no credential",
 			wantFix:    "config set api_key",
 		},
 		{
-			name: "a provider whose host cannot be reached",
+			name: "a host that cannot be reached",
 			mutate: func(c *config.Config) {
-				c.ASRServerURL = "https://api.does-not-resolve.invalid/v1"
-				c.Model = "gpt-4o-mini-transcribe"
+				c.ASRServerURL = "https://api.does-not-resolve.invalid/v1/audio/transcriptions"
+				c.Model = "glm-asr-2512"
 			},
 			wantStatus: "fail",
 			wantDetail: "cannot be reached",
@@ -162,21 +185,26 @@ func TestASREndpointCheckStates(t *testing.T) {
 	}
 }
 
-// An endpoint that requires a credential is only reachable with one. This is the same request
-// the engine makes, so the finding cannot say a setup works when the engine would be refused.
+// The probe carries the credential and the model id exactly as the request would. A finding
+// that says a setup works has to be the request that works, or it is worth nothing.
 func TestEndpointCheckSendsTheCredential(t *testing.T) {
+	var gotAuth, gotModel string
 	needsToken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer sk-test" {
+		gotAuth = r.Header.Get("Authorization")
+		if gotAuth != "Bearer sk-test" {
 			w.WriteHeader(http.StatusUnauthorized)
 			_, _ = w.Write([]byte(`{"error":{"message":"no credential"}}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"cloud-asr-mini"}]}`))
+		_ = r.ParseMultipartForm(1 << 20)
+		gotModel = r.FormValue("model")
+		_, _ = w.Write([]byte(`{"text":""}`))
 	}))
 	defer needsToken.Close()
 
 	cfg := config.Default()
-	cfg.ASRServerURL = needsToken.URL
+	cfg.ASRServerURL = needsToken.URL + "/v1/audio/transcriptions"
+	cfg.Model = "glm-asr-2512"
 	if check := asrEndpointCheck(cfg, false); check.Status == "ok" {
 		t.Errorf("an endpoint that refuses the request was reported ok: %q", check.Detail)
 	}
@@ -186,35 +214,11 @@ func TestEndpointCheckSendsTheCredential(t *testing.T) {
 	if check.Status != "ok" {
 		t.Fatalf("status = %q, detail %q: the credential was set and not used", check.Status, check.Detail)
 	}
-	if !strings.Contains(check.Detail, "cloud-asr-mini") {
-		t.Errorf("detail %q does not name the model the credential reached", check.Detail)
-	}
-}
-
-// A model named in the settings is the model a request names, whatever the endpoint's list
-// says: a provider's catalogue is not a promise about what that account accepts. The endpoint
-// is still asked once - for the credential - so the request that asks has to carry it.
-func TestNamedModelIsNotCrossCheckedWithTheEndpoint(t *testing.T) {
-	var gotAuth string
-	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAuth = r.Header.Get("Authorization")
-		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"something-else"}]}`))
-	}))
-	defer endpoint.Close()
-
-	cfg := config.Default()
-	cfg.ASRServerURL = endpoint.URL
-	cfg.Model = "sensevoice-small-q8-audiocpp-v1"
-	cfg.APIKey = "sk-test"
-	check := asrEndpointCheck(cfg, true)
-	if check.Status != "ok" {
-		t.Fatalf("status = %q, detail %q", check.Status, check.Detail)
-	}
-	if !strings.Contains(check.Detail, `"sensevoice-small-q8-audiocpp-v1"`) {
-		t.Errorf("detail %q: the settings name a model, and the endpoint's list overrode it", check.Detail)
-	}
 	if gotAuth != "Bearer sk-test" {
-		t.Errorf("asked the endpoint with Authorization %q, want the credential a real request would carry", gotAuth)
+		t.Errorf("asked with Authorization %q, want the credential a real request carries", gotAuth)
+	}
+	if gotModel != "glm-asr-2512" {
+		t.Errorf("asked with model %q, want the id from the settings", gotModel)
 	}
 }
 
@@ -283,7 +287,12 @@ func TestConfigSetNamesHowToApplyEverySetting(t *testing.T) {
 	for _, field := range config.Default().Fields() {
 		value := fmt.Sprint(field.Value)
 		if field.Key == "asr_server_url" {
-			value = "http://127.0.0.1:18080"
+			value = "http://127.0.0.1:18080/v1/audio/transcriptions"
+		}
+		if field.Key == "model" {
+			// An address and an id to name there are one decision: the pair is required, so
+			// this sweep has to name one. That is the point of the case, not a workaround.
+			value = "sensevoice-small-q8-audiocpp-v1"
 		}
 		code, stdout, stderr := runForTest(t, "config", "set", field.Key, value, "--json", "--config", configPath)
 		if code != ExitOK {

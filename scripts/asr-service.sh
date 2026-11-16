@@ -1,20 +1,24 @@
 #!/bin/sh
-# asr-service.sh - write the two files the recognition service consists of, and run it.
+# asr-service.sh - put a model from this machine where the engine can use it.
 #
 # Nothing here is a feature of the program. The program is the IBus engine: it reads one
-# TOML file and posts audio to one URL. What this script writes are deployment records - an
-# audio.cpp config naming one checkpoint, and a systemd unit that starts it - and both are
-# answered by looking at this machine once: which audio.cpp build is here, what that build
-# supports, how many cores the CPU has, which checkpoint the settings name.
+# TOML file and posts one recording to one address. What this script writes are deployment
+# records - an audio.cpp config naming one checkpoint, a systemd unit that starts it, and the
+# two settings keys that say what this machine's address is and what to name in it - and all
+# of them are answered by looking at this machine once: which audio.cpp build is here, what
+# that build supports, how many cores the CPU has, which checkpoint was named on the command
+# line.
 #
 # This is the optional half of a voiceime setup, and it is separable on purpose: the engine
-# needs one thing, an endpoint that speaks POST /v1/audio/transcriptions. A local model is
-# how this project satisfies that without a network, not a part of what the engine is.
+# needs one thing, an address that answers a POST with the recording. A local model is how
+# this project satisfies that without a network, not a part of what the engine is.
 #
 # Usage: scripts/asr-service.sh /path/to/audiocpp_server /path/to/model.gguf
 #
-# The model is named here rather than in the settings because it is a deployment fact: which
-# checkpoint is on this disk. What the settings own is the endpoint the engine posts to.
+# The checkpoint is named here rather than in the settings because it is a deployment fact:
+# which file is on this disk. What the settings own is the address the engine posts to - and
+# the id this script serves it under, because nothing else in this design is in a position to
+# know that id.
 #
 # It is idempotent: run it again after changing the checkpoint or rebuilding audio.cpp, and
 # it rewrites only what differs. The last thing it prints is the proof, which is also what
@@ -34,22 +38,31 @@ generated=${XDG_DATA_HOME:-$HOME/.local/share}/voiceime/asr-server.json
 unit_dir=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
 unit=$unit_dir/voiceime-asr-server.service
 
-# What the settings say: the one thing they own about recognition is the endpoint. Reading
-# two keys out of a file we write ourselves is not parsing a format we do not control.
+# What the settings say: the one thing they own about recognition is the address the engine
+# posts to. Reading one key out of a file we write ourselves is not parsing a format we do not
+# control. Only the authority part is looked at - the path is the engine's business, and this
+# program appends nothing to what it is given.
 read_setting() {
 	sed -n -e "s/^$1[[:space:]]*=[[:space:]]*\"\(.*\)\"[[:space:]]*\$/\1/p" "$settings" | head -n 1
 }
 # No settings file is what the engine itself sees on a fresh machine: defaults. So the
-# endpoint is the default one, and this says so instead of letting sed report the absence.
+# address is the default one, and this says so instead of letting sed report the absence.
 base_url=
 if [ -f "$settings" ]; then
 	base_url=$(read_setting asr_server_url)
 fi
-[ -n "$base_url" ] || base_url=http://127.0.0.1:18080
-port=${base_url##*:}
-host=${base_url%:*}
-host=${host#*//}
-[ "$host" = "$base_url" ] && host=127.0.0.1
+[ -n "$base_url" ] || base_url=http://127.0.0.1:18080/v1/audio/transcriptions
+authority=${base_url#*://}
+authority=${authority%%/*}
+host=${authority%:*}
+if [ "$host" = "$authority" ]; then
+	host=127.0.0.1
+	port=18080
+else
+	port=${authority##*:}
+fi
+root="http://$host:$port"
+request_url="$root/v1/audio/transcriptions"
 
 # The settings can name a server that is not this machine - a provider's endpoint, another
 # host. Then nothing belongs here: starting a model on this box would contradict the
@@ -58,7 +71,7 @@ case "$host" in
 127.0.0.1 | localhost | ::1 | \[::1\] | 127.*) ;;
 *)
 	echo "$base_url is not this machine: no model is started here."
-	echo "the engine needs only that this endpoint answer POST /v1/audio/transcriptions."
+	echo "the engine needs only that this address answer a POST with the recording."
 	exit 0
 	;;
 esac
@@ -153,12 +166,12 @@ systemctl --user daemon-reload
 systemctl --user enable voiceime-asr-server.service
 systemctl --user restart voiceime-asr-server.service
 
-# "Started" is not "serving the checkpoint the settings name": the model has to load, and a
-# server still running the previous config answers /health too. So this waits for the entry,
-# and then prints the answer, which is the assertion anyone can repeat with curl.
+# "Started" is not "serving the checkpoint named on the command line": the model has to load,
+# and a server still running the previous config answers /health too. So this waits for the
+# entry, which is the assertion anyone can repeat afterwards with curl.
 tries=0
 while [ "$tries" -lt 240 ]; do
-	if curl -sf "$base_url/v1/models" | grep -q "\"id\": *\"$entry\""; then break; fi
+	if curl -sf "$root/v1/models" | grep -q "\"id\": *\"$entry\""; then break; fi
 	tries=$((tries + 1))
 	sleep 0.5
 done
@@ -166,4 +179,27 @@ if [ "$tries" -ge 240 ]; then
 	echo "the service is not serving $entry: systemctl --user status voiceime-asr-server.service" >&2
 	exit 1
 fi
+
+# The last record is the settings, and it is written last because it is only true once the
+# model is actually serving. A program that never asks an address what it serves has to be
+# told, and the program that chose this id is this one. Two keys, both about this machine: the
+# whole address a recording is posted to, and the id to name in the request. The id goes first
+# so that the settings are never left holding an address with nothing to ask it for.
+voiceime=${VOICEIME_BIN:-$(command -v voiceime || true)}
+if [ -z "$voiceime" ]; then
+	echo "no voiceime on PATH: write these two keys in $settings yourself:" >&2
+	echo "  asr_server_url = \"$request_url\"" >&2
+	echo "  model = \"$entry\"" >&2
+else
+	record() {
+		if ! out=$("$voiceime" --config "$settings" config set "$1" "$2" 2>&1 >/dev/null); then
+			echo "the model is serving, but $1 could not be recorded in $settings: $out" >&2
+			exit 1
+		fi
+	}
+	record model "$entry"
+	record asr_server_url "$request_url"
+fi
+
 echo "serving: $entry ($backend, $threads threads) from $model"
+echo "settings: asr_server_url = $request_url, model = $entry"

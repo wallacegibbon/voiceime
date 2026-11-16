@@ -45,46 +45,49 @@ func endpointIsLocal(raw string) bool {
 	return false
 }
 
-// asrEndpointCheck reports on the endpoint dictation posts to: whether it can be reached at
-// all, whether it accepts the credential, and what a request would name there.
-//
-// The settings decide which of the two questions about naming is asked. A setup that names a
-// model is not cross-checked against the endpoint's list - a provider's /v1/models is a
-// catalogue, not a promise about what this account accepts - but the endpoint is still asked,
-// because its answer's status is the only evidence there is about the credential, and a
-// refused credential is the failure a remote setup actually meets. A setup that names nothing
-// has to be told, so the check asks the endpoint the question the engine will.
+// asrEndpointCheck reports on the address dictation posts to: can it be reached, does it
+// accept the credential, and is there a model id to name in the request. Both of the last two
+// come from the settings - the program never asks an address what it serves - so the finding
+// can be read as what the engine would do, and the probe is the same request with ten
+// milliseconds of silence in place of the audio.
 func asrEndpointCheck(cfg *config.Config, unitExists bool) Check {
+	const id = "asr_endpoint"
 	raw := strings.TrimSpace(cfg.ASRServerURL)
 	if raw == "" {
 		return Check{
-			ID:     "asr_endpoint",
+			ID:     id,
 			Status: "fail",
-			Detail: "no endpoint is configured, and dictation decodes through one",
-			Fix:    `asr_server_url = "http://127.0.0.1:18080" in the settings file, then scripts/asr-service.sh /path/to/audiocpp_server /path/to/model.gguf`,
+			Detail: "no address is configured, and dictation posts one recording to one",
+			Fix:    `asr_server_url = "http://127.0.0.1:18080/v1/audio/transcriptions" in the settings file, then scripts/asr-service.sh /path/to/audiocpp_server /path/to/model.gguf`,
 		}
 	}
-	base, err := asr.Endpoint(raw)
+	url, err := asr.RequestURL(raw)
 	if err != nil {
-		return Check{ID: "asr_endpoint", Status: "fail", Detail: err.Error(), Fix: "asr_server_url in the settings"}
+		return Check{ID: id, Status: "fail", Detail: err.Error(), Fix: "asr_server_url in the settings"}
 	}
+	named := strings.TrimSpace(cfg.Model)
 	local := endpointIsLocal(raw)
+	if named == "" {
+		fix := "voiceime config set model <id>"
+		if local {
+			fix = "scripts/asr-service.sh /path/to/audiocpp_server /path/to/model.gguf, which writes the id it serves into the settings"
+		}
+		return Check{
+			ID:     id,
+			Status: "fail",
+			Detail: fmt.Sprintf("%s is configured, and nothing names the model to ask it for", url),
+			Fix:    fix,
+		}
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	named := strings.TrimSpace(cfg.Model)
-	model, err := asr.ModelToUse(ctx, base, cfg.Model, cfg.APIKey)
-	if err == nil && named != "" {
-		// The model itself is not cross-checked with the endpoint's list, but the credential
-		// it would travel with is tested, on the route the request would use.
-		err = asr.CheckCredential(ctx, cfg.ASRServerURL, named, cfg.APIKey)
-	}
-	if err != nil {
+	if err := asr.CheckCredential(ctx, url, named, cfg.APIKey); err != nil {
 		var refused *asr.CredentialError
-		fix := fmt.Sprintf("curl -s %s/v1/models", base)
+		fix := fmt.Sprintf("curl -s %s", url)
 		switch {
 		case errors.As(err, &refused):
-			// The endpoint is there and said no to the credential: that is a settings file,
+			// The address is there and said no to the credential: that is a settings file,
 			// not a service.
 			fix = "voiceime config set api_key <the token this endpoint gave you>"
 		case local && unitExists:
@@ -92,18 +95,11 @@ func asrEndpointCheck(cfg *config.Config, unitExists bool) Check {
 		case local:
 			fix = "scripts/asr-service.sh /path/to/audiocpp_server /path/to/model.gguf"
 		}
-		return Check{
-			ID:     "asr_endpoint",
-			Status: "fail",
-			Detail: fmt.Sprintf("%s: %v", base, err),
-			Fix:    fix,
-		}
+		return Check{ID: id, Status: "fail", Detail: fmt.Sprintf("%s: %v", url, err), Fix: fix}
 	}
-	detail := fmt.Sprintf("%s, and a request would name %q", base, model)
-	if named == "" {
-		detail += " - the endpoint itself named it"
-	} else {
-		detail += " - named by the settings, and its credential was accepted"
+	return Check{
+		ID:     id,
+		Status: "ok",
+		Detail: fmt.Sprintf("%s, and a request would name %q - the address and the id are used exactly as configured, and the credential was accepted", url, named),
 	}
-	return Check{ID: "asr_endpoint", Status: "ok", Detail: detail}
 }

@@ -10,27 +10,38 @@ import (
 
 // checkpointFile is the file a named checkpoint has to be: it exists. Validate does not read
 // what is inside it - only the commands that serve one do.
-// usableConfig is a configuration that would pass. Nothing has to be added to the defaults
-// for that: the defaults name no endpoint and no model, and both are things a person says
-// about their machine rather than things that can be wrong on their own.
+// usableConfig is a configuration that would pass. A test that is about something else still
+// has to carry the pair that makes a setup work - an address and the id to ask it for - or it
+// spends its assertions on a finding about that pair.
 func usableConfig(t *testing.T) *Config {
-	return Default()
+	cfg := Default()
+	cfg.ASRServerURL = "http://127.0.0.1:18080/v1/audio/transcriptions"
+	cfg.Model = "sensevoice-small-q8-audiocpp-v1"
+	return cfg
 }
 
-// The shipped defaults do not contradict each other, and a fresh installation is not
-// described as broken: naming no endpoint and no model is a configuration that asks for
-// nothing, because those two keys are what the person adds about their machine. `voiceime
-// doctor`'s asr_endpoint finding is what reports them, because it is the check that knows
-// whether the answer is a local model or a provider.
+// The shipped defaults do not contradict each other, and a fresh installation is not described
+// as broken: naming no address and no model asks for nothing. The two together are what makes a
+// setup work - an address is only usable if something names what to ask it for - so half that
+// pair is a blocking finding, and it names the key that completes it.
 func TestDefaultsAreCoherent(t *testing.T) {
 	issues := Errors(Default().Validate())
 	if len(issues) != 0 {
 		t.Fatalf("default config = %+v, want nothing blocking", issues)
 	}
+
 	cfg := Default()
-	cfg.ASRServerURL = "http://127.0.0.1:18080"
+	cfg.ASRServerURL = "http://127.0.0.1:18080/v1/audio/transcriptions"
+	issues = Errors(cfg.Validate())
+	if len(issues) == 0 {
+		t.Error("an address with nothing to ask it for was accepted: nothing here asks an address what it serves")
+	} else if issues[0].Key != "model" {
+		t.Errorf("issue %+v does not name the key that completes the pair", issues[0])
+	}
+
+	cfg.Model = "sensevoice-small-q8-audiocpp-v1"
 	if issues := Errors(cfg.Validate()); len(issues) != 0 {
-		t.Errorf("naming an endpoint left issues: %+v", issues)
+		t.Errorf("an address and an id to name left issues: %+v", issues)
 	}
 }
 

@@ -21,28 +21,29 @@ const AppName = "voiceime"
 
 const TargetRate = 16000
 
-// Config is what a person owns: which endpoint to ask, what to call the model there, the
+// Config is what a person owns: which address to ask, what to call the model there, the
 // credential if one is needed, and how dictation behaves - the key, how long a hold may run,
 // which language, which Chinese script, which microphone.
 //
-// Recognition is an endpoint, not a process. The engine posts one recording to
-// POST /v1/audio/transcriptions and reads text back; whether that endpoint is a model on this
-// machine or a provider across a network is not the engine's concern, and starting a local
-// model is a separate thing (scripts/asr-service.sh), needed only when the endpoint is this
-// machine. A setting that deployment can work out is a question asked of the wrong person:
-// which audio.cpp binary runs, which backend it was built for and how many workers it wants
-// are answers about the machine, and they are recorded where they are used - the service unit
-// and the audio.cpp config that unit names.
+// Recognition is an address. The engine posts one recording to it and reads text back; the
+// address is used exactly as written, because an address that names a route is the thing being
+// configured. Whether it is a model on this machine or a provider across a network is not the
+// engine's concern, and starting a local model is a separate thing
+// (scripts/asr-service.sh), needed only when the address is this machine's. A setting that
+// deployment can work out is a question asked of the wrong person: which audio.cpp binary
+// runs, which backend it was built for and how many workers it wants are answers about the
+// machine, and they are recorded where they are used - the service unit and the audio.cpp
+// config that unit names.
 type Config struct {
-	// Model is the id named in the request, which is what a remote endpoint needs: its
-	// /v1/models list is a catalogue, not an answer about what this setup should use. Left
-	// empty, the engine asks the endpoint what it serves and uses that - which is how a
-	// local single-model service is used, and why a local setup names nothing here.
-	Model string `toml:"model" desc:"The model id to name in the request. Empty asks the endpoint what it serves."`
+	// Model is the id named in the request, and it is required: the program does not ask an
+	// address what it serves, because a model list is a catalogue and not a promise about what
+	// this account accepts, and an endpoint may publish none at all. A local service's id is
+	// written here by scripts/asr-service.sh, which is the program that chooses it.
+	Model string `toml:"model" desc:"The model id to name in the request. Required; scripts/asr-service.sh writes the id of a model it starts here."`
 
 	// APIKey is sent as `Authorization: Bearer <value>`. A credential lives here rather
 	// than in an environment the engine never starts.
-	APIKey string `toml:"api_key" desc:"Bearer token for the endpoint; empty sends no Authorization header."`
+	APIKey string `toml:"api_key" desc:"Bearer token for the address; empty sends no Authorization header."`
 
 	Language   string `toml:"language" desc:"Recognition language code, e.g. zh or en."`
 	TextScript string `toml:"text_script" desc:"Chinese output script: simplified converts Traditional characters to Simplified; preserve leaves them."`
@@ -50,7 +51,9 @@ type Config struct {
 	// A hold whose key never comes up stops recording here.
 	MaxUtteranceSeconds float64 `toml:"max_utterance_seconds" desc:"Stop one recording after this many seconds."`
 
-	ASRServerURL       string `toml:"asr_server_url" desc:"Endpoint root: http://127.0.0.1:18080 for a model on this machine, or a provider's URL; scripts/asr-service.sh writes the local form."`
+	// The whole request address, used verbatim: no route is appended, nothing is derived from
+	// it, and the same string is what `curl` would be pointed at.
+	ASRServerURL       string `toml:"asr_server_url" desc:"The address a recording is POSTed to, used exactly as written: http://127.0.0.1:18080/v1/audio/transcriptions for a model on this machine (scripts/asr-service.sh writes that), a provider's full URL otherwise."`
 	ASRServerTimeoutMS int    `toml:"asr_server_timeout_ms" desc:"Deadline for one transcription."`
 
 	CaptureSource string `toml:"capture_source" desc:"PipeWire source name; empty uses the default input."`
@@ -150,21 +153,21 @@ func Expand(path string) string {
 	return path
 }
 
-// checkServerURL validates the address of the recognition endpoint. It is an address, not a
+// checkServerURL validates the address a recording is posted to. It is an address, not a
 // local process: the same client posts to a model on this machine and to a provider across a
 // network, so both schemes are valid and TLS is the transport's business rather than the
-// engine's. What is rejected is anything that is not an HTTP origin, because the client is
-// net/http and appends one route to whatever it is given - so the value is the endpoint's
-// root, and https://api.example.com is a different endpoint from https://api.example.com/v1.
+// engine's. What is checked is only that a request can be made to it at all, because the
+// address is used exactly as written - nothing is appended to it and nothing is derived from
+// it - so a full address with a path in it is normal and expected.
 func checkServerURL(raw string) error {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
-		return fmt.Errorf("is not a valid URL: %v (needs a scheme and a host, e.g. http://127.0.0.1:18080)", err)
+		return fmt.Errorf("is not a valid URL: %v (needs a scheme and a host, e.g. http://127.0.0.1:18080/v1/audio/transcriptions)", err)
 	}
 	switch parsed.Scheme {
 	case "http", "https":
 	case "":
-		return errors.New("needs a scheme and a host, e.g. http://127.0.0.1:18080")
+		return errors.New("needs a scheme and a host, e.g. http://127.0.0.1:18080/v1/audio/transcriptions")
 	default:
 		return fmt.Errorf("must start with http:// or https://, not %q", parsed.Scheme)
 	}
@@ -279,22 +282,26 @@ func (c *Config) Validate() []Issue {
 	if raw := strings.TrimSpace(c.ASRServerURL); raw != "" {
 		if err := checkServerURL(raw); err != nil {
 			add("error", "asr_server_url", err.Error(),
-				"voiceime config set asr_server_url http://127.0.0.1:18080")
+				"voiceime config set asr_server_url http://127.0.0.1:18080/v1/audio/transcriptions")
+		} else if strings.TrimSpace(c.Model) == "" {
+			// An address and a name to ask it for are one decision: nothing here asks an
+			// address what it serves, so an address on its own cannot be used.
+			add("error", "model", fmt.Sprintf("%s is configured, and nothing names the model to ask it for", raw),
+				`voiceime config set model <id>   # or run scripts/asr-service.sh, which writes the id of a model it starts here`)
 		}
 	}
 	if strings.TrimSpace(c.PushToTalk) == "" {
 		add("error", "push_to_talk", "must be set; the engine has no other way to start recording",
 			`voiceime config set push_to_talk "<Control>grave"`)
 	}
-	// A model is named, never chosen. Nothing is scanned, nothing is downloaded, and no
-	// file is read: what belongs here is the id the endpoint is asked for. Empty is a
-	// working answer - it means "ask the endpoint what it serves", which is what a local
-	// single-model setup wants. A path in this key is the one mistake worth catching,
-	// because it is what this key used to hold.
+	// A model is named, never chosen. Nothing is scanned, nothing is downloaded, and no file
+	// is read: what belongs here is the id the address is asked for. A path in this key is the
+	// one mistake worth catching, because it is what this key used to hold - and the file it
+	// names belongs to the service, which is a different thing (scripts/asr-service.sh).
 	if named := strings.TrimSpace(c.Model); named != "" {
 		if strings.HasPrefix(named, "/") || strings.HasPrefix(named, "~") || strings.EqualFold(filepath.Ext(named), ".gguf") {
-			add("error", "model", fmt.Sprintf("%q looks like a file, not a model id: the file belongs to the service on this machine (scripts/asr-service.sh), this key names what to ask the endpoint for", named),
-				`voiceime config set model ""   # ask the local endpoint what it serves`)
+			add("error", "model", fmt.Sprintf("%q looks like a file, not a model id: the file belongs to the service on this machine (scripts/asr-service.sh), this key names what the address is asked for", named),
+				`voiceime config set model <id>   # the id that address serves, not a path`)
 		}
 	}
 	return issues

@@ -54,11 +54,11 @@ max_utterance_seconds = 60
 
 # ---- the desktop ------------------------------------------------------------
 
-# The chord you hold to dictate; letting go transcribes. It needs a modifier, and it
-# must not be one the applications you use already claim - `voiceime apply` says when it
-# collides with something GNOME has bound.
+# The chord you hold to dictate; letting go transcribes. It needs a modifier. Which
+# chords the desktop and the applications already claim is not something this program can
+# see, so a chord that is claimed elsewhere never arrives here.
 push_to_talk = "<Control>grave"
 
-# A PipeWire source name. Empty uses the default input; `voiceime doctor` prints the
-# sources there are to choose from.
+# A PipeWire source name. Empty uses the machine's default input; `voiceime doctor` names
+# the default input it would use, and says where to look when the machine reports none.
 capture_source = ""

@@ -39,6 +39,23 @@ func TestParseEngineAnswerSeparatesNoEngineFromNoAnswer(t *testing.T) {
 			want:   "", known: false,
 		},
 		{
+			// Measured on an X11 desktop session, from a console that belongs to no session:
+			// the CLI asserts about a bus object that is null and then prints the very same
+			// sentence the "nothing is selected" answer prints above. The sentence is what
+			// both say; the assertion is what tells them apart, and treating them alike made
+			// an unreachable daemon report a session with no input method.
+			name:   "no bus in this shell",
+			answer: "(process:75229): IBUS-CRITICAL **: 00:25:25: ibus_bus_get_global_engine: assertion 'IBUS_IS_BUS (bus)' failed\nNo engine is set.",
+			err:    errors.New("exit status 1"),
+			want:   "", known: false,
+		},
+		{
+			name:   "the CLI's own answer for no connection",
+			answer: "Can't connect to IBus.",
+			err:    errors.New("exit status 1"),
+			want:   "", known: false,
+		},
+		{
 			name:   "an empty answer with no error",
 			answer: "",
 			want:   "", known: true,

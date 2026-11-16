@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -22,6 +23,14 @@ func installChecks(report func(Check)) {
 // running at all, and does it know this engine. An engine process that is up while the daemon
 // does not know the component is the half that a moved or unscanned component directory
 // breaks, and `component_exec` and `component_env` are about exactly that.
+//
+// The first question is asked with `ibus list-engine`, not `ibus version`. Measured on this
+// machine, `ibus version` answers "IBus 1.5.29-rc2" with exit 0 from a shell that cannot
+// reach a daemon at all: it prints the library's version and never opens a connection, so it
+// cannot say whether a daemon exists. Asking it that used to send every unreachable-daemon
+// case past this finding and into the "not registered" one, whose fix is a command that
+// cannot work without a daemon - the loop a person meets as "doctor says apply, I apply, it
+// says the same thing".
 func ibusCheck(report func(Check)) {
 	if config.FindExecutable("ibus") == "" {
 		report(Check{
@@ -32,20 +41,86 @@ func ibusCheck(report func(Check)) {
 		})
 		return
 	}
-	if _, err := probe("ibus", "version"); err != nil {
-		report(Check{
-			ID:     "ibus",
-			Status: "fail",
-			Detail: "ibus-daemon is not reachable",
-			Fix:    "ibus-daemon -drx",
-		})
+	registered, why, unreachable := engineRegistered()
+	if unreachable {
+		detail, fix := ibusUnreachableVerdict(machineBusAccess())
+		report(Check{ID: "ibus", Status: "fail", Detail: detail, Fix: fix})
 		return
 	}
-	if registered, why := engineRegistered(); !registered {
+	if !registered {
 		report(Check{ID: "ibus", Status: "fail", Detail: why, Fix: "voiceime apply"})
 		return
 	}
 	report(Check{ID: "ibus", Status: "ok", Detail: "IBus is running, and the engine is listed"})
+}
+
+// busAccess is what is known about asking the daemon anything, with the machine taken out of
+// it so that each answer can be named in a test.
+type busAccess struct {
+	// DaemonRunning is an ibus-daemon process on this machine. When one is running and the
+	// CLI cannot reach it, the missing thing is the address, not the service.
+	DaemonRunning bool
+	// ShellHasAddress says this shell carries one of the two ways to find a daemon: an
+	// IBUS_ADDRESS, or a DISPLAY, whose number an X session's address file is keyed by. A
+	// Wayland session needs neither and reaches the daemon over the session bus, which is why
+	// the same command run the same way answers on one machine and not on another.
+	ShellHasAddress bool
+	// SessionDisplay is the DISPLAY the running ibus-daemon was itself started with, read from
+	// its own environment: when a daemon is running and this shell has no address, that value
+	// is the one the shell is missing, and it is worth naming instead of describing it.
+	SessionDisplay string
+}
+
+// ibusUnreachableVerdict keeps the reasons apart, because they have opposite fixes: a machine
+// with no daemon needs one started, and a machine with a daemon needs the command run where an
+// address to it exists. Neither one is fixed by `voiceime apply`, and saying so is the point -
+// the finding that pointed at apply was what sent people re-running a command that drops the
+// engine processes and, from that same shell, cannot put them back.
+func ibusUnreachableVerdict(access busAccess) (detail, fix string) {
+	switch {
+	case access.DaemonRunning && access.ShellHasAddress:
+		return "an ibus-daemon is running and this shell names an address, but the CLI cannot reach it: the address does not lead to the daemon",
+			"ibus restart"
+	case access.DaemonRunning && access.SessionDisplay != "":
+		return "the ibus CLI cannot reach a daemon, though one is running on this machine: this shell has no IBUS_ADDRESS and no DISPLAY, and on an X session the display number is what the CLI looks the daemon's address up by",
+			"export DISPLAY=" + access.SessionDisplay
+	case access.DaemonRunning:
+		return "the ibus CLI cannot reach a daemon, though one is running on this machine: this shell has no IBUS_ADDRESS and no DISPLAY, and on an X session the display number is what the CLI looks the daemon's address up by",
+			"run this from a terminal inside the desktop session"
+	default:
+		return "the ibus CLI cannot reach a daemon, and none is running on this machine",
+			"ibus-daemon -drx"
+	}
+}
+
+// machineBusAccess reads what this machine and this shell offer the ibus CLI. It is asked once
+// per finding rather than assumed, because both halves of the answer are things a deployment
+// changes: a daemon may or may not be running, and a shell may or may not carry an address.
+func machineBusAccess() busAccess {
+	return busAccess{
+		DaemonRunning:   len(processesRunning("ibus-daemon", "ibus-daemon")) > 0,
+		ShellHasAddress: os.Getenv("IBUS_ADDRESS") != "" || os.Getenv("DISPLAY") != "",
+		SessionDisplay:  ibusSessionDisplay(),
+	}
+}
+
+// ibusSessionDisplay asks the running daemon what display it belongs to. It is asked rather
+// than guessed because the answer is a fact about this session: a second X display, a nested
+// session and a Wayland session all answer differently, and a value made up here would be
+// advice that works on one machine and sends a person hunting on another.
+func ibusSessionDisplay() string {
+	for _, entry := range processesRunning("ibus-daemon", "ibus-daemon") {
+		raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", entry.PID))
+		if err != nil {
+			continue
+		}
+		for _, field := range strings.Split(string(raw), "\x00") {
+			if value, found := strings.CutPrefix(field, "DISPLAY="); found && value != "" {
+				return value
+			}
+		}
+	}
+	return ""
 }
 
 // fileExists is asked of the filesystem, never of a memory of it: the component file and the
@@ -93,7 +168,7 @@ func componentExecCheck(report func(Check)) {
 // variable belongs to the session: `voiceime apply` writes it to
 // environment.d, and an install that skipped that works until the machine is rebooted.
 func componentEnvironmentCheck(report func(Check)) {
-	registered, _ := engineRegistered()
+	registered, _, _ := engineRegistered()
 	status, detail, ok := componentEnvironmentVerdict(
 		ibus.SystemInstalled(), ibus.Installed(), ibus.EnvironmentSet(), registered)
 	if !ok {
@@ -121,6 +196,12 @@ func sessionEngineCheck(report func(Check)) {
 	}
 	name, err := currentEngine()
 	switch {
+	case errors.Is(err, errIBusUnreachable):
+		// Nothing could be asked, so nothing is known: the desktop may list voiceime and no
+		// application may be receiving keys, or the session may be fine. The `ibus` finding
+		// reports this state and says why; a finding here would be an answer to a question
+		// that was never put.
+		return
 	case err != nil:
 		report(Check{ID: "session_engine", Status: "warn", Detail: err.Error(), Fix: "ibus restart"})
 		return

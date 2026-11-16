@@ -52,6 +52,62 @@ func TestComponentEnvironmentVerdict(t *testing.T) {
 	}
 }
 
+// "The daemon cannot be reached" has two opposite causes, and a fix that is right for one is
+// wrong for the other: a machine with no daemon needs one started, and a machine with a daemon
+// needs the command run somewhere that can find it. Both used to be reported as "not listed by
+// ibus", whose fix is `voiceime apply` - and from that same shell apply stops the engine
+// processes and cannot put them back, which is the loop a person meets as "doctor says apply,
+// I apply, it says the same thing".
+func TestIBusUnreachableVerdictSeparatesNoDaemonFromNoAddress(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		access     busAccess
+		wantFix    string
+		wantDetail string
+	}{
+		{
+			name:       "no daemon anywhere",
+			access:     busAccess{},
+			wantFix:    "ibus-daemon -drx",
+			wantDetail: "none is running",
+		},
+		{
+			name:       "a daemon, and an address that does not lead to it",
+			access:     busAccess{DaemonRunning: true, ShellHasAddress: true},
+			wantFix:    "ibus restart",
+			wantDetail: "does not lead to the daemon",
+		},
+		{
+			// The X-session console case, measured on this machine. The value named here is
+			// read out of the running daemon's own environment rather than guessed at.
+			name:       "a daemon, and this shell has no address to it",
+			access:     busAccess{DaemonRunning: true, SessionDisplay: ":1"},
+			wantFix:    "export DISPLAY=:1",
+			wantDetail: "no IBUS_ADDRESS and no DISPLAY",
+		},
+		{
+			name:       "a daemon whose display cannot be read",
+			access:     busAccess{DaemonRunning: true},
+			wantFix:    "run this from a terminal inside the desktop session",
+			wantDetail: "no IBUS_ADDRESS and no DISPLAY",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			detail, fix := ibusUnreachableVerdict(test.access)
+			if fix != test.wantFix {
+				t.Errorf("fix = %q, want %q", fix, test.wantFix)
+			}
+			if !strings.Contains(detail, test.wantDetail) {
+				t.Errorf("detail %q does not mention %q", detail, test.wantDetail)
+			}
+			// The circular advice is the bug these four rows exist to break.
+			if strings.Contains(fix, "voiceime apply") {
+				t.Errorf("an unreachable daemon sends the caller to a command that needs a daemon: %q", fix)
+			}
+		})
+	}
+}
+
 // The reference is the binary the machine is configured to run, not the binary running
 // doctor: the function has no parameter for that, because a doctor run out of a build
 // directory is a third copy of the program and measuring against it reported a healthy

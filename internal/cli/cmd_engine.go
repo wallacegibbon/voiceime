@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -65,16 +66,42 @@ func removeInputSource(name string) (bool, map[string]any) {
 	return removed, report
 }
 
-// engineRegistered asks the daemon whether it knows our engine.
-func engineRegistered() (bool, string) {
+// engineRegistered asks the daemon whether it knows our engine. A failure to ask is reported
+// apart from a "no": the two need different fixes, and only one of them is this program's.
+func engineRegistered() (registered bool, why string, unreachable bool) {
 	listing, err := probe("ibus", "list-engine")
 	if err != nil {
-		return false, "ibus list-engine failed: " + err.Error()
+		if ibusAnswerIsUnreachable(listing) {
+			return false, "", true
+		}
+		return false, "ibus list-engine failed: " + err.Error(), false
 	}
 	if listEngineContains(listing, ibus.EngineName) {
-		return true, ""
+		return true, "", false
 	}
-	return false, "not listed by ibus: run `voiceime apply`"
+	return false, "not listed by ibus: run `voiceime apply`", false
+}
+
+// errIBusUnreachable marks the calls that never reached a daemon. It is a different situation
+// from a daemon that answered "no": nothing that has to be asked of the daemon can be asked,
+// and the reason is normally the shell the command was run from rather than the machine.
+var errIBusUnreachable = errors.New("no ibus daemon could be reached")
+
+// ibusAnswerIsUnreachable recognises the two shapes an ibus CLI answer takes when no daemon
+// was reached: the tool's own sentence, and the GLib assertion about a bus object that is
+// null. Both then print the same fallback sentence a real "nothing is selected" answer
+// prints, which is what made an unreachable daemon read as a session with no input method.
+//
+// The answered case is deliberately not caught here: a daemon that is running and has no
+// global engine answers with ibus_bus_call_sync and a DBus.Error.Failed about "No global
+// engine", which is a bus talking.
+func ibusAnswerIsUnreachable(answer string) bool {
+	for _, line := range strings.Split(answer, "\n") {
+		if strings.Contains(line, "Can't connect to IBus") || strings.Contains(line, "IBUS_IS_BUS") {
+			return true
+		}
+	}
+	return false
 }
 
 func stopEngines() (stopped int, forced bool) {
@@ -110,9 +137,12 @@ func stopEngines() (stopped int, forced bool) {
 
 // currentEngine is the engine the daemon routes this session's keys through. An empty name
 // with no error is the state where no engine is selected, which is a different thing from
-// not being able to ask.
+// not being able to ask; a call that could not ask says so with errIBusUnreachable.
 func currentEngine() (string, error) {
 	answer, err := probe("ibus", "engine")
+	if ibusAnswerIsUnreachable(answer) {
+		return "", fmt.Errorf("%w: %s", errIBusUnreachable, firstLine(answer))
+	}
 	name, known := parseEngineAnswer(answer, err)
 	if !known {
 		return "", fmt.Errorf("ibus engine: %v: %s", err, firstLine(answer))
@@ -124,7 +154,16 @@ func currentEngine() (string, error) {
 // failed command whose output is a library warning plus a sentence, so it is recognised by
 // what it says: the exit status alone cannot tell an unselected engine from an absent
 // daemon, and the two have different meanings.
+//
+// Nor can the sentence. A CLI that never reached a daemon prints "No engine is set." too,
+// with an assertion about a bus object that is null above it (measured: a shell with no
+// DISPLAY and no IBUS_ADDRESS answers exactly as a session with no input method selected
+// does). That is a question that was not answered, not an answer of "none", so it is said
+// apart before the sentence is read.
 func parseEngineAnswer(answer string, err error) (name string, known bool) {
+	if ibusAnswerIsUnreachable(answer) {
+		return "", false
+	}
 	for _, line := range strings.Split(answer, "\n") {
 		line = strings.TrimSpace(line)
 		switch {

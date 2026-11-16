@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -258,3 +259,81 @@ func documentedSurface(doc string) surfaceDocument {
 	sort.Strings(out.findings)
 	return out
 }
+
+// A sentence anywhere in the tree can still name a command that is gone. The command block
+// in AGENT.md is compared with this build in both directions, and the advice strings the
+// program prints are checked against the registry, but neither looks at the rest of the
+// text: a comment went on naming a deleted command until it was noticed by hand, and nothing
+// in the suite had an opinion about it. So every place this project writes a command the way
+// it writes one - in a code span, or as a line inside a fenced block - is asked whether this
+// build has that command. Text that only puts the program name in front of a sentence
+// (voiceime cannot name one, voiceime installs no script) is not naming a command, and is
+// not matched.
+func TestEveryCommandTheTextNamesIsACommand(t *testing.T) {
+	root := repositoryRoot(t)
+	known := map[string]bool{"help": true} // cli.go answers this one before the registry is reached
+	for _, command := range commands() {
+		known[command.Name] = true
+	}
+	checked := 0
+	err := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.IsDir() {
+			// bin/ is build output and .git is a record of every sentence that used to
+			// be true.
+			if name := info.Name(); name == "bin" || name == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		markdown := strings.HasSuffix(path, ".md")
+		if !markdown && !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+		raw, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		// A fenced block is a command to run; the lines around it are prose about the
+		// program, which is the difference these two patterns are drawn on.
+		inside := false
+		for number, line := range strings.Split(string(raw), "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "```") {
+				inside = !inside
+				continue
+			}
+			found := commandMentionRE.FindAllStringSubmatch(line, -1)
+			if inside && markdown {
+				if match := fenceCommandRE.FindStringSubmatch(line); match != nil {
+					found = append(found, match)
+				}
+			}
+			for _, match := range found {
+				checked++
+				if !known[match[1]] {
+					t.Errorf("%s:%d names the command %q, which this build does not have", path, number+1, match[1])
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("reading the text: %v", err)
+	}
+	// The count exists to catch the patterns stopping, not to hold a number.
+	if checked < 1 {
+		t.Fatalf("no command mentions checked: the patterns stopped matching")
+	}
+	t.Logf("checked %d command mentions against this build", checked)
+}
+
+// commandMentionRE matches a command named in a code span. The backtick is required: it is
+// what separates a command someone is told to run from a sentence that happens to put a word
+// after the program name.
+var commandMentionRE = regexp.MustCompile("`voiceime ([a-z][a-z-]+)")
+
+// fenceCommandRE matches the first word of a line inside a fenced block, which is where the
+// docs put a whole command.
+var fenceCommandRE = regexp.MustCompile(`^voiceime ([a-z][a-z-]+)`)

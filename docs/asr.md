@@ -13,7 +13,8 @@ POST <asr_server_url>
 Content-Type: multipart/form-data
 
 model     = config.model        # the id this address is asked for
-language  = config.language
+language  = config.language     # omitted when the setting is empty: that is asking
+                                # the model to work it out from the audio
 file      = recording.wav       (16 kHz mono s16le, in memory)
 ```
 
@@ -26,6 +27,13 @@ The server decodes it offline and answers once:
 ```json
 {"text":"…","timing":{"wall_ms":1234}}
 ```
+
+Only `text` is read out of that answer. Everything else in it - the timing above, whatever a
+provider adds - stays in the response: an answer's extra fields are not part of what a
+deployment has to keep, and a client that read a field it never asked for would be making the
+server's answer part of this contract. The body is read up to 1 MiB, which is past any
+transcription one hold can produce and bounds what a confused endpoint can make this process
+hold.
 
 voiceime commits `text` to the focused application. An empty `text`, or one that carries no
 letter or digit, commits nothing.

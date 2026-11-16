@@ -175,8 +175,8 @@ func TestNoModelNamedSaysSoAndGuessesNothing(t *testing.T) {
 	if err == nil {
 		t.Fatal("a request with no model named reported no error")
 	}
-	if !strings.Contains(err.Error(), "voiceime config set model") {
-		t.Errorf("error %q does not name the command that fixes it", err)
+	if !strings.Contains(err.Error(), `model = "<id>"`) {
+		t.Errorf("error %q does not name the line that fixes it", err)
 	}
 	if asked != 0 {
 		t.Errorf("%d requests were made: nothing about an address is guessed at", asked)

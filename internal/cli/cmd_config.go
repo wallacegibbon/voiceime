@@ -9,18 +9,18 @@ import (
 	"github.com/wallacegibbon/voiceime/internal/ibus"
 )
 
-// configActions is the whole of the configuration command: look at the file, read one value,
-// write one value. Applying a setting is not one of them - that is `voiceime apply`, which
-// converges everything that reads the file at once. Creating the file is not one of them
-// either: apply writes it, and so does the first `config set`. Asking where the file is is
-// not one of them either: `show` starts with its path, and `capabilities` prints it without
-// running any action at all.
-var configActions = []string{"show", "get", "set"}
+// configActions is the whole of the configuration command: look at the file, read one
+// value. Nothing here writes it - the settings are a file a person owns, and the project
+// ships `config.example.toml` for them to copy - and nothing here applies it: that is
+// `voiceime apply`, which converges everything that reads the file at once. Asking where
+// the file is is not an action either: `show` starts with its path, and `capabilities`
+// prints it without running any action at all.
+var configActions = []string{"show", "get"}
 
 func cmdConfig() *Command {
 	return &Command{
 		Name:    "config",
-		Summary: "Inspect and edit the configuration file",
+		Summary: "Read the configuration file",
 		Actions: configActions,
 		Usage:   usageLine("config", configActions, "[args]"),
 		Run: func(ctx *Context, args []string) error {
@@ -41,8 +41,11 @@ func runConfig(ctx *Context, args []string) error {
 		ctx.Print("%s", ctx.ConfigPath)
 		if !fileExists(ctx.ConfigPath) {
 			// The shape of a fresh install. Saying so is what keeps "these are the
-			// defaults" and "these are your settings" distinguishable.
-			ctx.Print("(no file yet: these are the defaults; the first `config set`, or `voiceime apply`, writes it)")
+			// defaults" and "these are your settings" distinguishable - and the file is
+			// not written for them, because the file belongs to the person who reads it.
+			ctx.Print("(no file yet: these are the defaults. copy the example the project ships,")
+			ctx.Print("config.example.toml, to that path and edit it; `voiceime doctor` then names")
+			ctx.Print("what is still missing)")
 		}
 		for _, field := range fields {
 			ctx.Print("%-22s %v", field.Key, field.Value)
@@ -63,46 +66,6 @@ func runConfig(ctx *Context, args []string) error {
 		}
 		ctx.Print("%v", value)
 		return ctx.Emit("config get", map[string]any{"key": rest[0], "value": value})
-
-	case "set":
-		if len(rest) != 2 {
-			return UsageError("config set needs a key and a value")
-		}
-		key, value := rest[0], rest[1]
-		previous, err := ctx.Config.Get(key)
-		if err != nil {
-			return UsageError("%v", err)
-		}
-		if err := ctx.Config.Set(key, value); err != nil {
-			return UsageError("%v", err)
-		}
-		if err := config.Save(ctx.Config, ctx.ConfigPath); err != nil {
-			return FailureError("cannot write %s: %v", ctx.ConfigPath, err)
-		}
-		issues := ctx.Config.Validate()
-		if blocking := config.Errors(issues); len(blocking) > 0 {
-			if !ctx.JSON {
-				for _, issue := range blocking {
-					ctx.Print("%-7s %-22s %s", issue.Severity, issue.Key, issue.Message)
-				}
-			}
-			if err := ctx.Emit("config set", map[string]any{
-				"key": key, "previous": previous, "value": value,
-				"written": true, "valid": false, "issues": blocking,
-			}); err != nil {
-				return err
-			}
-			issue := blocking[0]
-			return PreconditionError(issue.Fix, "%s = %v is written, but the configuration is unusable: %s",
-				key, value, issue.Message)
-		}
-		applies := "voiceime apply"
-		ctx.Print("%s = %v", key, value)
-		ctx.Print("this takes effect when the processes that read it restart: run `%s`", applies)
-		return ctx.Emit("config set", map[string]any{
-			"key": key, "previous": previous, "value": value, "written": true, "valid": true,
-			"apply_with": applies,
-		})
 
 	}
 

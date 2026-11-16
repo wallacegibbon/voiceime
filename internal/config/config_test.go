@@ -1,10 +1,8 @@
 package config
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -54,50 +52,6 @@ func TestValidateReportsAnUnusablePushToTalkTrigger(t *testing.T) {
 	}
 	if issues[0].Fix == "" {
 		t.Error("the issue carries no fix, so an agent cannot act on it")
-	}
-}
-
-func TestSetConvertsTypes(t *testing.T) {
-	cfg := Default()
-	cases := map[string]string{
-		"asr_server_timeout_ms": "8000",
-		"max_utterance_seconds": "30",
-		"language":              "en",
-	}
-	for key, value := range cases {
-		if err := cfg.Set(key, value); err != nil {
-			t.Fatalf("Set(%q, %q): %v", key, value, err)
-		}
-	}
-	if cfg.ASRServerTimeoutMS != 8000 || cfg.MaxUtteranceSeconds != 30 || cfg.Language != "en" {
-		t.Errorf("Set did not apply: %+v", cfg)
-	}
-	if err := cfg.Set("asr_server_timeout_ms", "many"); err == nil {
-		t.Error("Set accepted a non-integer for an int field")
-	}
-	if err := cfg.Set("nope", "1"); err == nil {
-		t.Error("Set accepted an unknown key")
-	}
-}
-
-func TestSaveLoadRoundTrip(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.toml")
-	original := Default()
-	original.Model = "/home/u/models/m.gguf"
-	original.MaxUtteranceSeconds = 17
-	original.ASRServerTimeoutMS = 9000
-	if err := Save(original, path); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-	loaded, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if loaded.MaxUtteranceSeconds != 17 || loaded.ASRServerTimeoutMS != 9000 || loaded.Model != original.Model {
-		t.Errorf("round trip lost settings: %+v", loaded)
-	}
-	if loaded.PushToTalk != original.PushToTalk {
-		t.Errorf("round trip changed defaults: %+v", loaded)
 	}
 }
 
@@ -163,50 +117,6 @@ func TestValidateAcceptsAModelIdAndARemoteEndpoint(t *testing.T) {
 }
 
 // Writing the configuration must survive concurrent writers.
-func TestSaveIsSafeForConcurrentWriters(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.toml")
-	const writers = 8
-
-	var wait sync.WaitGroup
-	failures := make(chan error, writers)
-	for index := 0; index < writers; index++ {
-		wait.Add(1)
-		go func(timeoutMS int) {
-			defer wait.Done()
-			cfg := Default()
-			cfg.ASRServerTimeoutMS = timeoutMS
-			if err := Save(cfg, path); err != nil {
-				failures <- err
-			}
-		}(index + 1)
-	}
-	wait.Wait()
-	close(failures)
-	for err := range failures {
-		t.Errorf("concurrent Save: %v", err)
-	}
-
-	// Whatever the interleaving, the file is one whole document: one of the writers
-	// won, and nothing left a half-written file behind.
-	loaded, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load after concurrent writes: %v", err)
-	}
-	if loaded.ASRServerTimeoutMS < 1 || loaded.ASRServerTimeoutMS > writers {
-		t.Errorf("asr_server_timeout_ms = %d after concurrent writes, want one of the values written",
-			loaded.ASRServerTimeoutMS)
-	}
-	// And no temporary files are left in the directory.
-	entries, err := os.ReadDir(filepath.Dir(path))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, entry := range entries {
-		if strings.Contains(entry.Name(), ".tmp-") {
-			t.Errorf("left %s behind", entry.Name())
-		}
-	}
-}
 
 // The streaming client speaks HTTP over a raw socket, so it cannot do TLS.
 // The endpoint is an address, not a process, so any HTTP origin is accepted - including
@@ -274,30 +184,3 @@ func TestValidateRejectsUnknownTextCleanupValues(t *testing.T) {
 // this home directory. An older file that was world-readable is tightened by the next write:
 // that is the moment its contents are known to have changed, and the tool never writes the
 // file without meaning to.
-func TestSaveKeepsAFileHoldingACredentialPrivate(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.toml")
-	cfg := Default()
-	cfg.APIKey = "sk-a-token-nobody-else-needs"
-	if err := Save(cfg, path); err != nil {
-		t.Fatal(err)
-	}
-	mode := func() os.FileMode {
-		info, err := os.Stat(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return info.Mode().Perm()
-	}
-	if mode() != 0o600 {
-		t.Errorf("the settings file is %o, want 0600: it holds a credential", mode())
-	}
-	if err := os.Chmod(path, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := Save(cfg, path); err != nil {
-		t.Fatal(err)
-	}
-	if mode() != 0o600 {
-		t.Errorf("a world-readable settings file stayed %o after being rewritten", mode())
-	}
-}

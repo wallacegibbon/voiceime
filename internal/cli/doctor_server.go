@@ -48,19 +48,20 @@ func asrEndpointCheck(cfg *config.Config, service modelService) Check {
 			ID:     id,
 			Status: "fail",
 			Detail: "no address is configured, and dictation posts one recording to one",
-			Fix:    `asr_server_url = "http://127.0.0.1:18080/v1/audio/transcriptions" in the settings file, or ` + installModelService + ` for a model on this machine`,
+			Fix: cfg.FixLine("asr_server_url", `"http://127.0.0.1:18080/v1/audio/transcriptions"`) +
+				"   # or " + installModelService + " for a model on this machine",
 		}
 	}
 	url, err := asr.RequestURL(raw)
 	if err != nil {
-		return Check{ID: id, Status: "fail", Detail: err.Error(), Fix: "asr_server_url in the settings"}
+		return Check{ID: id, Status: "fail", Detail: err.Error(), Fix: cfg.FixLine("asr_server_url", `"the whole address, path included"`)}
 	}
 	named := strings.TrimSpace(cfg.Model)
 	local := endpointIsLocal(raw)
 	if named == "" {
-		fix := "voiceime config set model <id>"
+		fix := cfg.FixLine("model", `"<id>"`)
 		if local {
-			fix = installModelService + ", which writes the id it serves into the settings"
+			fix += "   # or the id " + installModelService + " prints when it starts a model here"
 		}
 		return Check{
 			ID:     id,
@@ -79,7 +80,7 @@ func asrEndpointCheck(cfg *config.Config, service modelService) Check {
 		case errors.As(err, &refused):
 			// The address is there and said no to the credential: that is a settings file,
 			// not a service.
-			fix = "voiceime config set api_key <the token this endpoint gave you>"
+			fix = cfg.FixLine("api_key", `"the token this endpoint gave you"`)
 		case local && service.Unit != "":
 			fix = "systemctl --user restart " + service.Unit
 		case local:

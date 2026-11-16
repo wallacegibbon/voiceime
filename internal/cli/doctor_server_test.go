@@ -67,7 +67,7 @@ func TestASREndpointCheckStates(t *testing.T) {
 			},
 			wantStatus: "fail",
 			wantDetail: "nothing names the model",
-			wantFix:    "config set model",
+			wantFix:    "write model = \"",
 		},
 		{
 			name: "an address on this machine, and the id it serves",
@@ -137,7 +137,7 @@ func TestASREndpointCheckStates(t *testing.T) {
 			},
 			wantStatus: "fail",
 			wantDetail: "Incorrect API key provided",
-			wantFix:    "config set api_key",
+			wantFix:    "write api_key = \"",
 		},
 		{
 			name: "a provider that needs a credential and was given none",
@@ -147,7 +147,7 @@ func TestASREndpointCheckStates(t *testing.T) {
 			},
 			wantStatus: "fail",
 			wantDetail: "no credential",
-			wantFix:    "config set api_key",
+			wantFix:    "write api_key = \"",
 		},
 		{
 			name: "a host that cannot be reached",
@@ -280,31 +280,30 @@ func writeUnitForTest(t *testing.T, unit string) string {
 	return path
 }
 
-// Every setting is accepted in the form the tool prints it in, and `config set` says what
-// has to run for it to take effect - for every key.
-func TestConfigSetNamesHowToApplyEverySetting(t *testing.T) {
+// Reading is the half of this command that stays: every setting is reachable by key, and a
+// key that is not one is refused rather than answered with an empty string. A deployment
+// script asks for an address this way instead of parsing the file itself - which is the
+// only way there is one owner of the format - and a person typing it by hand gets the same
+// answer `config show` prints.
+func TestConfigGetReadsEverySetting(t *testing.T) {
 	configPath := freshConfig(t)
-	for _, field := range config.Default().Fields() {
-		value := fmt.Sprint(field.Value)
-		if field.Key == "asr_server_url" {
-			value = "http://127.0.0.1:18080/v1/audio/transcriptions"
-		}
-		if field.Key == "model" {
-			// An address and an id to name there are one decision: the pair is required, so
-			// this sweep has to name one. That is the point of the case, not a workaround.
-			value = "sensevoice-small-q8-audiocpp-v1"
-		}
-		code, stdout, stderr := runForTest(t, "config", "set", field.Key, value, "--json", "--config", configPath)
+	onRecord, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range onRecord.Fields() {
+		code, stdout, stderr := runForTest(t, "--config", configPath, "config", "get", field.Key)
 		if code != ExitOK {
-			t.Fatalf("config set %s %q: exit %d, stderr %s", field.Key, value, code, stderr)
+			t.Errorf("config get %s: exit %d, stderr %s", field.Key, code, stderr)
+			continue
 		}
-		payload := decodeOne(t, stdout)
-		data, _ := payload["data"].(map[string]any)
-		if data["valid"] != true {
-			t.Errorf("config set %s %q reported an invalid configuration: %s", field.Key, value, stdout)
+		if strings.TrimSpace(stdout) != fmt.Sprint(field.Value) {
+			t.Errorf("config get %s printed %q, want the value on record (%q)", field.Key, stdout, field.Value)
 		}
-		if applied, _ := data["apply_with"].(string); applied == "" {
-			t.Errorf("config set %s does not say what applies the value", field.Key)
-		}
+	}
+	if code, _, stderr := runForTest(t, "--config", configPath, "config", "get", "no_such_key"); code != ExitUsage {
+		t.Errorf("an unknown setting exited %d, want %d. stderr: %s", code, ExitUsage, stderr)
+	} else if !strings.Contains(stderr, "unknown setting") {
+		t.Errorf("stderr = %q, want it to name the problem", stderr)
 	}
 }

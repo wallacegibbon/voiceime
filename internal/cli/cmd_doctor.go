@@ -55,24 +55,30 @@ func runDoctor(ctx *Context) []Check {
 	}
 
 	// 1. Configuration.
-	issues := config.Errors(cfg.Validate())
-	if len(issues) == 0 {
-		report(Check{ID: "config", Status: "ok", Detail: ctx.ConfigPath})
-	} else {
+	issues := cfg.Validate()
+	if blocking := config.Errors(issues); len(blocking) > 0 {
 		var messages []string
-		for _, issue := range issues {
+		for _, issue := range blocking {
 			messages = append(messages, issue.Key+": "+issue.Message)
-		}
-		fix := ""
-		if issues[0].Fix != "" {
-			fix = issues[0].Fix
 		}
 		report(Check{
 			ID:     "config",
 			Status: "fail",
 			Detail: ctx.ConfigPath + ": " + strings.Join(messages, "; "),
-			Fix:    fix,
+			Fix:    blocking[0].Fix,
 		})
+	} else if len(issues) > 0 {
+		// A finding that costs something without stopping anything. The mode of a file
+		// holding a token is the case: nothing here writes that file to get it right.
+		warning := issues[0]
+		report(Check{
+			ID:     "config",
+			Status: "warn",
+			Detail: ctx.ConfigPath + ": " + warning.Key + ": " + warning.Message,
+			Fix:    warning.Fix,
+		})
+	} else {
+		report(Check{ID: "config", Status: "ok", Detail: ctx.ConfigPath})
 	}
 
 	// 2. The address the engine posts to, and - only when that address is this machine -
@@ -96,7 +102,7 @@ func runDoctor(ctx *Context) []Check {
 			detail += " (default source: " + source + ")"
 		} else {
 			detail += " (no default source reported; `pactl list short sources`, then " +
-				"`voiceime config set capture_source <name>`)"
+				cfg.FixLine("capture_source", `"<name>"`) + ")"
 		}
 		report(Check{ID: "capture", Status: "ok", Detail: detail})
 	}

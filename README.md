@@ -33,13 +33,17 @@ microphone ──► capture (parec, 16 kHz mono) ── hold ── release
 ```sh
 make install                     # ~/.local/bin, no root needed
 
-# recognition from an endpoint elsewhere — the whole address, and nothing else installed here:
-voiceime config set asr_server_url https://api.example.com/v1/audio/transcriptions
-voiceime config set model          gpt-4o-mini-transcribe
-voiceime config set api_key        sk-…
+# The settings are one file, and it starts as a copy of the sample. Nothing in this program
+# writes it: what you change after that is yours, and `doctor` says what is still missing.
+cp config.example.toml ~/.config/voiceime/config.toml
 
-# recognition from a model on this machine — a separate project; its script records the address
-# and the model id for you, and starts the model:
+# recognition from an endpoint elsewhere — the whole address, and nothing else installed here:
+#   asr_server_url = "https://api.example.com/v1/audio/transcriptions"
+#   model          = "gpt-4o-mini-transcribe"
+#   api_key        = "sk-…"
+
+# recognition from a model on this machine — a separate project: its script starts the model
+# and prints the two lines the settings need.
 ~/playground/audiocpp-asr-service/asr-service.sh \
   ~/playground/audio.cpp/build/linux-cpu-release/bin/audiocpp_server \
   ~/models/SenseVoice-Small-GGUF/sensevoice-small-q8-audiocpp-v1.gguf

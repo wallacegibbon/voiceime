@@ -66,6 +66,10 @@ install: build ## Install to $(DESTDIR)$(PREFIX)/bin (docs to $(PREFIX)/docs)
 	@# link resolve; the CLI's hints and `voiceime capabilities` name the same files.
 	install -d $(DESTDIR)$(PREFIX)/docs
 	install -m 0644 docs/*.md $(DESTDIR)$(PREFIX)/docs/
+	@# The settings sample travels with the docs: it is the file a settings file starts
+	@# as, and a machine with only the installed binary still has nowhere to copy it from
+	@# otherwise. Nothing here writes it into ~/.config - that copy is a person's.
+	install -m 0644 config.example.toml $(DESTDIR)$(PREFIX)/docs/
 	@# The binary embeds OpenCC's t2s tables (Apache-2.0); the licence and notice
 	@# travel with it so a machine that has only the installed binary can still
 	@# satisfy the redistribution terms.
@@ -78,6 +82,7 @@ install: build ## Install to $(DESTDIR)$(PREFIX)/bin (docs to $(PREFIX)/docs)
 uninstall: ## Remove the installed binary, docs and licences
 	rm -f $(DESTDIR)$(PREFIX)/bin/$(BINARY)
 	rm -f $(DESTDIR)$(PREFIX)/docs/*.md
+	rm -f $(DESTDIR)$(PREFIX)/docs/config.example.toml
 	rm -f $(DESTDIR)$(PREFIX)/licenses/opencc/LICENSE $(DESTDIR)$(PREFIX)/licenses/opencc/NOTICE
 	-rmdir $(DESTDIR)$(PREFIX)/licenses/opencc $(DESTDIR)$(PREFIX)/licenses 2>/dev/null
 

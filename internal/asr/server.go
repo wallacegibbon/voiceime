@@ -56,7 +56,7 @@ func (s ServerTranscriber) Transcribe(ctx context.Context, pcm []byte) (string, 
 	}
 	model := strings.TrimSpace(s.Model)
 	if model == "" {
-		return "", fmt.Errorf("no model is named for %s: name the one it serves (voiceime config set model <id>)", address)
+		return "", fmt.Errorf("no model is named for %s: the settings need a model = \"<id>\" line saying what that address is asked for", address)
 	}
 
 	var body bytes.Buffer

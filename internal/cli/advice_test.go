@@ -49,17 +49,19 @@ func TestAdviceNamesACommandThatExists(t *testing.T) {
 	// count is part of the assertion.
 	// The number is below what the module holds today and far above zero: it exists to
 	// catch the pattern stopping, not to hold the count. It came down with the commands
-	// that were only ever used at deployment.
-	if checked < 40 {
+	// that were only ever used at deployment, and down again when advice about a setting
+	// stopped being written as a command to run - it is a line in a file now, and the test
+	// below is the one that reads those.
+	if checked < 25 {
 		t.Fatalf("only %d pieces of advice checked: the pattern stopped matching", checked)
 	}
 	t.Logf("checked %d pieces of advice across the module", checked)
 }
 
-// Advice names settings too, and those are defined in another package. `config set
-// audio_cpp_dir /path/to/audio.cpp` was advice in a doctor finding: a whole path, ready to
-// run, for a setting that does not exist - and no command existed to notice. The settings the
-// tool actually has are one call away, so the tree checks them.
+// Advice names settings too, and those are defined in another package. `asr_server_url = <path>`
+// was once advice in a doctor finding: a whole path, ready to run, for a setting that does not
+// exist - and no command existed to notice. The settings the tool actually has are one call
+// away, so the tree checks them, in whichever of the two forms the advice is written.
 func TestAdviceNamesASettingThatExists(t *testing.T) {
 	keys := map[string]bool{}
 	for _, field := range config.Default().Fields() {
@@ -71,7 +73,11 @@ func TestAdviceNamesASettingThatExists(t *testing.T) {
 	if err := walkStringLiterals(root, func(path, value string) {
 		for _, match := range configSettingRE.FindAllStringSubmatch(value, -1) {
 			checked++
-			if !keys[match[1]] {
+			key := match[1]
+			if key == "" {
+				key = match[2]
+			}
+			if !keys[key] {
 				t.Errorf("%s: %q names no setting (run `voiceime capabilities` for the list)", path, match[0])
 			}
 		}
@@ -85,8 +91,10 @@ func TestAdviceNamesASettingThatExists(t *testing.T) {
 }
 
 // configSettingRE matches the advice form, not the code: a Fix or message sentence that tells
-// someone which key to write.
-var configSettingRE = regexp.MustCompile(`voiceime config (?:set|get) ([a-z_]+)`)
+// someone which key to write. It is written two ways now - "write <key> = ..." for the
+// settings file, and `voiceime config get <key>` for reading it - and both name a key the
+// program has to have.
+var configSettingRE = regexp.MustCompile(`voiceime config get ([a-z_]+)|write ([a-z_]+) = `)
 
 // walkStringLiterals calls visit with the value of every string literal in the module's Go
 // files. Only literals are read: those are the sentences a caller acts on. Comments may talk

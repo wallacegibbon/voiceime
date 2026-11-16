@@ -50,9 +50,9 @@ func TestApplyRefusesAConfigThatCannotWork(t *testing.T) {
 	}
 }
 
-// A wrong setting has to be named, explained, and given a fix that runs: doctor is the only
-// place findings are reported now, so that is where this is checked.
-func TestDoctorNamesAWrongSettingWithAFixThatRuns(t *testing.T) {
+// A wrong setting has to be named, explained, and given a fix that says what to write and
+// where: doctor is the only place findings are reported, so that is where this is checked.
+func TestDoctorNamesAWrongSettingWithAFixThatNamesTheFile(t *testing.T) {
 	configPath := bareConfig(t)
 	appendToFile(t, configPath, "model = \"/home/u/models/sensevoice.gguf\"\n")
 
@@ -77,22 +77,109 @@ func TestDoctorNamesAWrongSettingWithAFixThatRuns(t *testing.T) {
 	if !strings.Contains(detail, "asr-service.sh") {
 		t.Errorf("the finding does not say where a model file belongs instead: %q", detail)
 	}
-	if !strings.Contains(fix, "config set model") {
-		t.Fatalf("the fix does not say how to correct the setting: %q", fix)
+	if !strings.Contains(fix, "write model = ") {
+		t.Fatalf("the fix does not say which line to write: %q", fix)
 	}
-	// Run the fix, and confirm the configuration becomes usable: advice that names the
-	// wrong command is the failure mode this project keeps hitting. Empty is the correct
-	// value for a local model, which is then whatever the service on this machine serves.
-	_, clearOut, clearErr := runForTest(t, "--config", configPath, "--json",
-		"config", "set", "model", "")
-	if clearErr != "" {
-		t.Fatalf("the documented fix failed: %s", clearErr)
+	if !strings.Contains(fix, configPath) {
+		t.Fatalf("the fix does not say which file to write it in: %q", fix)
 	}
-	result := decodeOne(t, clearOut)
-	data, _ = result["data"].(map[string]any)
-	if data["valid"] != true {
-		t.Fatalf("the documented fix left the config invalid: %s", clearOut)
+	// Follow the fix and confirm it works, by following it: advice that names the wrong file,
+	// or a line that is not the one the finding is about, is the failure mode this project
+	// keeps hitting. Empty is the correct value for a local model, which is then whatever the
+	// service on this machine serves. Nothing here runs a command to change a setting: the fix
+	// named a file and a line, so following it is an edit.
+	current, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
 	}
+	corrected := strings.Replace(string(current),
+		`model = "/home/u/models/sensevoice.gguf"`, `model = ""`, 1)
+	if corrected == string(current) {
+		t.Fatal("the example file no longer holds the line the finding is about")
+	}
+	if err := os.WriteFile(configPath, []byte(corrected), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, clearOut, clearErr := runForTest(t, "--config", configPath, "--json", "doctor")
+	stillWrong := configFinding(t, clearOut)
+	// The other findings may still fail - this file has no address, and that is a
+	// different finding with its own fix. What this case is about is that the advice
+	// about the model line, followed, leaves no complaint about the model line.
+	if stillWrong != "" {
+		t.Fatalf("following the documented fix left the settings still wrong: %s (%s)", stillWrong, clearErr)
+	}
+}
+
+// A credential in a file other people can read is not a broken configuration - everything
+// still works - so it is a warning: it costs a finding and stops nothing. Nothing in this
+// program writes that file, so nothing here can quietly have made the mode correct.
+func TestDoctorWarnsAboutASettingFileOtherPeopleCanRead(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	body := "asr_server_url = \"http://127.0.0.1:18080/v1/audio/transcriptions\"\n" +
+		"model = \"sensevoice-small-q8-audiocpp-v1\"\n" +
+		"api_key = \"sk-a-token-nobody-else-needs\"\n"
+	if err := os.WriteFile(configPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, readable, _ := runForTest(t, "--config", configPath, "--json", "doctor")
+	status, _, fix := configCheck(t, readable)
+	if status != "warn" {
+		t.Fatalf("the settings finding is %q, want warn: a credential is readable by others", status)
+	}
+	if !strings.Contains(fix, "chmod 600 "+configPath) {
+		t.Errorf("fix = %q, want the command that tightens this file", fix)
+	}
+
+	// Follow it, and the finding goes away - and the count of prerequisites missing never
+	// moved, because a warning is not one of those.
+	before := reportedFailures(t, readable)
+	if err := os.Chmod(configPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, tightened, _ := runForTest(t, "--config", configPath, "--json", "doctor")
+	if status, _, _ := configCheck(t, tightened); status != "ok" {
+		t.Errorf("after chmod 600 the settings finding is %q, want ok", status)
+	}
+	if after := reportedFailures(t, tightened); after != before {
+		t.Errorf("prerequisites missing moved from %v to %v: a warning is not a missing prerequisite", before, after)
+	}
+}
+
+// reportedFailures is the count doctor reports alongside its findings, which is the number
+// that decides its exit code.
+func reportedFailures(t *testing.T, report string) float64 {
+	data, _ := decodeOne(t, report)["data"].(map[string]any)
+	count, _ := data["failures"].(float64)
+	return count
+}
+
+// configFinding is the detail of the settings finding, or "" when the settings are accepted.
+func configFinding(t *testing.T, report string) string {
+	_, detail, _ := configCheck(t, report)
+	return detail
+}
+
+// configCheck reads the settings finding out of a doctor report. Every finding carries an id
+// so that a caller can ask for one by name; reading the report as prose would test the
+// wording instead of the finding.
+func configCheck(t *testing.T, report string) (status, detail, fix string) {
+	data, _ := decodeOne(t, report)["data"].(map[string]any)
+	checks, _ := data["checks"].([]any)
+	for _, raw := range checks {
+		check, _ := raw.(map[string]any)
+		if check["id"] != "config" {
+			continue
+		}
+		status, _ = check["status"].(string)
+		if status == "ok" {
+			return status, "", ""
+		}
+		detail, _ = check["detail"].(string)
+		fix, _ = check["fix"].(string)
+		return status, detail, fix
+	}
+	return "", "the report holds no settings finding", ""
 }
 
 func appendToFile(t *testing.T, path, text string) {

@@ -33,7 +33,7 @@ numbers are in [measurements.md](measurements.md).
 ```
 voiceime apply                                   # install the engine: component, desktop entry, session
 voiceime remove                                  # take back what apply installed
-voiceime config show|get|set
+voiceime config show|get
 voiceime doctor                                  # every prerequisite, machine-readable
 voiceime transcribe [--file recording.wav | --seconds N]
 voiceime capabilities                            # the surface: commands, settings, paths, exit codes
@@ -59,7 +59,7 @@ asr-service.sh <audiocpp_server> <model.gguf>   # a model on this machine: only 
 
 The second command is not part of this program. A model service is a separate project - one
 script, its own unit name, its own audio.cpp config - and the only contact between the two is
-the pair of settings it records here.
+the two settings lines it prints for this file.
 
 * An endpoint elsewhere needs nothing installed here. The model service's script says so and
   starts nothing when `asr_server_url` is not a loopback address. What such a setup needs is
@@ -68,7 +68,8 @@ the pair of settings it records here.
 * A model on this machine is one GGUF file, and that script is what puts it where it will be
   served: it asks `audiocpp_gguf --inspect` for the family the file carries, asks the build
   which backends it has and the CPU how many workers fit, writes the two files that service
-  consists of, and then records here the address that serves and the id it serves it under.
+  consists of, and then prints the address it serves and the id it serves it under - two
+  lines for the settings file, which it does not write.
   Nothing is fetched and nothing is scanned here: a checkpoint that is not named is not used.
 * `apply` is the whole desktop side, in one command: it writes the component file and the
   search path to `~/.config/environment.d/voiceime.conf`, **appends** `('ibus', voiceime)` to
@@ -97,8 +98,8 @@ the pair of settings it records here.
 | Key | Default | Notes |
 |---|---|---|
 | `asr_server_url` | `""` | The whole address a recording is posted to, used exactly as it is written: `http://127.0.0.1:18080/v1/audio/transcriptions` for a model on this machine, the provider's own URL for a model across a network. **Nothing is appended to it** - the path is part of the address, and is not guessed at. |
-| `model` | `""` | The id named in the request. Nothing asks an address what it serves, so **an address and an id are one decision**: the model service's own script writes both for a model on this machine, and a provider's id comes from its documentation. A path in this key is refused: the file belongs to the service, not to the settings. |
-| `api_key` | `""` | Sent as `Authorization: Bearer <value>`. Empty sends no header. A credential lives here rather than in an environment the engine never starts - and because it can live here, the file is written `0600`. A wrong one is a failing `asr_endpoint` finding, never a silent fallback. |
+| `model` | `""` | The id named in the request. Nothing asks an address what it serves, so **an address and an id are one decision**: for a model on this machine the script that starts it prints both lines, and a provider's id comes from its documentation. A path in this key is refused: the file belongs to the service, not to the settings. |
+| `api_key` | `""` | Sent as `Authorization: Bearer <value>`. Empty sends no header. A credential lives here rather than in an environment the engine never starts - and because it can live here, the file is one you keep readable only by yourself (`chmod 600`); a file other people can read is a `doctor` warning, never a reason to stop working. A wrong key is a failing `asr_endpoint` finding, never a silent fallback. |
 | `language` | `zh` | **The user's, not the program's.** Passed to the model; empty asks it to auto-detect, which is usually worse for Chinese and better for most other languages. |
 | `text_script` | `simplified` | Chinese output script: `simplified` or `preserve`. The default is what the reference user writes; `preserve` keeps whatever script the repair model produced. |
 | `max_utterance_seconds` | `60` | A hold whose key never comes up stops recording here. |
@@ -125,24 +126,28 @@ systemctl --user cat <that unit>                   # the same facts, from the un
 curl -s http://127.0.0.1:18080/v1/models          # the service's own list of what it has loaded
 ```
 
-Things every setting shares: the file is read by one parser, and it is checked **where it
-becomes something that runs** - the engine process, a `transcribe`, an `apply`. `config set`
-checks it too, but that is not where the gate is: the next edit may be by hand, and a value
-that was fine when it was written stops working the moment the value beside it changes.
-A file that cannot work is refused before a microphone is opened or a request is sent: the
-command says the key, the reason and the fix, and an engine does not start at all until it
-can do what it is asked. Hand-editing is supported and needs the same command to take
-effect (`voiceime apply`). No step comes first: the file appears with the
-first value written, and `voiceime config show` prints what is on record (or the defaults,
-with `exists: false`, when there is no file).
+Things every setting shares: one parser reads the file, and it is checked **where it becomes
+something that runs** - the engine process, a `transcribe`, an `apply`. A file that reads
+correctly and still cannot work - an address with no id beside it - is refused before a
+microphone is opened or a request is sent: the key, the reason, and the line that would fix
+it in the file it belongs to, all named. An engine does not start at all until it can do
+what it is asked.
 
-Writing the file edits it; it does not replace it. The line for the key being set is changed
-where it stands, a key the file does not have is added at the end, and everything else - the
-comment above a value, the endpoint someone switched away from and commented out instead of
-deleting, the blank lines and the order - is copied through. A settings file is where a setup
-keeps its reasons, and a write that regenerated it from the parsed values used to lose them.
+Nothing writes this file, and nothing needs to. It starts as a copy of `config.example.toml`
+in this project; what a person changes after that is theirs. The sample carries every key
+with its reason beside it and both worked endpoints commented out, and it is parsed by the
+same `Load` the engine calls, by a test that fails when the sample and the defaults drift
+apart - so the file a person copies is checked the way the code is. A comment in that file
+can hold the endpoint someone switched away from instead of deleting it, which is the whole
+reason the file is edited by hand rather than generated: a settings file is where a setup
+keeps its reasons. `voiceime config show` prints the path and what is on record (the
+defaults, with `exists: false`, when there is no file); `voiceime config get <key>` is the
+only reader of one effective value, which is why the model service's script asks for an
+address through this program instead of parsing the TOML itself. Neither writes anything, and
+`voiceime apply` is what puts a changed value into processes that are already running.
 
-A settings file holding only what a person owns is a settings file an agent can write by hand.
+A settings file holding only what a person owns is a settings file a person can keep by
+hand - and one an agent can write from scratch, which is what the sample is for.
 
 ## Verifying
 
@@ -161,6 +166,7 @@ voiceime transcribe --seconds 5   # one decode from the microphone, with timing
 | do this session's keys reach the engine at all | `session_engine` |
 | is an old build still running | `running_build` |
 | is a model service installed here, and does its unit name an audio.cpp and a config that are both there | `server_unit` |
+| is the file holding a credential readable by other people | `config`, as a warning: it is reported and costs nothing, because nothing about it stops dictation working |
 
 `server_unit` decides nothing about whether a model here is wanted - the endpoint does - so it
 stays silent when the endpoint is a provider and no unit exists. It does speak about the two
@@ -179,11 +185,13 @@ provider's catalogue is not a promise about what this account accepts - and the 
 engine's whole say about where it posts, so asking somewhere else about it is asking a question
 the settings did not ask.
 
-A failing finding is exit 3 with a `fix` an agent can run: `voiceime apply` for the desktop
-half, `systemctl --user restart <the unit the server_unit finding names>` for a model service
-this machine already has, `voiceime config set api_key …` for a credential the address refused,
-`voiceime config set model …` for an address with nothing to ask it for, `curl -s <address>` for
-an address that did not answer at all. A model that is not installed yet is the model service's
+A failing finding is exit 3 with a `fix` an agent can act on, which is either a command or
+a line and the file it goes in: `voiceime apply` for the desktop half, `systemctl --user
+restart <the unit the server_unit finding names>` for a model service this machine already
+has, `write api_key = "…" in <the settings file>` for a credential the address refused,
+`write model = "<id>" in <the settings file>` for an address with nothing to ask it for,
+`curl -s <address>` for an address that did not answer at all. A fix names the file because
+nothing in this program writes it. A model that is not installed yet is the model service's
 own project, not a command here.
 
 The engine's own log is `~/.cache/voiceime/engine.log` (ibus-daemon discards the process's

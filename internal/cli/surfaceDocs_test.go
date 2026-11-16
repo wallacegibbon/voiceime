@@ -61,13 +61,14 @@ func TestAGENTDocumentsTheSurfaceThisBuildHas(t *testing.T) {
 const engineCommandName = "ibus-engine"
 
 // settingNames is the settings list as the program knows it: the toml keys of the structure
-// that is read at start-up, in the order the file's own writer uses.
+// that is read at start-up. The one field with no key of its own - the path those values
+// came from, which no settings file holds - is not a setting and is not in the contract.
 func settingNames() []string {
 	var names []string
 	typ := reflect.TypeOf(*config.Default())
 	for i := 0; i < typ.NumField(); i++ {
 		key := strings.Split(typ.Field(i).Tag.Get("toml"), ",")[0]
-		if key != "" {
+		if key != "" && key != "-" {
 			names = append(names, key)
 		}
 	}

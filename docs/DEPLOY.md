@@ -23,28 +23,29 @@ fixes it. The rest of this page is those commands, in order.
 ## 2. Configuration
 
 ```sh
+cp config.example.toml ~/.config/voiceime/config.toml
 "$BIN" config show
 ```
 
-`config show` prints the file's path and every setting with the value on record. On a fresh
-machine there is no file yet: it prints the defaults and says `exists: false`. Nothing needs
-to create it - the first `config set`, and `apply` below, write it.
+The settings are one file, and the only thing that writes it is whoever edits it. The sample
+in this project is that file with every key present and its reason beside it; copy it and
+change what is yours. `config show` prints the path this program actually reads and every
+setting with the value on record - on a machine that has no file yet, the defaults, with
+`exists: false`, and a line saying which file to copy.
 
-What is in that file belongs to the person using it: `language`, `text_script`,
-`push_to_talk`, and the safety limit on one recording. The defaults are one machine's answers
-- Simplified Chinese, `` Ctrl+` `` - so change what does not fit. What each one is for is the
-settings table in [AGENT.md](AGENT.md):
-
-```sh
-"$BIN" config set language en
-```
+What belongs to the person using it: `language`, `text_script`, `push_to_talk`, and the
+safety limit on one recording. The sample's defaults are one machine's answers - Simplified
+Chinese, `` Ctrl+` `` - so change what does not fit. What each key is for is the settings
+table in [AGENT.md](AGENT.md), and in the sample itself.
 
 A setting takes effect when the process that reads it next starts: the engine picks up a new
-key when it is next spawned, and a model service when it is next started. Nothing about the
-machine is asked here - which audio.cpp to run, which backend it was built for, how many
-workers it deserves - because those are answered by looking at the machine once, in the step
-that starts a model. What a wrong setting would do is `doctor`'s `config` finding, which names
-the setting and the command that corrects it.
+key when it is next spawned, and a model service when it is next started - which is what
+`voiceime apply` does. Nothing about the machine is asked here - which audio.cpp to run,
+which backend it was built for, how many workers it deserves - because those are answered by
+looking at the machine once, in the step that starts a model. A file that reads correctly but
+cannot work is `doctor`'s `config` finding, which names the key, the reason, and the line
+that would fix it; the same refusal stops `apply`, `transcribe` and the engine itself before
+any audio or request is involved.
 
 ## 3. Where recognition comes from
 
@@ -68,9 +69,8 @@ api_key        = "sk-…"                      # sent as Authorization: Bearer
 address with no id to ask it for, and it asks the address itself whether the credential is
 accepted - a refused credential is a failing finding rather than an ok one, and a wrong token and a
 missing token are reported differently, with the address's own reason kept. The file holds that
-token, so `config set` writes it `0600`; hand-editing it is fine and needs nothing extra -
-and a later `config set` edits the line it was asked about, leaving your comments and your
-commented-out alternatives in the file. The proof is the same command as ever:
+token, so keep it readable only by you (`chmod 600`); `voiceime doctor` says so as a warning
+when it is not. The proof is the same command as ever:
 
 ```sh
 "$BIN" transcribe --file sample_16k.wav
@@ -102,11 +102,14 @@ command turns a checkpoint into a running service:
 # assert: wrote:     /home/<user>/.local/share/audiocpp-asr/serve.json
 #         wrote:     /home/<user>/.config/systemd/user/audiocpp-asr.service
 #         serving: sensevoice-small-q8-audiocpp-v1 (cpu, 8 threads) from <the checkpoint>
-#         settings: asr_server_url = http://127.0.0.1:18080/v1/audio/transcriptions, model = sensevoice-small-q8-audiocpp-v1
+#         write these two lines in /home/<user>/.config/voiceime/config.toml:
+#           asr_server_url = "http://127.0.0.1:18080/v1/audio/transcriptions"
+#           model          = "sensevoice-small-q8-audiocpp-v1"
 ```
 
-The last two lines are the assertion, and the first half of it is the same request anyone can
-repeat afterwards with no tool of ours:
+The last three lines are the assertion. The service writes the two files it owns and prints the
+two lines the settings need; it does not touch the settings file, which is a person's. The
+first half of that proof is a request anyone can repeat afterwards with no tool of ours:
 
 ```sh
 curl -s http://127.0.0.1:18080/v1/models
@@ -114,16 +117,18 @@ curl -s http://127.0.0.1:18080/v1/models
 ```
 
 That is the service's own list, not something the engine reads: the engine posts to the address
-and names the id the script just recorded.
+in the settings and names the id the settings name - which is why the two lines above are
+worth writing down rather than remembering.
 
 Four things about that service belong to this deploy:
 
-* It writes two files and two settings keys, and starts them. The audio.cpp to run, the backend
-  its own banner reports, the worker count the CPU's topology allows (one per physical core:
-  `nproc` counts siblings and would ask the server to queue half its threads) and the checkpoint
-  go into those files; the address and the id go into the settings, because a program that never
-  asks an address what it serves has to be told. Nothing looks any of them up again - a service
-  started at login cannot fail for a reason only another run could fix.
+* It writes two files, prints two settings lines, and starts the service. The audio.cpp to
+  run, the backend its own banner reports, the worker count the CPU's topology allows (one per
+  physical core: `nproc` counts siblings and would ask the server to queue half its threads)
+  and the checkpoint go into those files; the address and the id are printed for the settings
+  file, because a program that never asks an address what it serves has to be told - and the
+  file it is told in is a person's, not this script's. Nothing looks any of them up again - a
+  service started at login cannot fail for a reason only another run could fix.
 * It asks, rather than assumes: the family from the checkpoint, the backend from the build, the
   cores from the kernel. A build without `cpu` in its banner is refused by name, and a
   checkpoint with no model spec in it is refused by name - the answer is to convert it with
@@ -268,12 +273,12 @@ different pair of commands, and they belong to the model service's project: runn
 | Symptom | Cause | Fix |
 |---|---|---|
 | `asr_endpoint` fails with `no address is configured` | `asr_server_url` is empty, and recognition is an address | write the provider's URL, or run `asr-service.sh` with a checkpoint (a model on this machine) |
-| `asr_endpoint` fails with `nothing names the model to ask it for` | an address was written without the id it is asked for | `voiceime config set model <id>`, or run `asr-service.sh`, which writes both |
+| `asr_endpoint` fails with `nothing names the model to ask it for` | an address was written without the id it is asked for | write the `model = "<id>"` line the finding names; for a model on this machine, `asr-service.sh` prints that line next to the address |
 | `asr_endpoint` fails with a connection error and `server_unit` says the unit runs a binary that does not exist | the audio.cpp build was moved, cleaned or never built | `asr-service.sh /path/to/audiocpp_server /path/to/model.gguf`, which rewrites both files |
 | `server_unit` warns that a model starts here while the settings post elsewhere | the endpoint moved to a provider and the local model stayed loaded | `systemctl --user disable --now <the unit `server_unit` names>` |
-| no text, log shows `no audio was recorded` | the sound server is not giving the microphone | `"$BIN" doctor`, then `config set capture_source` |
+| no text, log shows `no audio was recorded` | the sound server is not giving the microphone | `"$BIN" doctor`, then the `capture_source` line it names |
 | no text, log shows `transcribe …: …` | the endpoint refused, timed out, or the model id is wrong | `"$BIN" doctor` (the `asr_endpoint` finding), then `"$BIN" transcribe --file sample_16k.wav` |
-| `"$BIN" transcribe` answers `the settings cannot work: <key>: …` and exits 3, and no key reaches the engine | the file parses, but the values do not work as a pair - and it was edited by hand since the last `config set` | the message names the key and the command that writes it; the engine logs the same reason in `~/.cache/voiceime/engine.log` and stays down until the file works |
+| `"$BIN" transcribe` answers `the settings cannot work: <key>: …` and exits 3, and no key reaches the engine | the file parses, but the values do not work as a pair | the message names the key and the line that completes it, in the file that holds the rest of the pair; the engine logs the same reason in `~/.cache/voiceime/engine.log` and stays down until the file works |
 | the desktop still shows the input method, but no application receives any key at all | no engine is selected for the session: an engine process ended, and the daemon clears the global engine when its bus name disappears (`ibus engine` answers `No engine is set.`) | `ibus engine voiceime`, which also starts the engine process (`doctor` reports `session_engine`; `apply` selects it again too) |
 | the menu does not list Voiceime | not in the input-source list | `"$BIN" apply` |
 | `doctor` reports `ibus` or `component_exec` as not registered | the daemon has not read the component | `"$BIN" apply`, then `"$BIN" doctor` again |

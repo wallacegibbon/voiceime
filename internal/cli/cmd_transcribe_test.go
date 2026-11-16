@@ -64,11 +64,11 @@ func TestTranscribeSaysWhenNothingWasRecognized(t *testing.T) {
 }
 
 // A settings file that reads perfectly and still cannot work - an address with nothing named in
-// it - is refused before anything is recorded or sent. `config set` is not what guards this: the
-// file may have been hand-edited since it was written, and the two values that make one request
-// can have been pulled apart since. The assertion that matters is that the endpoint was never
-// asked. A request with no model in it fails at someone else's API, and that answer is not about
-// the mistake made here.
+// it - is refused before anything is recorded or sent. Nothing that writes the file guards this:
+// the file may have been hand-edited, and the two values that make one request can have been
+// pulled apart since. The assertion that matters is that the endpoint was never asked. A request
+// with no model in it fails at someone else's API, and that answer is not about the mistake made
+// here.
 func TestTranscribeRefusesSettingsThatCannotWork(t *testing.T) {
 	asked := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -95,8 +95,8 @@ func TestTranscribeRefusesSettingsThatCannotWork(t *testing.T) {
 	if !strings.Contains(stderr, "nothing names the model to ask it for") {
 		t.Errorf("stderr = %q, want the settings problem named", stderr)
 	}
-	if !strings.Contains(stderr, "voiceime config set model") {
-		t.Errorf("stderr = %q, want the fix that completes the pair", stderr)
+	if !strings.Contains(stderr, `write model = "<id>" in `+configPath) {
+		t.Errorf("stderr = %q, want the line that completes the pair, in the file that holds the rest of it", stderr)
 	}
 	if asked {
 		t.Error("the endpoint was asked, although the settings cannot work")

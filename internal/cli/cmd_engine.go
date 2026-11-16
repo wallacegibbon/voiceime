@@ -276,7 +276,7 @@ func newPushToTalk(ctx *Context, logf func(string, ...any), audioFile string) (*
 	}
 	handler, err := daemon.NewPushToTalk(ctx.Config, logf)
 	if err != nil {
-		return nil, PreconditionError(`voiceime config set push_to_talk "<Control>apostrophe"`, "%v", err)
+		return nil, PreconditionError(ctx.Config.FixLine("push_to_talk", `"<Control>apostrophe"`), "%v", err)
 	}
 	logf("%s", serverDescription(ctx.Config))
 	if audioFile != "" {

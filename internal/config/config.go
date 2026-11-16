@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -36,9 +35,10 @@ const TargetRate = 16000
 type Config struct {
 	// Model is the id named in the request, and it is required: the program does not ask an
 	// address what it serves, because a model list is a catalogue and not a promise about what
-	// this account accepts, and an endpoint may publish none at all. A local service's id is
-	// written here by the script that starts the service, which is the program that chooses it.
-	Model string `toml:"model" desc:"The model id to name in the request. Required; asr-service.sh writes the id of a model it starts on this machine."`
+	// this account accepts, and an endpoint may publish none at all. For a model on this
+	// machine the id is the one the script that starts the service prints, and the two lines
+	// belong in the settings together.
+	Model string `toml:"model" desc:"The model id to name in the request. Required; asr-service.sh prints the id of a model it starts on this machine."`
 
 	// APIKey is sent as `Authorization: Bearer <value>`. A credential lives here rather
 	// than in an environment the engine never starts.
@@ -52,7 +52,7 @@ type Config struct {
 
 	// The whole request address, used verbatim: no route is appended, nothing is derived from
 	// it, and the same string is what `curl` would be pointed at.
-	ASRServerURL       string `toml:"asr_server_url" desc:"The address a recording is POSTed to, used exactly as written: http://127.0.0.1:18080/v1/audio/transcriptions for a model on this machine (asr-service.sh writes that), a provider's full URL otherwise."`
+	ASRServerURL       string `toml:"asr_server_url" desc:"The address a recording is POSTed to, used exactly as written: http://127.0.0.1:18080/v1/audio/transcriptions for a model on this machine (asr-service.sh prints that line), a provider's full URL otherwise."`
 	ASRServerTimeoutMS int    `toml:"asr_server_timeout_ms" desc:"Deadline for one transcription."`
 
 	CaptureSource string `toml:"capture_source" desc:"PipeWire source name; empty uses the default input."`
@@ -60,6 +60,11 @@ type Config struct {
 	// Held down to dictate. A modifier is required, so the press cannot also be ordinary
 	// typing.
 	PushToTalk string `toml:"push_to_talk" desc:"Combination held down to dictate; the release transcribes the recording."`
+
+	// Where these values came from, recorded by Load so a validation finding can name the
+	// file to edit. Nothing in this program writes that file: a finding that says what to
+	// change has to say where, because the person reading it is the one who will change it.
+	path string `toml:"-"`
 }
 
 func Default() *Config {
@@ -178,6 +183,9 @@ func checkServerURL(raw string) error {
 
 func Load(path string) (*Config, error) {
 	cfg := Default()
+	// Recorded before the decode: a file that is not there yet is still the file a fix
+	// belongs in, and that is the case where saying so helps most.
+	cfg.path = path
 	metadata, err := toml.DecodeFile(path, cfg)
 	if errors.Is(err, os.ErrNotExist) {
 		return cfg, nil
@@ -197,81 +205,31 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
-// Save writes the settings so that a later Load returns an identical value.
-//
-// A file that exists is edited, not regenerated. Its comments, its commented-out alternatives,
-// its blank lines and the order of its keys belong to whoever reads it: an endpoint that was
-// switched away from is kept as a comment precisely so it can be switched back, and a document
-// built from a parsed struct has nowhere to put that. Only the lines holding a key this program
-// owns are replaced, and a key the file does not have is added at the end. A file that is not
-// there is written whole, with the header that says where the key reference is.
-func Save(cfg *Config, path string) error {
-	document, err := os.ReadFile(path)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	if strings.TrimSpace(string(document)) == "" {
-		document = []byte(settingsHeader)
-	}
-	text := string(document)
-	for _, field := range cfg.Fields() {
-		text = setKeyInDocument(text, field.Key, encodeValue(field.Value))
-	}
-	// 0600, not 0644: `api_key` is a bearer token, and a file that can hold a credential is
-	// not something everyone who can read this home directory should be able to read.
-	// CreateTemp already made the temporary file 0600; the chmod names it explicitly so that
-	// a file written before credentials could live here is tightened the next time anything
-	// is written to it.
-	return WriteFile(path, []byte(text), 0o600)
-}
-
-const settingsHeader = "# voiceime configuration.\n" +
-	"# Managed by `voiceime config set`; hand-editing is fine and supported.\n" +
-	"# Key reference: `voiceime capabilities`, docs/AGENT.md.\n"
-
-// WriteFile replaces path with data atomically, creating its directory.
-func WriteFile(path string, data []byte, perm os.FileMode) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	name := tmp.Name()
-	// A no-op once the rename has succeeded; otherwise it is the cleanup of a failed
-	// write, which must not leave temporary files in the user's config directory.
-	defer os.Remove(name)
-
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	// Sync before the rename: the point of the temporary file is that path either
-	// names the old contents or the new ones, including across a power cut.
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	// CreateTemp makes the file 0600; the configuration and the index are readable
-	// by anyone who can run the binary, which is what the previous os.WriteFile gave.
-	if err := os.Chmod(name, perm); err != nil {
-		return err
-	}
-	return os.Rename(name, path)
-}
-
-// Issue is one validation finding. Fix is a shell command that resolves it,
-// which is what lets an agent read a doctor report and act on it directly.
+// Issue is one validation finding. Fix says what to do about it: a command to run, or the
+// line to write and the file to write it in, named. Nothing in this program writes that
+// file, so a finding is the one place the two halves of the instruction are ever
+// together, and an agent reading a doctor report can still act on it.
 type Issue struct {
 	Key      string `json:"key,omitempty"`
 	Severity string `json:"severity"`
 	Message  string `json:"message"`
 	Fix      string `json:"fix,omitempty"`
+}
+
+// FixLine is the instruction to change one setting - the line, and the file it belongs in -
+// for advice written outside this package. A finding and a piece of advice are the same
+// sentence said twice, so only one of them is written down.
+func (c *Config) FixLine(key, line string) string { return c.writeIn(key, line) }
+
+// writeIn is the fix for a value only a person changes: the line, and the file it belongs
+// to. Load records that path; a Config built inside a test has none, and says where to
+// find it rather than naming a file that does not exist.
+func (c *Config) writeIn(key, line string) string {
+	where := c.path
+	if where == "" {
+		where = "the settings file (`voiceime capabilities` prints its path)"
+	}
+	return fmt.Sprintf("write %s = %s in %s", key, line, where)
 }
 
 // Validate reports settings that would stop the pipeline working.
@@ -283,30 +241,30 @@ func (c *Config) Validate() []Issue {
 
 	if c.Language == "" {
 		add("warning", "language", "empty; the model will be asked to auto-detect",
-			"voiceime config set language zh")
+			c.writeIn("language", `"zh"`))
 	}
 	if value := strings.TrimSpace(c.TextScript); value != "" && value != "simplified" && value != "preserve" {
 		add("error", "text_script", "must be simplified or preserve",
-			"voiceime config set text_script simplified")
+			c.writeIn("text_script", `"simplified"`))
 	}
 	if c.MaxUtteranceSeconds <= 0 {
 		add("error", "max_utterance_seconds", "must be positive",
-			"voiceime config set max_utterance_seconds 60")
+			c.writeIn("max_utterance_seconds", "60"))
 	}
 	if raw := strings.TrimSpace(c.ASRServerURL); raw != "" {
 		if err := checkServerURL(raw); err != nil {
 			add("error", "asr_server_url", err.Error(),
-				"voiceime config set asr_server_url http://127.0.0.1:18080/v1/audio/transcriptions")
+				c.writeIn("asr_server_url", `"http://127.0.0.1:18080/v1/audio/transcriptions"`))
 		} else if strings.TrimSpace(c.Model) == "" {
 			// An address and a name to ask it for are one decision: nothing here asks an
 			// address what it serves, so an address on its own cannot be used.
 			add("error", "model", fmt.Sprintf("%s is configured, and nothing names the model to ask it for", raw),
-				`voiceime config set model <id>   # or run asr-service.sh, which writes the id of a model it starts on this machine`)
+				c.writeIn("model", `"<id>"`)+"   # the id that address serves; for a model on this machine, the id asr-service.sh prints when it starts one")
 		}
 	}
 	if strings.TrimSpace(c.PushToTalk) == "" {
 		add("error", "push_to_talk", "must be set; the engine has no other way to start recording",
-			`voiceime config set push_to_talk "<Control>grave"`)
+			c.writeIn("push_to_talk", `"<Control>grave"`))
 	}
 	// A model is named, never chosen. Nothing is scanned, nothing is downloaded, and no file
 	// is read: what belongs here is the id the address is asked for. A path in this key is the
@@ -315,7 +273,17 @@ func (c *Config) Validate() []Issue {
 	if named := strings.TrimSpace(c.Model); named != "" {
 		if strings.HasPrefix(named, "/") || strings.HasPrefix(named, "~") || strings.EqualFold(filepath.Ext(named), ".gguf") {
 			add("error", "model", fmt.Sprintf("%q looks like a file, not a model id: the file belongs to the service on this machine (asr-service.sh), this key names what the address is asked for", named),
-				`voiceime config set model <id>   # the id that address serves, not a path`)
+				c.writeIn("model", `"<id>"`)+"   # the id that address serves, not a path")
+		}
+	}
+	// A credential in a file this program only reads is a promise whoever keeps the file
+	// made: nothing tightens the mode any more, because nothing writes the file. So the
+	// permission is reported beside the credential, which is the one place a person
+	// reading the report would not otherwise think to look.
+	if strings.TrimSpace(c.APIKey) != "" && c.path != "" {
+		if info, err := os.Stat(c.path); err == nil && info.Mode().Perm()&0o077 != 0 {
+			add("warning", "api_key", fmt.Sprintf("is in a file other people can read (mode %o)", info.Mode().Perm()),
+				"chmod 600 "+c.path)
 		}
 	}
 	return issues
@@ -374,44 +342,6 @@ func (c *Config) Get(key string) (any, error) {
 		}
 	}
 	return nil, fmt.Errorf("unknown setting %q; run `voiceime capabilities` for the list", key)
-}
-
-func (c *Config) Set(key, raw string) error {
-	value := reflect.ValueOf(c).Elem()
-	typ := value.Type()
-	for i := 0; i < typ.NumField(); i++ {
-		field := typ.Field(i)
-		if strings.Split(field.Tag.Get("toml"), ",")[0] != key {
-			continue
-		}
-		target := value.Field(i)
-		switch target.Kind() {
-		case reflect.String:
-			target.SetString(raw)
-		case reflect.Int:
-			number, err := strconv.Atoi(raw)
-			if err != nil {
-				return fmt.Errorf("%s must be an integer: %w", key, err)
-			}
-			target.SetInt(int64(number))
-		case reflect.Float64:
-			number, err := strconv.ParseFloat(raw, 64)
-			if err != nil {
-				return fmt.Errorf("%s must be a number: %w", key, err)
-			}
-			target.SetFloat(number)
-		case reflect.Bool:
-			boolean, err := strconv.ParseBool(raw)
-			if err != nil {
-				return fmt.Errorf("%s must be true or false: %w", key, err)
-			}
-			target.SetBool(boolean)
-		default:
-			return fmt.Errorf("%s cannot be set from the command line (%s)", key, target.Kind())
-		}
-		return nil
-	}
-	return fmt.Errorf("unknown setting %q; run `voiceime capabilities` for the list", key)
 }
 
 // --------------------------------------------------------------------------- //

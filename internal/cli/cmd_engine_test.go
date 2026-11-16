@@ -176,7 +176,7 @@ func TestEngineRefusesSettingsThatCannotWork(t *testing.T) {
 	if !strings.Contains(string(logged), "the settings cannot work: model:") {
 		t.Errorf("the engine log = %q, want the reason it did not start", logged)
 	}
-	if !strings.Contains(string(logged), "voiceime config set model") {
-		t.Errorf("the engine log = %q, want the fix that completes the pair", logged)
+	if !strings.Contains(string(logged), `write model = "<id>"`) {
+		t.Errorf("the engine log = %q, want the line that completes the pair", logged)
 	}
 }

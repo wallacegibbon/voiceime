@@ -1,7 +1,7 @@
 # Deploy on a new machine
 
-GNOME on Linux, with an audio.cpp build. Nothing needs root: the binary, the component and
-both units live in the user's home.
+GNOME on Linux. Nothing needs root: everything this project writes - the binary, the engine's
+component file, a model service - lives in the user's home.
 
 Set `BIN` to the binary for the rest of this page:
 
@@ -39,77 +39,120 @@ settings table in [AGENT.md](AGENT.md):
 "$BIN" config set language en
 ```
 
-A setting takes effect when the next `apply` (below) reads the file, so nothing else is run
-here. Nothing else about this machine is asked: which audio.cpp to run, which backend it was
-built for and how many workers it deserves are worked out by `apply`, and recorded where they
-are used. So build audio.cpp first (`cmake -B build && cmake --build build`) - `apply` finds
-a build in a checkout, or an `audiocpp_server` on `PATH`, and says which one it chose. What a
-wrong setting would do is `doctor`'s `config` finding, which names the setting and the command
-that corrects it.
+A setting takes effect when the process that reads it next starts: the engine picks up a new
+key when it is next spawned, and a model service when it is next started. Nothing about the
+machine is asked here - which audio.cpp to run, which backend it was built for, how many
+workers it deserves - because those are answered by looking at the machine once, in the step
+that starts a model. What a wrong setting would do is `doctor`'s `config` finding, which names
+the setting and the command that corrects it.
 
-## 3. A model
+## 3. Where recognition comes from
 
-voiceime fetches nothing and scans nothing: a model is one GGUF file, and you name it.
+The engine needs one thing: an endpoint that answers `POST /v1/audio/transcriptions`. Whether
+that endpoint is a model on this machine or a provider across a network is not the engine's
+concern, and the two ways of having one are separate. The settings say which one a machine is
+in - `asr_server_url`, plus `model` and `api_key` when the endpoint is not a model here.
 
-```sh
-"$BIN" model
-# assert: exit 3, "no checkpoint is named", and the fix `config set model /path/to/model.gguf`
+### An endpoint elsewhere
+
+Nothing is installed here. Write the three keys and skip the rest of this section:
+
+```toml
+asr_server_url = "https://api.example.com"   # the root: the route is appended to it
+model          = "gpt-4o-mini-transcribe"    # what to ask for, by id
+api_key        = "sk-…"                      # sent as Authorization: Bearer
 ```
 
-Fetch one - the answer above names a checkpoint worth starting with and what it costs on disk
-(SenseVoice small, 242 MiB, is what the reference machine uses). Then name it:
+`asr_endpoint` is the finding that says whether the endpoint can be used at all, and a refused
+credential is a failing finding rather than an ok one. The proof is the same command as ever:
 
 ```sh
-"$BIN" config set model ~/models/SenseVoice-Small-GGUF/sensevoice-small-q8-audiocpp-v1.gguf
-"$BIN" model --json
-# assert: data.family is the audio.cpp family ("sense_asr"), data.size_bytes is the file's
-# size, and data.tasks contains "asr"
+"$BIN" transcribe --file sample_16k.wav
 ```
 
-`model` reads that out of the checkpoint's own metadata, which audio.cpp writes into every
-GGUF it produces. Nothing is loaded, no other program is asked, and there is no cache to
-refresh: the answer is the same a year later, or the answer is that the file is not one of
-audio.cpp's. That second case says so by name - `is a GGUF (whisper) with no audio.cpp model
-spec in it` - and what to do about it is to convert the checkpoint with audio.cpp, not to
-point voiceime at it harder.
+### A model on this machine
 
-## 4. Make the machine match the file: `voiceime apply`
+voiceime fetches nothing and scans nothing: a checkpoint is one GGUF file, and you say which
+one. What it is - the audio.cpp family that picks the loader - is inside it, and audio.cpp's
+own tool reads it out:
 
-One command installs and starts everything: the recognition service, the IBus component, the
-search path a login needs, and the desktop's input source. It is idempotent - a second run
-reports everything unchanged - and it refuses halfway: a configuration that cannot work is
-not applied at all.
+```sh
+find ~ -maxdepth 4 -name '*.gguf' -size +1M
+# assert: the checkpoints this machine already holds
+
+~/playground/audio.cpp/build/*/bin/audiocpp_gguf --inspect <that file>
+# assert: model_spec_family=<the family>, in milliseconds; a checkpoint audio.cpp never
+#         produced says nothing on that line, and is not a model voiceime can serve
+```
+
+Build audio.cpp (`cmake -B build && cmake --build build`), then one command turns a
+checkpoint into a service:
+
+```sh
+scripts/asr-service.sh \
+  ~/playground/audio.cpp/build/linux-cpu-release/bin/audiocpp_server \
+  ~/models/SenseVoice-Small-GGUF/sensevoice-small-q8-audiocpp-v1.gguf
+# assert: wrote:  /home/<user>/.local/share/voiceime/asr-server.json
+#         wrote:  /home/<user>/.config/systemd/user/voiceime-asr-server.service
+#         serving: sensevoice-small-q8-audiocpp-v1 (cpu, 8 threads) from <the checkpoint>
+```
+
+The last line is the assertion, and it is the same request anyone can repeat afterwards with
+no tool of ours:
+
+```sh
+curl -s http://127.0.0.1:18080/v1/models
+# assert: data[0].id is the entry named above
+```
+
+Four things about that script belong here:
+
+* It writes two files and starts them. The audio.cpp to run, the backend its own banner
+  reports, the worker count the CPU's topology allows (one per physical core: `nproc` counts
+  siblings and would ask the engine to queue half its threads) and the checkpoint go into
+  those files, and nothing looks them up again - a service started at login cannot fail for a
+  reason only another run could fix.
+* It asks, rather than assumes: the family from the checkpoint, the backend from the build, the
+  cores from the kernel. A build without `cpu` in its banner is refused by name, and a
+  checkpoint with no model spec in it is refused by name - the answer is to convert it with
+  audio.cpp, not to point voiceime at it harder.
+* It is idempotent, and says what it changed: running it again after editing a checkpoint into
+  the settings prints `unchanged:` twice, and rewriting the unit is what heals a moved
+  checkout or a newer build.
+* It starts nothing when the endpoint is not this machine: `asr_server_url = "https://…"` makes
+  it report that and leave, which is the whole of "the local model is optional".
+
+The unit is where those answers ended up, so reading it back is the assertion that they were
+written down at all:
+
+```sh
+systemctl --user cat voiceime-asr-server.service
+# assert: ExecStart=<the audio.cpp named above> --config
+#         /home/<user>/.local/share/voiceime/asr-server.json --log
+#         - and no voiceime in that line: nothing re-derives the answer at start-up
+```
+
+## 4. The desktop half: `voiceime apply`
+
+One command makes the engine reachable: the IBus component file, the search path a login needs,
+the desktop's input source, and the running engine processes. It is idempotent - a second run
+reports everything unchanged - and it refuses halfway: a configuration that cannot work is not
+applied at all. It does not start a model: that is the section above, and a setup whose
+endpoint is a provider has no model here to start.
 
 ```sh
 "$BIN" apply
-# assert: service:   installed and started (voiceime-asr-server.service)
-#         serving:   sensevoice-small-q8-audiocpp-v1.gguf (cpu, 8 threads)
-#         audio.cpp: /home/<user>/playground/audio.cpp/build/linux-cpu-release/bin/audiocpp_server
-#         component: /home/<user>/.local/share/voiceime/component/voiceime.xml (written);
+# assert: component: /home/<user>/.local/share/voiceime/component/voiceime.xml (written);
 #                    IBus restarted
 #         desktop:   appended ('ibus', 'voiceime') to the GNOME input sources; the sources
 #                    already configured are untouched
 #         engine:    was not running
 ```
-`audio.cpp:` names the binary the unit will run, and a line for each other build on the
-machine when there is more than one - which there often is. `serving:` names the backend and
-the worker count the service was started with. None of those three are settings: they are what
-this machine adds up to, and they are in the files that use them.
 
-One command because the work is one decision: the installed machine should look like the
-configuration. What it writes, and why each of those files is needed, is
-[AGENT.md](AGENT.md); the measurements behind the search path and the component registry
-cache are in [ibus-protocol.md](ibus-protocol.md). Four things about running it belong
-here:
+What it writes, and why each of those files is needed, is [AGENT.md](AGENT.md); the
+measurements behind the search path and the component registry cache are in
+[ibus-protocol.md](ibus-protocol.md). Two things about running it belong here:
 
-* It settles the machine once. The audio.cpp to run, the backend it was built for and the
-  worker count are written into the unit and the config it names, and nothing looks them up
-  again: a service started at login cannot fail for a reason only another install could fix.
-  Rewriting the unit is what heals a moved checkout or a newer build, which is what
-  `doctor`'s `server_unit` finding reports when the record and the machine disagree
-  ([measurements.md](measurements.md) has the two-builds-on-one-machine case).
-* It waits until the configured checkpoint is resident. A service that is started but still
-  loading, or still serving the previous model, has not applied anything.
 * It restarts IBus, and that is asynchronous: `apply` waits for `ibus list-engine` to answer
   before it reads or sets the session's engine, which is why the desktop assertion below is
   worth running a second later rather than immediately.
@@ -125,22 +168,15 @@ gsettings get org.gnome.desktop.input-sources sources
 # assert: the list contains ('ibus', 'voiceime')
 ```
 
-The unit is where the machine-shaped answers ended up, so reading it back is the assertion
-that they were written down at all:
-
-```sh
-systemctl --user cat voiceime-asr-server.service
-# assert: ExecStart=<the audio.cpp apply named> --config
-#         /home/<user>/.local/share/voiceime/asr-server.json --log
-#         - and no voiceime in that line: nothing re-derives the answer at start-up
-```
-
 ## 5. The recognition path, without a keyboard
 
 ```sh
 "$BIN" transcribe --file sample_16k.wav
 # assert: the text, and a took_ms proportional to the recording
 ```
+
+This is the same request the engine makes - one WAV, one decode - so it proves the endpoint,
+the credential and the audio format at once, with no IBus and no keyboard involved.
 
 A recording longer than the served model's encoder holds is refused in the model's own words
 (`500 … SenseVoice encoder input exceeds positional capacity`); the numbers measured against
@@ -168,15 +204,17 @@ of a hold: `ready: hold <Control>grave to dictate`, then `recording`, `decoded �
 
 ```sh
 "$BIN" doctor --json >/tmp/voiceime-doctor.json; doctor=$?
-for id in asr_server component_exec component_env session_engine running_build; do
+for id in asr_endpoint capture ibus component_exec component_env session_engine running_build; do
   grep -q "\"id\":\"$id\",\"status\":\"ok\"" /tmp/voiceime-doctor.json && echo "$id ok" || echo "$id not ok"
 done
 ```
 
-`doctor=0` and five lines ending in `ok` is the deployable state: the model resident, the
-component installed and still installed after the next login, keys reaching the engine, and
-nothing stale running. What no command can assert is a human seeing text in a focused window:
-dictate one sentence into a text editor.
+`doctor=0` and seven lines ending in `ok` is the deployable state: an endpoint that answers
+and would be named correctly in a request, capture available, the engine registered and
+selected for the session, and nothing stale running. A machine that starts its own model
+asserts one more - `server_unit`, the record `scripts/asr-service.sh` wrote. What no command
+can assert is a human seeing text in a focused window: dictate one sentence into a text
+editor.
 
 ## Removing an installation
 
@@ -184,10 +222,12 @@ dictate one sentence into a text editor.
 "$BIN" remove
 ```
 
-Stops the service and the engine, and deletes the unit, the component file, the
-`environment.d` file and the input-source entry this tool added. The user's other input
-methods are left alone, and so is the model file: `model` names a file you own, and removing
-an installation does not delete it.
+Stops the engine, and deletes the component file, the `environment.d` file and the
+input-source entry this tool added - and the model unit and the audio.cpp config it generated,
+which `scripts/asr-service.sh` wrote but which are this project's, so an uninstall that left
+them would leave a model loaded. The user's other input methods are left alone, the checkpoint
+file is left alone, and so is `config.toml`: what was configured may be an endpoint someone
+pays for, and an uninstall is not permission to delete what they wrote.
 
 ## Updating an installed copy
 
@@ -198,16 +238,20 @@ make install
 
 A running process keeps the binary it was started from, so `doctor` reports a stale one as a
 `warn` (`running_build`) until it is restarted. `apply` is what restarts them, and it selects
-the input method again afterwards, for the reason given in §4.
+the input method again afterwards, for the reason given in §4. A rebuilt **audio.cpp** is a
+different pair of commands: running `scripts/asr-service.sh` again rewrites the unit with the
+build that exists now, and `systemctl --user cat voiceime-asr-server.service` shows which one
+that is.
 
 ## Recovery
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `doctor` says there is no audio.cpp, or that the unit names one that does not exist | audio.cpp was never built, or the build tree moved or was cleaned | build audio.cpp and run `"$BIN" apply`, which finds the build and rewrites the unit |
-| the service is running an older audio.cpp than the machine has | the unit was written before the checkout was copied or rebuilt | `"$BIN" apply` (`doctor` reports `server_unit`); the old binary runs, so nothing else notices |
+| `asr_endpoint` fails with `no endpoint is configured` | `asr_server_url` is empty, and recognition is an endpoint | write the endpoint (provider) or run `scripts/asr-service.sh` with a checkpoint (this machine) |
+| `asr_endpoint` fails with a connection error and `server_unit` says the unit runs a binary that does not exist | the audio.cpp build was moved, cleaned or never built | `scripts/asr-service.sh /path/to/audiocpp_server /path/to/model.gguf`, which rewrites both files |
+| `server_unit` warns that a model starts here while the settings post elsewhere | the endpoint moved to a provider and the local model stayed loaded | `systemctl --user disable --now voiceime-asr-server.service` |
 | no text, log shows `no audio was recorded` | the sound server is not giving the microphone | `"$BIN" doctor`, then `config set capture_source` |
-| no text, log shows `transcribe …: …` | the service refused or timed out | `"$BIN" doctor` (the `asr_server` finding), then `"$BIN" apply` |
+| no text, log shows `transcribe …: …` | the endpoint refused, timed out, or the model id is wrong | `"$BIN" doctor` (the `asr_endpoint` finding), then `"$BIN" transcribe --file sample_16k.wav` |
 | the desktop still shows the input method, but no application receives any key at all | no engine is selected for the session: an engine process ended, and the daemon clears the global engine when its bus name disappears (`ibus engine` answers `No engine is set.`) | `ibus engine voiceime`, which also starts the engine process (`doctor` reports `session_engine`; `apply` selects it again too) |
 | the menu does not list Voiceime | not in the input-source list | `"$BIN" apply` |
 | `doctor` reports `ibus` or `component_exec` as not registered | the daemon has not read the component | `"$BIN" apply`, then `"$BIN" doctor` again |

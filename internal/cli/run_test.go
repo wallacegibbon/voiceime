@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bytes"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -21,15 +20,13 @@ func runForTest(t *testing.T, args ...string) (code int, stdout, stderr string) 
 	return code, out.String(), err.String()
 }
 
-// freshConfig writes a config that is usable - one named checkpoint, present on disk - so a
-// test fails for the reason it is about. A model is a file a test names; there is no
-// directory for the tool to scan.
+// freshConfig writes a config that is usable - an endpoint, and the model to ask it for - so
+// that a test fails for the reason it is about rather than for an unrelated missing setting.
 func freshConfig(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	writeGGUF(t, filepath.Join(dir, "test.gguf"), "sense_asr", []string{"asr"})
-	configPath := filepath.Join(dir, "config.toml")
-	body := fmt.Sprintf("model = %q\n", filepath.Join(dir, "test.gguf"))
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	body := fmt.Sprintf("asr_server_url = %q\nmodel = %q\n",
+		"http://127.0.0.1:18080", "sensevoice-small-q8-audiocpp-v1")
 	if err := os.WriteFile(configPath, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -37,69 +34,11 @@ func freshConfig(t *testing.T) string {
 }
 
 // bareConfig writes a config with nothing in it: the shape of a fresh install, before anyone
-// has named a checkpoint.
+// has said where recognition comes from.
 func bareConfig(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.toml")
 	if err := os.WriteFile(path, []byte(""), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
-// writeGGUF writes a GGUF file: the header, a key-value section with the keys voiceime reads,
-// and bytes after it that are never read. It is here rather than in the model package's tests
-// because several CLI tests need a checkpoint the server config can name.
-func writeGGUF(t *testing.T, path, family string, tasks []string) string {
-	t.Helper()
-	var raw []byte
-	str := func(s string) {
-		var length [8]byte
-		binary.LittleEndian.PutUint64(length[:], uint64(len(s)))
-		raw = append(raw, length[:]...)
-		raw = append(raw, s...)
-	}
-	u32 := func(v uint32) {
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], v)
-		raw = append(raw, b[:]...)
-	}
-	u64 := func(v uint64) {
-		var b [8]byte
-		binary.LittleEndian.PutUint64(b[:], v)
-		raw = append(raw, b[:]...)
-	}
-
-	raw = append(raw, []byte("GGUF")...)
-	keyCount := uint64(2)
-	if len(tasks) > 0 {
-		keyCount++ // the spec key below
-	}
-	u32(3) // format version
-	u64(0) // tensor count
-	u64(keyCount)
-	str("general.architecture")
-	u32(8)
-	str("testmodel")
-	str("audiocpp.model_spec.family")
-	u32(8)
-	str(family)
-	if len(tasks) > 0 {
-		// The spec is JSON, and voiceime reads only its tasks out of it.
-		spec := `{"family":"` + family + `","tasks":[`
-		for i, task := range tasks {
-			if i > 0 {
-				spec += ","
-			}
-			spec += `"` + task + `"`
-		}
-		spec += "]}"
-		str("audiocpp.model_spec.json")
-		u32(8)
-		str(spec)
-	}
-	raw = append(raw, make([]byte, 64)...)
-	if err := os.WriteFile(path, raw, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -139,9 +78,10 @@ func TestJsonSuccessIsOneObjectOnStdout(t *testing.T) {
 // lets an agent repair a machine without parsing prose.
 func TestJsonFailureCarriesExitCodeAndFix(t *testing.T) {
 	configPath := bareConfig(t)
-	code, stdout, stderr := runForTest(t, "model", "--json", "--config", configPath)
+	appendToFile(t, configPath, "text_script = \"traditional\"\n")
+	code, stdout, stderr := runForTest(t, "apply", "--json", "--config", configPath)
 	if code == ExitOK {
-		t.Fatal("describing a checkpoint that was never named succeeded")
+		t.Fatal("a configuration no engine can use was reported as working")
 	}
 	payload := decodeOne(t, stderr)
 	if payload["ok"] != false {

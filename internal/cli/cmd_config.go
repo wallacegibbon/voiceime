@@ -2,13 +2,11 @@ package cli
 
 import (
 	"flag"
-	"fmt"
 	"os"
 	"strings"
 
 	"github.com/wallacegibbon/voiceime/internal/config"
 	"github.com/wallacegibbon/voiceime/internal/ibus"
-	"github.com/wallacegibbon/voiceime/internal/model"
 )
 
 // configActions is the whole of the configuration command: look at the file, read one value,
@@ -31,24 +29,6 @@ func cmdConfig() *Command {
 	}
 }
 
-// configuredModel answers "which model is in use" where a user looks first. The answer comes
-// from the file itself, so it is the same answer everywhere else in the tool.
-func configuredModel(ctx *Context) map[string]string {
-	out := map[string]string{}
-	path := strings.TrimSpace(ctx.Config.Model)
-	if path == "" {
-		out["model"] = noModelAdvice()
-		return out
-	}
-	info, err := model.Open(config.Expand(path))
-	if err != nil {
-		out["model"] = err.Error()
-		return out
-	}
-	out["model"] = describeCheckpoint(info)
-	return out
-}
-
 func runConfig(ctx *Context, args []string) error {
 	if len(args) == 0 {
 		return UsageError("config needs an action: %s", strings.Join(configActions, ", "))
@@ -58,9 +38,6 @@ func runConfig(ctx *Context, args []string) error {
 	switch action {
 	case "show":
 		fields := ctx.Config.Fields()
-		// The model setting is a path, and a path on its own does not say what will be
-		// served. What the file says about itself is printed next to it.
-		resolved := configuredModel(ctx)
 		ctx.Print("%s", ctx.ConfigPath)
 		if !fileExists(ctx.ConfigPath) {
 			// The shape of a fresh install. Saying so is what keeps "these are the
@@ -68,17 +45,12 @@ func runConfig(ctx *Context, args []string) error {
 			ctx.Print("(no file yet: these are the defaults; the first `config set`, or `voiceime apply`, writes it)")
 		}
 		for _, field := range fields {
-			line := fmt.Sprintf("%-22s %v", field.Key, field.Value)
-			if note, ok := resolved[field.Key]; ok && note != "" {
-				line += "  -> " + note
-			}
-			ctx.Print("%s", line)
+			ctx.Print("%-22s %v", field.Key, field.Value)
 		}
 		return ctx.Emit("config show", map[string]any{
-			"path":     ctx.ConfigPath,
-			"exists":   fileExists(ctx.ConfigPath),
-			"fields":   fields,
-			"resolved": resolved,
+			"path":   ctx.ConfigPath,
+			"exists": fileExists(ctx.ConfigPath),
+			"fields": fields,
 		})
 
 	case "get":
@@ -227,19 +199,7 @@ func commandNames() string {
 		names = append(names, command.Name)
 	}
 	return strings.Join(names, ", ")
-}
-
-func lastLineMatching(text, prefix string) string {
-	last := ""
-	for _, line := range strings.Split(text, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), prefix) {
-			last = strings.TrimSpace(line)
-		}
-	}
-	return last
-}
-
-// ibusState reports whether IBus is running and whether our engine is installed.
+} // ibusState reports whether IBus is running and whether our engine is installed.
 func ibusState() map[string]any {
 	state := map[string]any{}
 	if config.FindExecutable("ibus") == "" {

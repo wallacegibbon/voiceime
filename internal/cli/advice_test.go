@@ -47,7 +47,10 @@ func TestAdviceNamesACommandThatExists(t *testing.T) {
 	}
 	// A check that silently matched nothing is a check that passed by accident, so the
 	// count is part of the assertion.
-	if checked < 50 {
+	// The number is below what the module holds today and far above zero: it exists to
+	// catch the pattern stopping, not to hold the count. It came down with the commands
+	// that were only ever used at deployment.
+	if checked < 40 {
 		t.Fatalf("only %d pieces of advice checked: the pattern stopped matching", checked)
 	}
 	t.Logf("checked %d pieces of advice across the module", checked)
@@ -75,7 +78,7 @@ func TestAdviceNamesASettingThatExists(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("reading the source: %v", err)
 	}
-	if checked < 10 {
+	if checked < 6 {
 		t.Fatalf("only %d setting references checked: the pattern stopped matching", checked)
 	}
 	t.Logf("checked %d references to settings across the module", checked)

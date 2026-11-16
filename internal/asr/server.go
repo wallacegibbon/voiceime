@@ -21,10 +21,15 @@ type Transcriber interface {
 	Transcribe(ctx context.Context, pcm []byte) (string, error)
 }
 
-// ServerTranscriber sends a recording to a resident audio.cpp server.
+// ServerTranscriber sends a recording to an endpoint that speaks the transcriptions route.
+// The endpoint may be a model on this machine or a provider across a network: nothing below
+// knows the difference, and nothing here starts one.
 type ServerTranscriber struct {
-	BaseURL  string
+	BaseURL string
+	// Model is the id named in the request. When it is empty the endpoint is asked what it
+	// serves: a local setup has one model and no reason to name it twice.
 	Model    string
+	APIKey   string
 	Language string
 	Timeout  time.Duration
 	Client   *http.Client
@@ -37,16 +42,13 @@ func (s ServerTranscriber) Transcribe(ctx context.Context, pcm []byte) (string, 
 	if len(pcm) == 0 {
 		return "", nil
 	}
-	base, err := s.baseURL()
+	base, err := Endpoint(s.BaseURL)
 	if err != nil {
 		return "", err
 	}
-	model := strings.TrimSpace(s.Model)
-	if model == "" {
-		model, err = ModelID(ctx, base, s.client())
-		if err != nil {
-			return "", err
-		}
+	model, err := ModelToUse(ctx, base, s.Model, s.APIKey)
+	if err != nil {
+		return "", err
 	}
 
 	var body bytes.Buffer
@@ -82,6 +84,9 @@ func (s ServerTranscriber) Transcribe(ctx context.Context, pcm []byte) (string, 
 		return "", err
 	}
 	request.Header.Set("Content-Type", form.FormDataContentType())
+	if token := strings.TrimSpace(s.APIKey); token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
 
 	response, err := s.client().Do(request)
 	if err != nil {
@@ -104,28 +109,49 @@ func (s ServerTranscriber) Transcribe(ctx context.Context, pcm []byte) (string, 
 	return decoded.Text, nil
 }
 
-// ModelID asks the server which entry it serves.
-func ModelID(ctx context.Context, base string, client *http.Client) (string, error) {
-	if client == nil {
-		client = http.DefaultClient
+// ModelToUse answers, from the settings alone, which model id a request to this endpoint
+// would name: the one it was given, or the one the endpoint serves. `voiceime doctor` asks
+// the same question, so the finding is what dictation would do rather than an approximation
+// of it.
+func ModelToUse(ctx context.Context, endpoint, model, apiKey string) (string, error) {
+	base, err := Endpoint(endpoint)
+	if err != nil {
+		return "", err
 	}
+	if named := strings.TrimSpace(model); named != "" {
+		return named, nil
+	}
+	return askModels(ctx, base, apiKey)
+}
+
+// askModels asks the endpoint which model it serves - the local case: one model, and nothing
+// in the settings naming it. A remote endpoint answers /v1/models with a catalogue instead,
+// so its setup names the id it wants and never comes here.
+func askModels(ctx context.Context, base, apiKey string) (string, error) {
+	client := http.DefaultClient
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1/models", nil)
 	if err != nil {
 		return "", err
 	}
+	if token := strings.TrimSpace(apiKey); token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	ask := func(format string, args ...any) error {
+		return fmt.Errorf("ask the endpoint which model it serves: "+format, args...)
+	}
 	response, err := client.Do(request)
 	if err != nil {
-		return "", fmt.Errorf("ask the server which model it serves: %w", err)
+		return "", ask("%w", err)
 	}
 	defer response.Body.Close()
 	payload, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
-		return "", fmt.Errorf("ask the server which model it serves: %w", err)
+		return "", ask("%w", err)
 	}
 	if response.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("ask the server which model it serves: %s", response.Status)
+		return "", ask("%s", response.Status)
 	}
 	var listing struct {
 		Data []struct {
@@ -133,18 +159,18 @@ func ModelID(ctx context.Context, base string, client *http.Client) (string, err
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(payload, &listing); err != nil {
-		return "", fmt.Errorf("ask the server which model it serves: %w", err)
+		return "", ask("%w", err)
 	}
 	switch len(listing.Data) {
 	case 1:
 		if listing.Data[0].ID == "" {
-			return "", fmt.Errorf("the server serves a model with no id")
+			return "", fmt.Errorf("the endpoint serves a model with no id")
 		}
 		return listing.Data[0].ID, nil
 	case 0:
-		return "", fmt.Errorf("the server serves no model: run `voiceime apply`")
+		return "", fmt.Errorf("the endpoint serves no model: for a model on this machine run scripts/asr-service.sh, or name model in the settings")
 	default:
-		return "", fmt.Errorf("the server serves %d models: this build serves one", len(listing.Data))
+		return "", fmt.Errorf("the endpoint lists %d models, so this setup has to name one: model = \"...\" in the settings", len(listing.Data))
 	}
 }
 
@@ -155,8 +181,8 @@ func (s ServerTranscriber) client() *http.Client {
 	return http.DefaultClient
 }
 
-func (s ServerTranscriber) baseURL() (string, error) {
-	base := strings.TrimSpace(s.BaseURL)
+func Endpoint(raw string) (string, error) {
+	base := strings.TrimSpace(raw)
 	if base == "" {
 		return "", fmt.Errorf("no server configured: run `voiceime apply`")
 	}

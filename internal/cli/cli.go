@@ -141,7 +141,6 @@ func commands() []*Command {
 		cmdDoctor(),
 		cmdRemove(),
 		cmdIBusEngine(),
-		cmdModel(),
 		cmdTranscribe(),
 	}
 }

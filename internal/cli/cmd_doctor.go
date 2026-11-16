@@ -1,12 +1,10 @@
 package cli
 
 import (
-	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/wallacegibbon/voiceime/internal/config"
-	"github.com/wallacegibbon/voiceime/internal/model"
 )
 
 // Check is one doctor finding.
@@ -77,37 +75,13 @@ func runDoctor(ctx *Context) []Check {
 		})
 	}
 
-	// 2. audio.cpp, which does all the actual inference.
-	asrBinary, _, asrErr := config.ASRServer()
-	if asrErr != nil {
-		report(Check{
-			ID:     "audio_cpp",
-			Status: "fail",
-			Detail: asrErr.Error(),
-			// There is no setting to point at the build: the path comes from the machine,
-			// and `apply` is what writes it into the service unit.
-			Fix: "build audio.cpp (cmake -B build && cmake --build build), then `voiceime apply`",
-		})
-	} else {
-		detail := asrBinary
-		// The banner is the only authority on what this build can do. Its first line says
-		// which build it is and its last which backends it was compiled with, and both are
-		// worth naming: a build without cuda cannot do cuda whatever the machine has.
-		if version, err := probe(asrBinary, "--version"); err == nil {
-			detail += " (" + firstLine(version)
-			if backends := parseBackends(lastLineMatching(version, "backends:")); len(backends) > 0 {
-				detail += ", backends: " + strings.Join(backends, ", ")
-			}
-			detail += ")"
-		}
-		report(Check{ID: "audio_cpp", Status: "ok", Detail: detail})
-	}
+	// 2. The endpoint the engine posts to, and - only when the endpoint is this machine -
+	// the unit that starts a model here. audio.cpp itself is not a prerequisite of the
+	// program: it is one way to have an endpoint, and `systemctl --user cat` says whether
+	// this machine has one.
+	report(asrEndpointCheck(ctx.Config, unitInstalled()))
 
-	// 3. The checkpoint. It is named by a path and read from the file, so this needs no
-	// CLI, no cache and no directory: it is reported whether or not audio.cpp is present.
-	modelChecks(ctx, report)
-
-	// 4. Capture.
+	// 3. Capture.
 	if tool := config.FindExecutable("parec", "pw-record"); tool == "" {
 		report(Check{
 			ID:     "capture",
@@ -126,7 +100,7 @@ func runDoctor(ctx *Context) []Check {
 		report(Check{ID: "capture", Status: "ok", Detail: detail})
 	}
 
-	// 5. Text delivery through IBus.
+	// 4. Text delivery through IBus.
 	state := ibusState()
 	status := "ok"
 	detail := "IBus is running"
@@ -144,7 +118,7 @@ func runDoctor(ctx *Context) []Check {
 	}
 	report(Check{ID: "ibus", Status: status, Detail: detail, Fix: fix})
 
-	// 6. Optional feedback tools. Missing ones degrade UX, never function.
+	// 5. Optional feedback tools. Missing ones degrade UX, never function.
 	var optional []string
 	for id, tool := range map[string]string{
 		"notify": config.FindExecutable("notify-send"),
@@ -166,49 +140,12 @@ func runDoctor(ctx *Context) []Check {
 		report(Check{ID: "feedback", Status: "ok", Detail: "notifications and sound cues available"})
 	}
 
-	// 7. Installed artifacts: the paths baked into the component file and the
-	// systemd unit, and whether the resident processes run those paths. A moved
-	// checkout breaks all three silently (see install_check.go).
+	// 6. Installed artifacts: the paths baked into the component file, whether the
+	// resident processes run those paths, and - if a model service exists here - whether
+	// the unit still names files that do. A moved checkout breaks these silently
+	// (see install_check.go).
 	installChecks(report)
-	serverUnitCheck(report)
+	unitCheck(report, ctx.Config)
 
 	return checks
-}
-
-// modelChecks reports on the checkpoint that was named. There is no collection to scan and
-// no cache that can be stale: one path, and what the file at the end of it says about itself.
-func modelChecks(ctx *Context, report func(Check)) {
-	cfg := ctx.Config
-	path := strings.TrimSpace(cfg.Model)
-	if path == "" {
-		report(Check{ID: "model", Status: "fail", Detail: noModelAdvice(), Fix: noModelFix})
-		report(asrServerCheck(cfg, serverUnitInstalled()))
-		return
-	}
-	info, err := model.Open(config.Expand(path))
-	switch {
-	case err != nil:
-		report(Check{
-			ID:     "model",
-			Status: "fail",
-			Detail: err.Error(),
-			Fix:    "voiceime config set model /path/to/model.gguf",
-		})
-	case info.Says() && !info.ASR():
-		// Only when the file says what it does: some checkpoints embed a full spec and
-		// some only a family, and a model that does not name its tasks is not a model
-		// that refuses to transcribe.
-		report(Check{
-			ID:     "model",
-			Status: "fail",
-			Detail: fmt.Sprintf("%s says it does %s, not transcription", info.Path, strings.Join(info.Tasks, "/")),
-			Fix:    "voiceime config set model /path/to/model.gguf",
-		})
-	default:
-		report(Check{ID: "model", Status: "ok", Detail: describeCheckpoint(info)})
-	}
-
-	// The optional resident server: the one part of a working installation nothing
-	// else verifies, because dictation keeps working when it cannot start.
-	report(asrServerCheck(cfg, serverUnitInstalled()))
 }

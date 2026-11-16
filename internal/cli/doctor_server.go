@@ -3,21 +3,22 @@ package cli
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/wallacegibbon/voiceime/internal/asr"
 	"github.com/wallacegibbon/voiceime/internal/config"
-	"github.com/wallacegibbon/voiceime/internal/server"
 )
 
-// serverUnitInstalled reports whether a unit exists to start the server. It does not change
-// the fix - `voiceime apply` covers both cases - it changes what the finding can say:
-// "nothing on this machine is installed to answer it" is a different situation from "the
+// unitInstalled reports whether a unit exists to start a model on this machine. It does not
+// decide whether one is wanted - the settings' endpoint does that - it decides what a finding
+// can say: "nothing here is installed to answer this" is a different situation from "the
 // service is installed and not answering".
-func serverUnitInstalled() bool {
-	path := serverUnitPath()
+func unitInstalled() bool {
+	path := unitPath()
 	if path == "" {
 		return false
 	}
@@ -25,92 +26,71 @@ func serverUnitInstalled() bool {
 	return err == nil
 }
 
-// asrServerCheck reports on the resident server, the one prerequisite dictation cannot
-// work without.
-func asrServerCheck(cfg *config.Config, unitInstalled bool) Check {
+// endpointIsLocal answers the one question about an address that changes what a finding
+// suggests: is the machine that has to answer this one the machine being looked at.
+func endpointIsLocal(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	host := parsed.Hostname()
+	switch host {
+	case "localhost":
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
+// asrEndpointCheck reports on the endpoint dictation posts to, and on the one thing that can
+// make it unusable: no model id to name.
+//
+// The settings decide which kind of endpoint this is. A remote one names its model, and this
+// command asks it nothing - a provider's /v1/models is a catalogue, not a promise about what
+// this account accepts, and a working setup with a named model would fail a check that
+// trusted the catalogue. A local one usually names nothing, and then the answer has to come
+// from the endpoint, so the check asks it the question the engine will.
+func asrEndpointCheck(cfg *config.Config, unitExists bool) Check {
 	raw := strings.TrimSpace(cfg.ASRServerURL)
 	if raw == "" {
 		return Check{
-			ID:     "asr_server",
+			ID:     "asr_endpoint",
 			Status: "fail",
-			Detail: "no server is configured, and dictation decodes through one",
-			Fix:    "voiceime apply",
+			Detail: "no endpoint is configured, and dictation decodes through one",
+			Fix:    `asr_server_url = "http://127.0.0.1:18080" in the settings file, then scripts/asr-service.sh /path/to/audiocpp_server /path/to/model.gguf`,
 		}
 	}
-	host, _, err := server.ParseURL(raw)
+	base, err := asr.Endpoint(raw)
 	if err != nil {
-		return Check{
-			ID:     "asr_server",
-			Status: "fail",
-			Detail: err.Error(),
-			Fix:    "voiceime apply",
-		}
+		return Check{ID: "asr_endpoint", Status: "fail", Detail: err.Error(), Fix: "asr_server_url in the settings"}
 	}
+	local := endpointIsLocal(raw)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	probeErr := server.Probe(ctx, raw)
-	if probeErr != nil {
-		// The unit is what should be running it, so the advice depends on whether one
-		// exists: "start it" and "install it" are different fixes.
-		if unitInstalled {
-			return Check{
-				ID:     "asr_server",
-				Status: "fail",
-				Detail: fmt.Sprintf("%s is not answering: %v", strings.TrimRight(raw, "/"), probeErr),
-				Fix:    "voiceime apply",
+	model, err := asr.ModelToUse(ctx, base, cfg.Model, cfg.APIKey)
+	if err != nil {
+		fix := "voiceime transcribe --file <wav>"
+		if local {
+			switch {
+			case unitExists:
+				fix = "systemctl --user restart " + unitName
+			default:
+				fix = "scripts/asr-service.sh /path/to/audiocpp_server /path/to/model.gguf"
 			}
 		}
-		fix := "voiceime apply"
-		if !server.IsLocalHost(host) {
-			fix = "systemctl --user start " + serverUnitName + " on that machine"
-		}
 		return Check{
-			ID:     "asr_server",
+			ID:     "asr_endpoint",
 			Status: "fail",
-			Detail: fmt.Sprintf("nothing is answering at %s, and no service on this machine is installed to answer it", raw),
+			Detail: fmt.Sprintf("%s: %v", base, err),
 			Fix:    fix,
 		}
 	}
-
-	// Something answers. What is left is whether it serves one model, and whether that
-	// model is the one the settings name: the id comes from the listing, so a service
-	// left on another checkpoint is the failure that matters here.
-	entries, err := server.Entries(ctx, raw)
-	if err != nil {
-		return Check{ID: "asr_server", Status: "fail", Detail: err.Error(), Fix: "voiceime apply"}
+	detail := fmt.Sprintf("%s, and a request would name %q", base, model)
+	if local {
+		detail += " - a model on this machine, which scripts/asr-service.sh starts"
 	}
-	if len(entries) != 1 {
-		offered := make([]string, 0, len(entries))
-		for _, entry := range entries {
-			offered = append(offered, entry.ID)
-		}
-		return Check{
-			ID:     "asr_server",
-			Status: "fail",
-			Detail: fmt.Sprintf("%s serves %d models (%s); voiceime serves one",
-				strings.TrimRight(raw, "/"), len(entries), strings.Join(offered, ", ")),
-			Fix: "voiceime apply",
-		}
-	}
-	detail := fmt.Sprintf("%s is serving %s", strings.TrimRight(raw, "/"), entries[0].ID)
-	if entries[0].Path != "" {
-		detail = fmt.Sprintf("%s is serving %s (%s)", strings.TrimRight(raw, "/"),
-			entries[0].ID, filepath.Base(entries[0].Path))
-	}
-	// The settings name one checkpoint and the listing says what is served, so the comparison
-	// needs nothing else: not the family, which is in the file, and not the backend or thread
-	// count, which cannot change what a server answers on /v1/models.
-	if wanted := config.Expand(strings.TrimSpace(cfg.Model)); wanted != "" &&
-		(entries[0].ID != server.EntryID(wanted) ||
-			filepath.Clean(entries[0].Path) != filepath.Clean(wanted)) {
-		return Check{
-			ID:     "asr_server",
-			Status: "fail",
-			Detail: fmt.Sprintf("%s serves %s (%s), not the model the settings name (%s)",
-				strings.TrimRight(raw, "/"), entries[0].ID, entries[0].Path, wanted),
-			Fix: "voiceime apply",
-		}
-	}
-	return Check{ID: "asr_server", Status: "ok", Detail: detail}
+	return Check{ID: "asr_endpoint", Status: "ok", Detail: detail}
 }

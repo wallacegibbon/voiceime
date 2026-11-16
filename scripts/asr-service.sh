@@ -39,7 +39,12 @@ unit=$unit_dir/voiceime-asr-server.service
 read_setting() {
 	sed -n -e "s/^$1[[:space:]]*=[[:space:]]*\"\(.*\)\"[[:space:]]*\$/\1/p" "$settings" | head -n 1
 }
-base_url=$(read_setting asr_server_url)
+# No settings file is what the engine itself sees on a fresh machine: defaults. So the
+# endpoint is the default one, and this says so instead of letting sed report the absence.
+base_url=
+if [ -f "$settings" ]; then
+	base_url=$(read_setting asr_server_url)
+fi
 [ -n "$base_url" ] || base_url=http://127.0.0.1:18080
 port=${base_url##*:}
 host=${base_url%:*}

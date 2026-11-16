@@ -90,7 +90,9 @@ func runTranscribe(ctx *Context, file string, seconds float64) error {
 	recorded := float64(audio.SampleCount(pcm)) / audio.SampleRate
 
 	transcriber := asr.ServerTranscriber{
-		BaseURL:  cfg.ASRServerURL,
+		BaseURL:  ctx.Config.ASRServerURL,
+		Model:    ctx.Config.Model,
+		APIKey:   ctx.Config.APIKey,
 		Language: cfg.Language,
 		Timeout:  time.Duration(cfg.ASRServerTimeoutMS) * time.Millisecond,
 	}

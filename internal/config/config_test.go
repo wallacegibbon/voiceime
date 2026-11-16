@@ -10,37 +10,27 @@ import (
 
 // checkpointFile is the file a named checkpoint has to be: it exists. Validate does not read
 // what is inside it - only the commands that serve one do.
-func checkpointFile(t *testing.T) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "model.gguf")
-	if err := os.WriteFile(path, []byte("GGUF"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
-// usableConfig is a configuration that would pass: every default, plus the one thing no
-// default can know - where the user put the checkpoint.
+// usableConfig is a configuration that would pass. Nothing has to be added to the defaults
+// for that: the defaults name no endpoint and no model, and both are things a person says
+// about their machine rather than things that can be wrong on their own.
 func usableConfig(t *testing.T) *Config {
-	cfg := Default()
-	cfg.Model = checkpointFile(t)
-	return cfg
+	return Default()
 }
 
-// The shipped defaults do not contradict each other. What a fresh one is missing is a
-// checkpoint, and that is said once, with the command that fixes it.
+// The shipped defaults do not contradict each other, and a fresh installation is not
+// described as broken: naming no endpoint and no model is a configuration that asks for
+// nothing, because those two keys are what the person adds about their machine. `voiceime
+// doctor`'s asr_endpoint finding is what reports them, because it is the check that knows
+// whether the answer is a local model or a provider.
 func TestDefaultsAreCoherent(t *testing.T) {
+	issues := Errors(Default().Validate())
+	if len(issues) != 0 {
+		t.Fatalf("default config = %+v, want nothing blocking", issues)
+	}
 	cfg := Default()
-	issues := Errors(cfg.Validate())
-	if len(issues) != 1 || issues[0].Key != "model" {
-		t.Fatalf("default config = %+v, want only the missing checkpoint", issues)
-	}
-	if issues[0].Fix == "" {
-		t.Error("the missing checkpoint carries no fix, so an agent cannot act on it")
-	}
-	cfg.Model = checkpointFile(t)
+	cfg.ASRServerURL = "http://127.0.0.1:18080"
 	if issues := Errors(cfg.Validate()); len(issues) != 0 {
-		t.Errorf("naming a checkpoint left issues: %+v", issues)
+		t.Errorf("naming an endpoint left issues: %+v", issues)
 	}
 }
 
@@ -136,30 +126,28 @@ func TestExpandHome(t *testing.T) {
 }
 
 // A configured model path that is not there is the failure this check exists for:
-func TestValidateReportsAModelPathThatDoesNotExist(t *testing.T) {
+func TestValidateRejectsAModelThatIsAPath(t *testing.T) {
 	cfg := Default()
-	missing := filepath.Join(t.TempDir(), "absent.gguf")
-	cfg.Model = missing
+	cfg.Model = filepath.Join(t.TempDir(), "sensevoice.gguf")
 	issues := Errors(cfg.Validate())
 	if len(issues) != 1 || issues[0].Key != "model" || issues[0].Fix == "" {
-		t.Fatalf("Validate with a missing model = %+v, want one blocking issue carrying a fix", issues)
+		t.Fatalf("Validate with a path as a model id = %+v, want one blocking issue carrying a fix", issues)
 	}
-	if !strings.Contains(issues[0].Message, missing) {
-		t.Errorf("message %q does not name the path that is wrong", issues[0].Message)
+	if !strings.Contains(issues[0].Message, "asr-service.sh") {
+		t.Errorf("message %q does not say where a model file belongs", issues[0].Message)
 	}
 }
 
-// The same check must not fire for a path that exists, or a working install would
-// be reported as broken and `voiceime apply` would refuse to run.
-func TestValidateAcceptsAnExistingModelPath(t *testing.T) {
-	existing := filepath.Join(t.TempDir(), "model.gguf")
-	if err := os.WriteFile(existing, []byte("gguf"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	cfg := Default()
-	cfg.Model = existing
-	if issues := Errors(cfg.Validate()); len(issues) != 0 {
-		t.Fatalf("existing model paths were rejected: %+v", issues)
+// An id is not a path, and a remote endpoint is not a local one: both are accepted without
+// being contacted, because nothing here can tell whether a provider's list mentions a model.
+func TestValidateAcceptsAModelIdAndARemoteEndpoint(t *testing.T) {
+	for _, model := range []string{"gpt-4o-mini-transcribe", "sensevoice-small-q8-audiocpp-v1"} {
+		cfg := Default()
+		cfg.Model = model
+		cfg.ASRServerURL = "https://api.example.com"
+		if issues := Errors(cfg.Validate()); len(issues) != 0 {
+			t.Errorf("%q over https were rejected: %+v", model, issues)
+		}
 	}
 }
 
@@ -210,37 +198,42 @@ func TestSaveIsSafeForConcurrentWriters(t *testing.T) {
 }
 
 // The streaming client speaks HTTP over a raw socket, so it cannot do TLS.
-func TestValidateRejectsAServerAddressTheStreamCannotUse(t *testing.T) {
+// The endpoint is an address, not a process, so any HTTP origin is accepted - including
+// https, which is how every provider is reached. What is rejected is a value the client
+// cannot use at all.
+func TestValidateAcceptsAnyHTTPEndpoint(t *testing.T) {
 	cfg := usableConfig(t)
-	cfg.ASRServerURL = "https://example.invalid:18080"
+
+	// The typo someone will actually make: a bare host and port.
+	cfg.ASRServerURL = "127.0.0.1:18080"
 	issues := Errors(cfg.Validate())
-	if len(issues) != 1 || issues[0].Key != "asr_server_url" {
-		t.Fatalf("Validate with an https server = %+v, want one blocking asr_server_url issue", issues)
-	}
-	if !strings.Contains(issues[0].Message, "https") || !strings.Contains(issues[0].Message, "TLS") {
-		t.Errorf("message %q does not explain what is wrong with https", issues[0].Message)
+	if len(issues) != 1 || issues[0].Key != "asr_server_url" ||
+		!strings.Contains(issues[0].Message, "scheme and a host") {
+		t.Fatalf("a bare host:port = %+v, want the shape it should have", issues)
 	}
 	if issues[0].Fix == "" {
 		t.Error("the finding carries no fix")
 	}
 
-	// The typo someone will actually make: a bare host and port.
-	cfg.ASRServerURL = "127.0.0.1:18080"
-	if issues := Errors(cfg.Validate()); len(issues) != 1 ||
-		!strings.Contains(issues[0].Message, "scheme and a host") {
-		t.Errorf("a bare host:port = %+v, want the shape it should have", issues)
-	}
-
-	// A plain local address is fine, with or without a path prefix.
-	for _, address := range []string{"http://127.0.0.1:18080", "http://127.0.0.1:18080/", "http://localhost:18080/api"} {
+	for _, address := range []string{
+		"http://127.0.0.1:18080", "http://127.0.0.1:18080/", "http://localhost:18080/api",
+		"https://api.example.com", "https://example.invalid:18080/v1",
+	} {
 		cfg.ASRServerURL = address
 		if issues := Errors(cfg.Validate()); len(issues) != 0 {
 			t.Errorf("%s was rejected: %+v", address, issues)
 		}
 	}
 
+	for _, address := range []string{"grpc://127.0.0.1:18080", "ws://127.0.0.1:18080"} {
+		cfg.ASRServerURL = address
+		if issues := Errors(cfg.Validate()); len(issues) != 1 {
+			t.Errorf("%s = %+v, want one blocking issue", address, issues)
+		}
+	}
+
 	// An unset address is doctor's finding, not a validation error: a fresh machine has
-	// no service yet, and reporting it twice is how one failure becomes two.
+	// no endpoint yet, and reporting it twice is how one failure becomes two.
 	cfg.ASRServerURL = ""
 	if issues := Errors(cfg.Validate()); len(issues) != 0 {
 		t.Errorf("an unset server address was rejected: %+v", issues)

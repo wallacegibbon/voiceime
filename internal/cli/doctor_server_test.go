@@ -13,30 +13,25 @@ import (
 	"github.com/wallacegibbon/voiceime/internal/config"
 )
 
-func TestASRServerCheckStates(t *testing.T) {
-	// A server serving one model, as voiceime does.
+// The endpoint finding answers the question dictation will ask: which model would a request
+// name, and can the endpoint answer at all. Which of those two questions applies is decided
+// by the settings: a remote endpoint names its model and is not asked anything, because its
+// model list is a catalogue; a local one usually names nothing, and the answer has to come
+// from the endpoint.
+func TestASREndpointCheckStates(t *testing.T) {
 	serving := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/health":
-			_, _ = w.Write([]byte(`{"status":"ok"}`))
-		case "/v1/models":
+		if r.URL.Path == "/v1/models" {
 			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"qwen3-asr-0.6b-q8_0"}]}`))
-		default:
-			http.NotFound(w, r)
+			return
 		}
+		http.NotFound(w, r)
 	}))
 	defer serving.Close()
 
-	// A server that answers but serves more models than voiceime installs.
-	wrongEntries := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/health":
-			_, _ = w.Write([]byte(`{"status":"ok"}`))
-		default:
-			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"one"},{"id":"two"}]}`))
-		}
+	listingMany := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"one"},{"id":"two"}]}`))
 	}))
-	defer wrongEntries.Close()
+	defer listingMany.Close()
 
 	cases := []struct {
 		name       string
@@ -50,39 +45,50 @@ func TestASRServerCheckStates(t *testing.T) {
 			name:       "nothing configured",
 			mutate:     func(c *config.Config) { c.ASRServerURL = "" },
 			wantStatus: "fail",
-			wantDetail: "no server is configured",
+			wantDetail: "no endpoint is configured",
+			wantFix:    "asr-service.sh",
 		},
 		{
-			name:       "serving one model",
+			name:       "a model on this machine, named by nothing",
 			mutate:     func(c *config.Config) { c.ASRServerURL = serving.URL },
 			wantStatus: "ok",
-			wantDetail: "is serving qwen3-asr-0.6b-q8_0",
+			wantDetail: `would name "qwen3-asr-0.6b-q8_0"`,
 		},
 		{
-			name:       "a server with more than one model",
-			mutate:     func(c *config.Config) { c.ASRServerURL = wrongEntries.URL },
+			name:       "a local endpoint listing more than one model",
+			mutate:     func(c *config.Config) { c.ASRServerURL = listingMany.URL },
 			wantStatus: "fail",
-			wantDetail: "serves 2 models",
+			wantDetail: "lists 2 models",
 		},
 		{
-			name:       "unparseable address",
+			name:       "an address the client cannot use",
 			mutate:     func(c *config.Config) { c.ASRServerURL = "127.0.0.1:18080" },
 			wantStatus: "fail",
 			wantDetail: "asr_server_url",
 		},
 		{
-			name:       "nothing listening and no unit installed",
+			name:       "nothing listening, and nothing installed to listen",
 			mutate:     func(c *config.Config) { c.ASRServerURL = deadURL(t) },
 			wantStatus: "fail",
-			wantDetail: "no service on this machine is installed",
+			wantDetail: "connection refused",
+			wantFix:    "asr-service.sh",
 		},
 		{
-			name:       "nothing listening but the unit exists",
+			name:       "nothing listening, but the unit exists",
 			mutate:     func(c *config.Config) { c.ASRServerURL = deadURL(t) },
 			unit:       true,
 			wantStatus: "fail",
-			wantDetail: "is not answering",
-			wantFix:    "voiceime apply",
+			wantDetail: "connection refused",
+			wantFix:    "systemctl --user restart",
+		},
+		{
+			name: "a provider, named by its model",
+			mutate: func(c *config.Config) {
+				c.ASRServerURL = "https://api.does-not-resolve.invalid/v1"
+				c.Model = "gpt-4o-mini-transcribe"
+			},
+			wantStatus: "ok",
+			wantDetail: `would name "gpt-4o-mini-transcribe"`,
 		},
 	}
 
@@ -90,9 +96,9 @@ func TestASRServerCheckStates(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := config.Default()
 			tc.mutate(cfg)
-			check := asrServerCheck(cfg, tc.unit)
-			if check.ID != "asr_server" {
-				t.Fatalf("check id = %q, want asr_server", check.ID)
+			check := asrEndpointCheck(cfg, tc.unit)
+			if check.ID != "asr_endpoint" {
+				t.Fatalf("check id = %q, want asr_endpoint", check.ID)
 			}
 			if check.Status != tc.wantStatus {
 				t.Fatalf("status = %q, want %q (detail: %s)", check.Status, tc.wantStatus, check.Detail)
@@ -110,35 +116,55 @@ func TestASRServerCheckStates(t *testing.T) {
 	}
 }
 
-func TestASRServerCheckCatchesAStaleModel(t *testing.T) {
-	stale := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/health":
-			_, _ = w.Write([]byte(`{"status":"ok"}`))
-		case "/v1/models":
-			_, _ = w.Write([]byte(`{"object":"list","data":[
-				{"id":"other","path":"/models/other.gguf","mode":"offline"}]}`))
-		default:
-			http.NotFound(w, r)
+// An endpoint that requires a credential is only reachable with one. This is the same request
+// the engine makes, so the finding cannot say a setup works when the engine would be refused.
+func TestEndpointCheckSendsTheCredential(t *testing.T) {
+	needsToken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer sk-test" {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":{"message":"no credential"}}`))
+			return
 		}
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"cloud-asr-mini"}]}`))
 	}))
-	defer stale.Close()
+	defer needsToken.Close()
 
 	cfg := config.Default()
-	cfg.ASRServerURL = stale.URL
-	// A checkpoint the file itself says is qwen3_asr: the check has to notice the running
-	// service is serving something else.
-	cfg.Model = ggufFixture(t, "qwen3_asr")
+	cfg.ASRServerURL = needsToken.URL
+	if check := asrEndpointCheck(cfg, false); check.Status == "ok" {
+		t.Errorf("an endpoint that refuses the request was reported ok: %q", check.Detail)
+	}
 
-	check := asrServerCheck(cfg, true)
-	if check.Status != "fail" {
-		t.Fatalf("status = %q, want fail: the service serves other.gguf but the setting names qwen.gguf", check.Status)
+	cfg.APIKey = "sk-test"
+	check := asrEndpointCheck(cfg, false)
+	if check.Status != "ok" {
+		t.Fatalf("status = %q, detail %q: the credential was set and not used", check.Status, check.Detail)
 	}
-	if !strings.Contains(check.Detail, "qwen") || !strings.Contains(check.Detail, "other") {
-		t.Errorf("detail %q does not name both the configured and the served model", check.Detail)
+	if !strings.Contains(check.Detail, "cloud-asr-mini") {
+		t.Errorf("detail %q does not name the model the credential reached", check.Detail)
 	}
-	if !strings.Contains(check.Fix, "voiceime apply") {
-		t.Errorf("fix %q does not say how to apply the changed setting", check.Fix)
+}
+
+// A model named in the settings is used without asking the endpoint. A provider's list is not
+// a promise about what that account accepts, so a named model must win even when the list
+// would disagree - and no request is wasted finding that out.
+func TestNamedModelIsUsedWithoutAskingTheEndpoint(t *testing.T) {
+	asked := 0
+	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked++
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"something-else"}]}`))
+	}))
+	defer endpoint.Close()
+
+	cfg := config.Default()
+	cfg.ASRServerURL = endpoint.URL
+	cfg.Model = "sensevoice-small-q8-audiocpp-v1"
+	check := asrEndpointCheck(cfg, true)
+	if check.Status != "ok" {
+		t.Fatalf("status = %q, detail %q", check.Status, check.Detail)
+	}
+	if asked != 0 {
+		t.Errorf("the endpoint was asked %d times about a model this setup already names", asked)
 	}
 }
 
@@ -155,41 +181,29 @@ func deadURL(t *testing.T) string {
 }
 
 // The unit is the record of a deployment decision: it names the audio.cpp binary and the
-// config file `voiceime apply` resolved. Nothing at start-up looks either of them up again.
-func TestServerUnitNamesTheAudioCPPAndTheConfigItWasGiven(t *testing.T) {
-	unit := serverUnit("/home/u/playground/audio.cpp/build/linux-cpu-release/bin/audiocpp_server",
-		"/home/u/.local/share/voiceime/asr-server.json")
-	want := "ExecStart=/home/u/playground/audio.cpp/build/linux-cpu-release/bin/audiocpp_server " +
-		"--config /home/u/.local/share/voiceime/asr-server.json --log"
-	if !strings.Contains(unit, want) {
-		t.Errorf("unit does not name what deployment resolved:\n%s", unit)
-	}
-	// This tool is not in the service's command line: it resolved the answer once, and
-	// re-deriving it at every start is what made a start at login able to fail.
+// config file that decision resolved. The program does not write it - scripts/asr-service.sh
+// does - but it reads it back, because a unit whose paths have gone missing starts forever
+// and fails forever. So the reader has to survive what the writer writes, including a path
+// with a space in it.
+func TestUnitIsReadBackAsWritten(t *testing.T) {
+	unit := "[Unit]\nDescription=voiceime recognition server\n\n[Service]\n" +
+		"ExecStart=/home/u/playground/audio.cpp/build/linux-cpu-release/bin/audiocpp_server " +
+		"--config /home/u/.local/share/voiceime/asr-server.json --log\n" +
+		"Restart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=default.target\n"
 	fields, err := unitExecStart(writeUnitForTest(t, unit))
 	if err != nil {
 		t.Fatalf("the unit cannot be read back: %v", err)
 	}
 	if firstField(fields) != "/home/u/playground/audio.cpp/build/linux-cpu-release/bin/audiocpp_server" {
-		t.Errorf("ExecStart runs %q, not the audio.cpp deployment chose", firstField(fields))
+		t.Errorf("ExecStart runs %q", firstField(fields))
 	}
-	if !strings.Contains(unit, "Restart=on-failure") {
-		t.Error("unit does not restart a server that dies")
+	if got := unitArgument(fields, "--config"); got != "/home/u/.local/share/voiceime/asr-server.json" {
+		t.Errorf("the config reads back as %q", got)
 	}
-	if !strings.Contains(unit, "WantedBy=default.target") {
-		t.Error("unit is not enabled for the user session")
-	}
-	// Documentation= is only written when the manual is actually beside the binary; this
-	// test runs from a temporary build directory, where it is not.
-	if strings.Contains(unit, "Documentation=") {
-		t.Errorf("unit cites a manual that is not installed:\n%s", unit)
-	}
-	// A path with a space in it survives being read back: `doctor` parses this line to
-	// report what runs, and an unquoted space would be two words.
-	spaced := serverUnit("/home/u/my audio.cpp/bin/audiocpp_server", "/home/u/asr server.json")
-	if !strings.Contains(spaced, "'/home/u/my audio.cpp/bin/audiocpp_server'") {
-		t.Errorf("paths with spaces are not quoted:\n%s", spaced)
-	}
+
+	// A path with a space in it is one quoted word, not two.
+	spaced := "[Service]\nExecStart='/home/u/my audio.cpp/bin/audiocpp_server' " +
+		"--config '/home/u/asr server.json' --log\n"
 	spacedFields, err := unitExecStart(writeUnitForTest(t, spaced))
 	if err != nil {
 		t.Fatalf("a unit with spaces in its paths cannot be read back: %v", err)
@@ -202,35 +216,36 @@ func TestServerUnitNamesTheAudioCPPAndTheConfigItWasGiven(t *testing.T) {
 	}
 }
 
-// writeUnitForTest puts a rendered unit where the check can read it back.
+// writeUnitForTest puts a unit where the check can read it back.
 func writeUnitForTest(t *testing.T, unit string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), serverUnitName)
+	path := filepath.Join(t.TempDir(), unitName)
 	if err := os.WriteFile(path, []byte(unit), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return path
 }
 
-// Every setting is applied by one command, and `config set` says so - for every key.
+// Every setting is accepted in the form the tool prints it in, and `config set` says what
+// has to run for it to take effect - for every key.
 func TestConfigSetNamesHowToApplyEverySetting(t *testing.T) {
 	configPath := freshConfig(t)
 	for _, field := range config.Default().Fields() {
 		value := fmt.Sprint(field.Value)
-		if field.Type == "string" {
-			// A checkpoint is a file that exists; the default is empty because no
-			// default can know where the user put one.
-			if field.Key == "model" {
-				value = ggufFixture(t, "sense_asr")
-			}
+		if field.Key == "asr_server_url" {
+			value = "http://127.0.0.1:18080"
 		}
 		code, stdout, stderr := runForTest(t, "config", "set", field.Key, value, "--json", "--config", configPath)
 		if code != ExitOK {
 			t.Fatalf("config set %s %q: exit %d, stderr %s", field.Key, value, code, stderr)
 		}
-		payload := decodeOne(t, stdout)["data"].(map[string]any)
-		if payload["apply_with"] != "voiceime apply" {
-			t.Errorf("%s: apply_with = %v, want the one command that applies a setting", field.Key, payload["apply_with"])
+		payload := decodeOne(t, stdout)
+		data, _ := payload["data"].(map[string]any)
+		if data["valid"] != true {
+			t.Errorf("config set %s %q reported an invalid configuration: %s", field.Key, value, stdout)
+		}
+		if applied, _ := data["apply_with"].(string); applied == "" {
+			t.Errorf("config set %s does not say what applies the value", field.Key)
 		}
 	}
 }

@@ -4,7 +4,7 @@ Speech input for GNOME on Linux, built on
 [audio.cpp](https://github.com/0xShug0/audio.cpp).
 
 Select **Voiceime** as an input source, hold `` Ctrl+` ``, speak, let go. The recording is
-transcribed by a resident model and the text is inserted at the caret.
+recognised and the text is inserted at the caret.
 
 **No GUI.** The configuration file is the single source of truth and every action is a
 subcommand with machine-readable output, so an agent can install, configure and repair it
@@ -19,8 +19,10 @@ microphone ──► capture (parec, 16 kHz mono) ── hold ── release
                              one WAV, one decode → commit → IBus
 ```
 
-* One model, served by one systemd user unit, started by `voiceime apply`. The entry is
-  published under the model file's own name, so nothing is configured twice.
+* Recognition is an endpoint. What answers that request is a separate decision: a model on
+  this machine (`scripts/asr-service.sh <audiocpp_server> <model.gguf>` — one GGUF, one
+  systemd user unit) or a provider across a network (three settings). The engine knows only
+  the address, and which model id to name.
 * Selecting the engine records nothing. A dictation starts on the key press and ends on
   its release; the whole recording is sent, unchanged.
 * Switching input methods is the desktop's own: Voiceime is in GNOME's input-source list,
@@ -30,16 +32,25 @@ microphone ──► capture (parec, 16 kHz mono) ── hold ── release
 
 ```sh
 make install                     # ~/.local/bin, no root needed
-voiceime config set model ~/models/…/sensevoice-small-q8.gguf
-                                 # a model is one GGUF you name; nothing is fetched or scanned
-voiceime model                   # what that file is: family, size, tasks
-voiceime apply                   # work out which audio.cpp this machine has and run it,
-                                 # serve the model, register the engine and the input
-                                 # source, and record the search path a login needs
+
+# recognition from an endpoint elsewhere — nothing else is installed here:
+voiceime config set asr_server_url https://api.example.com
+voiceime config set model          gpt-4o-mini-transcribe
+voiceime config set api_key        sk-…
+
+# recognition from a model on this machine — two arguments, nothing to configure:
+scripts/asr-service.sh \
+  ~/playground/audio.cpp/build/linux-cpu-release/bin/audiocpp_server \
+  ~/models/SenseVoice-Small-GGUF/sensevoice-small-q8-audiocpp-v1.gguf
+
+voiceime apply                   # register the engine with IBus, add the input
+                                 # source, record the search path a login needs
 voiceime doctor                  # every finding carries a fix
 ```
 
-[docs/DEPLOY.md](docs/DEPLOY.md) is the same procedure with what to assert at each step.
+Nothing fetches a model, nothing searches the disk for one, and `doctor` checks the endpoint
+by asking it the question the engine will. [docs/DEPLOY.md](docs/DEPLOY.md) is the same
+procedure with what to assert at each step.
 
 ## Use
 
@@ -53,7 +64,7 @@ Voiceime carries the US keyboard layout, so while it is selected the keyboard ty
 English and speech is transcribed: it can replace the separate English input source, and
 Super+Space then toggles between Voiceime and Pinyin.
 
-`voiceime transcribe --file speech.wav` runs the same decode over a recording and prints
+`voiceime transcribe --file speech.wav` runs the same request over a recording and prints
 the text with its timing.
 
 ## Where to go
@@ -77,5 +88,6 @@ make check     # gofmt, vet, tests, unreachable code, unused code, doc links
 make install   # ~/.local/bin and ~/.local/docs
 ```
 
-Capture is a subprocess and inference is HTTP, so there is no cgo, no audio headers and no
-toolchain per platform. Go 1.24 or newer, plus an audio.cpp build for the server.
+Capture is a subprocess and recognition is one HTTP request, so there is no cgo, no audio
+headers and no toolchain per platform. Go 1.24 or newer — and audio.cpp only if the model
+runs on this machine.

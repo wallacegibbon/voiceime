@@ -1,18 +1,14 @@
 package cli
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/wallacegibbon/voiceime/internal/config"
 	"github.com/wallacegibbon/voiceime/internal/ibus"
-	"github.com/wallacegibbon/voiceime/internal/server"
 )
 
 // cmdApply is the whole of the machine's side of voiceime: make what is installed match
@@ -27,7 +23,7 @@ import (
 func cmdApply() *Command {
 	return &Command{
 		Name:    "apply",
-		Summary: "Make this machine match the configuration: service, component, desktop, engine",
+		Summary: "Make the desktop use the engine: component file, input source, engine processes",
 		Usage:   "voiceime apply",
 		Flags:   func(set *flag.FlagSet) {},
 		Run: func(ctx *Context, args []string) error {
@@ -36,14 +32,15 @@ func cmdApply() *Command {
 	}
 }
 
-// cmdRemove is its opposite: take the parts this tool installed away again. One command
-// because they are one installation: a service unit, a component file, the entry the
-// desktop's switcher reads, and the environment entry that makes a user-level install
-// survive a login.
+// cmdRemove is its opposite: take the parts this project installed away again. One command
+// because they are one installation: the component file, the entry the desktop's switcher
+// reads, the environment entry that makes a user-level install survive a login - and the
+// model unit, which scripts/asr-service.sh writes but which is this project's, so leaving it
+// running after `remove` would mean an uninstall that kept a model loaded.
 func cmdRemove() *Command {
 	return &Command{
 		Name:    "remove",
-		Summary: "Remove the service, the engine and the desktop entry this tool installed",
+		Summary: "Remove the engine, its desktop entry, and any model service this project installed",
 		Usage:   "voiceime remove",
 		Flags:   func(set *flag.FlagSet) {},
 		Run: func(ctx *Context, args []string) error {
@@ -52,18 +49,12 @@ func cmdRemove() *Command {
 	}
 }
 
-// applyReport is one line per thing that reads the configuration.
+// applyReport is one line per thing this command installs: the file that makes the engine
+// reachable, the desktop's list, the running engine processes. The recognition model is not
+// one of them. A model on this machine is started by scripts/asr-service.sh, and an endpoint
+// elsewhere needs nothing installed here at all.
 type applyReport struct {
-	Service string   `json:"service"`
-	Served  []string `json:"served,omitempty"`
-	// AudioCPP, Backend and Threads are what deployment settled for this machine. They are
-	// reported because they are not in the settings any more, and a caller is entitled to
-	// know which binary answers its requests.
-	AudioCPP    string   `json:"audio_cpp,omitempty"`
-	Backend     string   `json:"backend,omitempty"`
-	Threads     int      `json:"threads,omitempty"`
-	OtherBuilds []string `json:"other_audio_cpp,omitempty"`
-	Component   string   `json:"component"`
+	Component string `json:"component"`
 	// Desktop is the input-source list the desktop's own switcher reads. The entry the
 	// engine needs there belongs to its name, so it is converged with everything else.
 	Desktop string `json:"desktop"`
@@ -79,10 +70,8 @@ func runApply(ctx *Context) error {
 		return PreconditionError(issue.Fix, "cannot apply the configuration: %s: %s", issue.Key, issue.Message)
 	}
 
-	report, err := applyService(ctx)
-	if err != nil {
-		return err
-	}
+	var report applyReport
+	var err error
 	if report.Component, err = applyComponent(ctx); err != nil {
 		return FailureError("%v", err)
 	}
@@ -92,177 +81,15 @@ func runApply(ctx *Context) error {
 	report.Engine = dropEngines()
 
 	if !ctx.JSON {
-		ctx.Print("service:   %v", report.Service)
-		if len(report.Served) > 0 {
-			ctx.Print("serving:   %s (%s, %d threads)", strings.Join(report.Served, " and "),
-				report.Backend, report.Threads)
-		}
-		if report.AudioCPP != "" {
-			ctx.Print("audio.cpp: %s", report.AudioCPP)
-		}
-		for _, other := range report.OtherBuilds {
-			ctx.Print("           another build is here: %s", other)
-		}
 		ctx.Print("component: %v", report.Component)
 		ctx.Print("desktop:   %v", report.Desktop)
 		ctx.Print("engine:    %v", report.Engine)
 		ctx.Print("")
-		ctx.Print("`voiceime doctor` re-checks all of it, and `voiceime transcribe` proves the path.")
+		ctx.Print("a model on this machine is a separate thing: scripts/asr-service.sh")
+		ctx.Print("`voiceime doctor` re-checks all of it.")
 	}
 	return ctx.Emit("apply", report)
 }
-
-// applyService fills the part of the report that describes the recognition service, and
-// returns it whether or not it succeeded: what was settled before a failure is worth knowing.
-//
-// Everything machine-shaped is settled here, once, and written where it is used: which
-// audio.cpp to run goes into the unit's ExecStart, and the backend and worker count go into
-// the audio.cpp config that unit names. Nothing at start-up or run time looks any of it up
-// again, so a service started at login cannot fail for a reason only another install could
-// fix. Rewriting the unit when its contents differ is what heals a moved checkout or a new
-// binary, which is what `doctor`'s stale findings used to be about.
-//
-// The wait at the end is what makes "applied" a fact rather than a request: a service that is
-// started but still loading, or still serving the previous model, has not applied anything.
-func applyService(ctx *Context) (applyReport, error) {
-	var report applyReport
-	cfg := ctx.Config
-	baseURL := strings.TrimSpace(cfg.ASRServerURL)
-	host, port := "127.0.0.1", server.DefaultPort
-	if baseURL != "" {
-		var err error
-		if host, port, err = server.ParseURL(baseURL); err != nil {
-			return report, FailureError("%v", err)
-		}
-		if !server.IsLocalHost(host) {
-			// The settings name a server somewhere else: running one here would contradict
-			// them, not complete them.
-			report.Service = fmt.Sprintf("%s is served elsewhere, so nothing runs here", baseURL)
-			return report, nil
-		}
-	}
-
-	asrBinary, _, err := config.ASRServer()
-	if err != nil {
-		return report, PreconditionError(
-			"build audio.cpp (cmake -B build && cmake --build build), then `voiceime apply`", "%v", err)
-	}
-	report.AudioCPP = asrBinary
-	report.Backend, report.Threads, err = resolveEngine(asrBinary)
-	if err != nil {
-		return report, err
-	}
-	// A machine holding more than one build is reported rather than decided silently: the two
-	// can be different binaries with the same banner (docs/measurements.md).
-	if builds := config.DiscoverASRServers(); len(builds) > 1 {
-		report.OtherBuilds = builds[1:]
-	}
-
-	spec, err := buildServerSpec(cfg, port, report.Backend, report.Threads)
-	if err != nil {
-		return report, err
-	}
-
-	// The address and the checkpoint go into the settings first, because that is where the
-	// engine reads them: the file has to describe the service that is running, not the one
-	// intended. Writing them before the generated config and the unit is what keeps a failed
-	// apply from leaving a unit that names a settings file which never named it.
-	for _, change := range []struct{ key, value string }{
-		{"asr_server_url", spec.BaseURL()},
-		{"model", spec.Model},
-	} {
-		if err := cfg.Set(change.key, change.value); err != nil {
-			return report, FailureError("config set %s: %v", change.key, err)
-		}
-	}
-	if err := config.Save(cfg, ctx.ConfigPath); err != nil {
-		return report, FailureError("write %s: %v", ctx.ConfigPath, err)
-	}
-
-	generated, err := writeServerConfig(spec)
-	if err != nil {
-		return report, FailureError("%v", err)
-	}
-	report.Served = []string{filepath.Base(spec.Model)}
-
-	unitPath := serverUnitPath()
-	unit := serverUnit(asrBinary, generated)
-	start := fmt.Sprintf("%s --config %s --log", asrBinary, generated)
-	if _, lookupErr := exec.LookPath("systemctl"); lookupErr != nil {
-		report.Service = "no systemd user session: start it with `" + start + "`"
-		return report, nil
-	}
-	if unitPath == "" {
-		report.Service = "no place to write a service unit (XDG_CONFIG_HOME is unset): start it with `" +
-			start + "`"
-		return report, nil
-	}
-
-	wroteUnit := false
-	if current, readErr := os.ReadFile(unitPath); readErr != nil || string(current) != unit {
-		wroteUnit = true
-		if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
-			return report, FailureError("%v", err)
-		}
-		if err := os.WriteFile(unitPath, []byte(unit), 0o644); err != nil {
-			return report, FailureError("%v", err)
-		}
-		if err := runCommand("systemctl --user daemon-reload"); err != nil {
-			return report, FailureError("%v", err)
-		}
-		// Enabled so a login starts the model resident, whether or not anyone dictates.
-		if err := runCommand("systemctl --user enable " + serverUnitName); err != nil {
-			return report, FailureError("%v", err)
-		}
-	}
-	if err := runCommand("systemctl --user restart " + serverUnitName); err != nil {
-		return report, FailureError("systemctl --user restart %s: %v", serverUnitName, err)
-	}
-
-	probeCtx, cancel := context.WithTimeout(context.Background(), modelLoadTimeout)
-	defer cancel()
-	if err := waitForModel(probeCtx, spec.BaseURL(), spec); err != nil {
-		return report, FailureError("the service was started but is not serving %s: %v (see `systemctl --user status %s`)",
-			filepath.Base(spec.Model), err, serverUnitName)
-	}
-	if wroteUnit {
-		report.Service = fmt.Sprintf("installed and started (%s)", serverUnitName)
-		return report, nil
-	}
-	report.Service = "restarted"
-	return report, nil
-}
-
-// resolveEngine asks the binary what it supports and the machine how much room it has. A
-// backend is not a preference: an audio.cpp built without cuda cannot do cuda, and the build's
-// own banner is the only authority on that. cpu is preferred when a build offers it because
-// cpu is the only backend measured for this project (docs/measurements.md); the others stay
-// unavailable rather than becoming an unmeasured default.
-func resolveEngine(binary string) (backend string, threads int, err error) {
-	supported := supportedBackends(binary)
-	if len(supported) == 0 {
-		return "", 0, PreconditionError("voiceime apply with a working audio.cpp build",
-			"%s did not report any backend it supports", binary)
-	}
-	backend = supported[0]
-	for _, candidate := range supported {
-		if candidate == "cpu" {
-			backend = "cpu"
-			break
-		}
-	}
-	// One worker per physical core: the streaming decoder and the repair pass share them, so
-	// more contend than help.
-	if threads = physicalCores(); threads <= 0 {
-		threads = 4
-	}
-	return backend, threads, nil
-}
-
-// modelLoadTimeout bounds waiting for a model to become resident. Measured: the small
-// checkpoint loads in seconds; the bound is there so a failed start reports a finding
-// instead of hanging an install.
-const modelLoadTimeout = 120 * time.Second
 
 // applyComponent writes the two files that make the engine reachable: the component file
 // that names this binary, and the environment entry that makes the daemon look in the
@@ -276,11 +103,11 @@ func applyComponent(ctx *Context) (string, error) {
 		return ibus.SystemComponentPath() + " (system-wide, left alone)", nil
 	}
 	if config.FindExecutable("ibus") == "" {
-		// The other half of `apply` has already run, and it was worth running: a machine
-		// with no desktop can still serve a model. What cannot be settled here is the
-		// engine, so the finding says which half is missing and what installs it.
+		// The settings may be perfectly good and the machine have no desktop at all: a
+		// headless box can hold a model for someone else's engine. This command's whole job is
+		// the engine, so it says so rather than reporting success with nothing installed.
 		return "", PreconditionError("sudo apt install ibus",
-			"the recognition service is running, but IBus is not installed, so there is no engine to register")
+			"IBus is not installed, so there is no engine to register")
 	}
 
 	// The file is read once, both as bytes (to compare with what this version would write)
@@ -393,10 +220,13 @@ func withCurrentEngine(installed ibus.Component) ibus.Component {
 func runRemove(ctx *Context) error {
 	removed := []string{}
 
+	// A model service on this machine is started by scripts/asr-service.sh, but it is still
+	// this project's unit, so stopping it here is what makes `remove` mean "nothing of
+	// voiceime is left running".
 	if _, err := exec.LookPath("systemctl"); err == nil {
-		if fileExists(serverUnitPath()) {
-			if err := runCommand("systemctl --user disable --now " + serverUnitName); err != nil {
-				ctx.Print("could not stop %s: %v", serverUnitName, err)
+		if fileExists(unitPath()) {
+			if err := runCommand("systemctl --user disable --now " + unitName); err != nil {
+				ctx.Print("could not stop %s: %v", unitName, err)
 			}
 		}
 	}
@@ -408,7 +238,7 @@ func runRemove(ctx *Context) error {
 	// The files are removed through the package that owns them, so "which file is
 	// voiceime's" is written down once. The unit and the generated audio.cpp config are
 	// this command's own, so they are removed here.
-	for _, path := range []string{serverUnitPath(), serverConfigFile()} {
+	for _, path := range []string{unitPath(), generatedConfigPath()} {
 		if path == "" {
 			continue
 		}
@@ -437,12 +267,11 @@ func runRemove(ctx *Context) error {
 	if removedSource {
 		removed = append(removed, "the input source "+fmt.Sprint(inputSource["source"]))
 	}
-	if ctx.Config.ASRServerURL != "" {
-		if err := ctx.Config.Set("asr_server_url", ""); err == nil {
-			_ = config.Save(ctx.Config, ctx.ConfigPath)
-			removed = append(removed, "asr_server_url (from "+ctx.ConfigPath+")")
-		}
-	}
+	// The settings file is left alone. What was configured may be an endpoint the user pays
+	// for, and "uninstall the program" is not permission to delete what they wrote: `config
+	// show` prints it, and removing the installation leaves a working file they can keep or
+	// edit. After this command the endpoint finding says what it always says: whether anything
+	// answers.
 
 	if !ctx.JSON {
 		if len(removed) == 0 {

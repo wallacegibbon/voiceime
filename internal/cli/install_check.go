@@ -220,7 +220,7 @@ var residentKinds = []residentKind{
 	// other check passes. The generated config's name identifies it: audio.cpp is an
 	// executable this tool did not build, and the file it is pointed at is the one
 	// `voiceime apply` wrote.
-	{"the recognition service", serverConfigName, config.ASRServerName, servedBinaryPath},
+	{"the recognition service", generatedConfigName, modelServiceBinary, servedBinaryPath},
 }
 
 func componentBinaryPath() (string, bool) {
@@ -229,7 +229,7 @@ func componentBinaryPath() (string, bool) {
 }
 
 func servedBinaryPath() (string, bool) {
-	path := serverUnitPath()
+	path := unitPath()
 	if path == "" {
 		return "", false
 	}
@@ -385,71 +385,79 @@ func isExecutable(path string) bool {
 	return err == nil && !info.IsDir() && info.Mode()&0o111 != 0
 }
 
-// serverUnitCheck reads back the record `voiceime apply` wrote: the unit names one audio.cpp
+// unitCheck reads back the record scripts/asr-service.sh wrote: a unit names one audio.cpp
 // and one config file, and both have to be there for the service to start. The component file
 // is not compared with it - the unit runs audio.cpp and the component runs this engine, so
 // they are meant to name different binaries.
-func serverUnitCheck(report func(Check)) {
-	path := serverUnitPath()
+//
+// What it does not decide is whether a model on this machine is wanted: the settings' endpoint
+// decides that, and asrEndpointCheck is the finding that asks it. So a missing unit is a
+// failure only when the endpoint is this machine - and a unit that exists while the endpoint
+// is elsewhere is a warning, because it is a model loaded into memory that nothing posts to.
+func unitCheck(report func(Check), cfg *config.Config) {
+	const id = "server_unit"
+	fix := "scripts/asr-service.sh /path/to/audiocpp_server /path/to/model.gguf"
+	path := unitPath()
+	local := endpointIsLocal(strings.TrimSpace(cfg.ASRServerURL))
 	if path == "" || !fileExists(path) {
+		if !local {
+			// Nothing to say: this setup has no model on this machine, by design.
+			return
+		}
 		report(Check{
-			ID:     "server_unit",
+			ID:     id,
 			Status: "fail",
-			Detail: "no recognition server unit; dictation decodes through one, so nothing works without it",
-			Fix:    "voiceime apply",
+			Detail: fmt.Sprintf("nothing here is installed to start a model, and %s is this machine", cfg.ASRServerURL),
+			Fix:    fix,
 		})
 		return
 	}
 	fields, err := unitExecStart(path)
 	if err != nil {
-		report(Check{ID: "server_unit", Status: "fail", Detail: err.Error(), Fix: "voiceime apply"})
+		report(Check{ID: id, Status: "fail", Detail: err.Error(), Fix: fix})
 		return
 	}
 	binary := firstField(fields)
 	if !isExecutable(binary) {
 		report(Check{
-			ID:     "server_unit",
+			ID:     id,
 			Status: "fail",
 			Detail: fmt.Sprintf("%s runs %s, which does not exist; systemd will restart it forever with status=203/EXEC", path, binary),
-			Fix:    "voiceime apply",
+			Fix:    fix,
 		})
 		return
 	}
-	// The audio.cpp config is not an input anyone edits: apply renders it and the unit names
-	// it. A missing one means the service was started by an install that has since been
+	// The audio.cpp config is not an input anyone edits: the script renders it and the unit
+	// names it. A missing one means the service was started by an install that has since been
 	// removed - `voiceime remove` deletes that file - and systemd's restart loop is silent.
 	configFile := unitArgument(fields, "--config")
 	if configFile == "" {
 		report(Check{
-			ID:     "server_unit",
+			ID:     id,
 			Status: "fail",
 			Detail: fmt.Sprintf("%s runs %s without naming the audio.cpp config to serve", path, binary),
-			Fix:    "voiceime apply",
+			Fix:    fix,
 		})
 		return
 	}
 	if !fileExists(configFile) {
 		report(Check{
-			ID:     "server_unit",
+			ID:     id,
 			Status: "fail",
 			Detail: fmt.Sprintf("%s points %s at %s, which does not exist: audio.cpp would refuse to start", path, binary, configFile),
-			Fix:    "voiceime apply",
+			Fix:    fix,
 		})
 		return
 	}
-	// The unit is a record of a decision, and a record can go stale: a newer audio.cpp build
-	// appears, the checkout is copied somewhere else and left in place, and the service keeps
-	// running the build this machine no longer considers its own. Nothing else notices,
-	// because the old binary works.
-	if current, _, resolveErr := config.ASRServer(); resolveErr == nil &&
-		filepath.Clean(current) != filepath.Clean(binary) {
+	if !local {
 		report(Check{
-			ID:     "server_unit",
+			ID:     id,
 			Status: "warn",
-			Detail: fmt.Sprintf("the service runs %s, while the audio.cpp on this machine is %s", binary, current),
-			Fix:    "voiceime apply",
+			Detail: fmt.Sprintf("%s starts a model here, and the settings post to %s instead: nothing sends this machine's audio to it",
+				binary, cfg.ASRServerURL),
+			Fix: "systemctl --user disable --now " + unitName,
 		})
 		return
 	}
-	report(Check{ID: "server_unit", Status: "ok", Detail: fmt.Sprintf("%s serving from %s", binary, configFile)})
+	report(Check{ID: id, Status: "ok", Detail: fmt.Sprintf("%s serving from %s", binary, configFile)})
 }

@@ -438,6 +438,8 @@ func (h *PushToTalk) transcriber() asr.Transcriber {
 	}
 	return asr.ServerTranscriber{
 		BaseURL:  h.Config.ASRServerURL,
+		Model:    h.Config.Model,
+		APIKey:   h.Config.APIKey,
 		Language: h.Config.Language,
 		Timeout:  time.Duration(h.Config.ASRServerTimeoutMS) * time.Millisecond,
 	}

@@ -112,3 +112,24 @@ func TestTranscribeRefusesSettingsThatCannotWork(t *testing.T) {
 		t.Error("the endpoint was asked, although the settings cannot work")
 	}
 }
+
+// A recording length is the one thing this command cannot be asked to guess at. `--seconds 0`
+// used to mean "record until max_utterance_seconds", which answers a question nobody asked:
+// the limit that belongs to a key nobody released is not a request for a minute of silence,
+// and the person at the terminal asked for a length.
+func TestTranscribeRefusesARecordingLengthThatIsNotPositive(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(configPath,
+		[]byte("asr_server_url = \"http://127.0.0.1:1/v1/audio/transcriptions\"\nmodel = \"a-model\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"0", "-3"} {
+		code, _, stderr := runForTest(t, "--config", configPath, "transcribe", "--seconds", value)
+		if code != ExitUsage {
+			t.Errorf("--seconds %s exited %d, want %d (a usage error): %s", value, code, ExitUsage, stderr)
+		}
+		if !strings.Contains(stderr, "--seconds") {
+			t.Errorf("--seconds %s: the message does not name the flag: %s", value, stderr)
+		}
+	}
+}

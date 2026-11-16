@@ -52,6 +52,12 @@ func runTranscribe(ctx *Context, file string, seconds float64) error {
 			return UsageError("%s is a directory", file)
 		}
 	}
+	// How long to record is the one thing this command cannot be asked to guess. A value
+	// that asks for no recording is a mistake in the command line, and quietly recording
+	// until the keyboard's own limit instead would answer a question nobody asked.
+	if file == "" && seconds <= 0 {
+		return UsageError("--seconds must say how long to record, in seconds; it is only used when --file is not")
+	}
 
 	// A file is read whole, not streamed: the capture path drops the oldest block when the
 	// consumer falls behind, which for a fast replay silently loses seconds of audio.
@@ -70,10 +76,7 @@ func runTranscribe(ctx *Context, file string, seconds float64) error {
 		if err := capture.Start(); err != nil {
 			return FailureError("%v", err)
 		}
-		limit := int64(cfg.MaxUtteranceSeconds * audio.SampleRate)
-		if seconds > 0 {
-			limit = int64(seconds * audio.SampleRate)
-		}
+		limit := int64(seconds * audio.SampleRate)
 		var dropped int64
 		for chunk := range capture.Chunks() {
 			pcm = append(pcm, chunk.Data...)

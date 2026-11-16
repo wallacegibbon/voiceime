@@ -180,6 +180,25 @@ func TestValidateRejectsUnknownTextCleanupValues(t *testing.T) {
 	}
 }
 
+// A deadline that is not positive is not a short one: the request is abandoned before it is
+// sent, and every dictation ends with nothing typed. It is reported where it was written
+// rather than replaced, because this is the only place a number for a decode is written: a
+// default kept in the package that makes the request would be a second ceiling, and the
+// documents name this one.
+func TestValidateRejectsADeadlineThatIsNotPositive(t *testing.T) {
+	for _, value := range []int{0, -1} {
+		cfg := usableConfig(t)
+		cfg.ASRServerTimeoutMS = value
+		issues := Errors(cfg.Validate())
+		if len(issues) != 1 || issues[0].Key != "asr_server_timeout_ms" {
+			t.Fatalf("asr_server_timeout_ms = %d gives %+v, want one asr_server_timeout_ms error", value, issues)
+		}
+		if !strings.Contains(issues[0].Fix, `asr_server_timeout_ms = 30000`) {
+			t.Errorf("the fix does not say which line to write: %q", issues[0].Fix)
+		}
+	}
+}
+
 // The settings file can hold a bearer token, so it is not readable by everyone who can read
 // this home directory. An older file that was world-readable is tightened by the next write:
 // that is the moment its contents are known to have changed, and the tool never writes the

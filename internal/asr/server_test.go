@@ -118,7 +118,7 @@ func TestServerTranscriberSkipsEmptyAudio(t *testing.T) {
 	}))
 	defer server.Close()
 
-	transcriber := ServerTranscriber{BaseURL: server.URL, Model: "refine"}
+	transcriber := ServerTranscriber{BaseURL: server.URL, Model: "refine", Timeout: 5 * time.Second}
 	if _, err := transcriber.Transcribe(context.Background(), nil); err != nil {
 		t.Fatalf("Transcribe(nil): %v", err)
 	}
@@ -141,7 +141,7 @@ func TestTheAddressIsUsedExactlyAsWritten(t *testing.T) {
 	defer server.Close()
 
 	address := server.URL + "/api/paas/v4/audio/transcriptions"
-	transcriber := ServerTranscriber{BaseURL: address, Model: "glm-asr-2512"}
+	transcriber := ServerTranscriber{BaseURL: address, Model: "glm-asr-2512", Timeout: 5 * time.Second}
 	text, err := transcriber.Transcribe(context.Background(), audio.SamplesToBytes([]int16{1, 2}))
 	if err != nil {
 		t.Fatalf("%v", err)
@@ -171,7 +171,7 @@ func TestNoModelNamedSaysSoAndGuessesNothing(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := (ServerTranscriber{BaseURL: server.URL}).Transcribe(context.Background(), audio.SamplesToBytes([]int16{1, 2}))
+	_, err := (ServerTranscriber{BaseURL: server.URL, Timeout: 5 * time.Second}).Transcribe(context.Background(), audio.SamplesToBytes([]int16{1, 2}))
 	if err == nil {
 		t.Fatal("a request with no model named reported no error")
 	}
@@ -279,7 +279,7 @@ func TestTranscribeReportsARefusedCredentialAsACredentialProblem(t *testing.T) {
 	}))
 	defer server.Close()
 
-	transcriber := ServerTranscriber{BaseURL: server.URL, Model: "gpt-4o-mini-transcribe", APIKey: "sk-wrong"}
+	transcriber := ServerTranscriber{BaseURL: server.URL, Model: "gpt-4o-mini-transcribe", APIKey: "sk-wrong", Timeout: 5 * time.Second}
 	_, err := transcriber.Transcribe(context.Background(), audio.SamplesToBytes([]int16{1, 2}))
 	var refused *CredentialError
 	if !errors.As(err, &refused) {

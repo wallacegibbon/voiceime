@@ -222,6 +222,15 @@ func (c *Config) Validate() []Issue {
 		add("error", "max_utterance_seconds", "must be positive",
 			c.writeIn("max_utterance_seconds", "60"))
 	}
+	// The two bounds belong together in the file and here: one recording is what
+	// max_utterance_seconds allows, and this is the time it is given to come back as text.
+	// A value that is not positive is not a short deadline, it is no deadline - every
+	// request would be abandoned before it was sent - and it is caught here rather than
+	// quietly replaced by a number this program keeps to itself.
+	if c.ASRServerTimeoutMS <= 0 {
+		add("error", "asr_server_timeout_ms", "must be a positive number of milliseconds",
+			c.writeIn("asr_server_timeout_ms", "30000"))
+	}
 	if raw := strings.TrimSpace(c.ASRServerURL); raw != "" {
 		if err := checkServerURL(raw); err != nil {
 			add("error", "asr_server_url", err.Error(),

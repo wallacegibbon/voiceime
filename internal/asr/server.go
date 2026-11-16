@@ -36,8 +36,11 @@ type ServerTranscriber struct {
 	Model    string
 	APIKey   string
 	Language string
-	Timeout  time.Duration
-	Client   *http.Client
+	// Timeout is the deadline one request gets, and the caller names it: the only
+	// ceiling on a decode in this program is the setting the person at the keyboard
+	// wrote, and a second number kept here would be a second ceiling.
+	Timeout time.Duration
+	Client  *http.Client
 }
 
 var _ Transcriber = ServerTranscriber{}
@@ -80,11 +83,7 @@ func (s ServerTranscriber) Transcribe(ctx context.Context, pcm []byte) (string, 
 		return "", err
 	}
 
-	timeout := s.Timeout
-	if timeout <= 0 {
-		timeout = 60 * time.Second
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeout(ctx, s.Timeout)
 	defer cancel()
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, address, &body)

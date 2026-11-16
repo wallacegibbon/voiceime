@@ -7,40 +7,58 @@
 # answered by looking at this machine once: which audio.cpp build is here, what that build
 # supports, how many cores the CPU has, which checkpoint the settings name.
 #
-# Usage: scripts/asr-service.sh /path/to/audiocpp_server
+# This is the optional half of a voiceime setup, and it is separable on purpose: the engine
+# needs one thing, an endpoint that speaks POST /v1/audio/transcriptions. A local model is
+# how this project satisfies that without a network, not a part of what the engine is.
 #
-# It is idempotent: run it after changing the model in config.toml, or after rebuilding
-# audio.cpp, and it rewrites only what differs. The last thing it prints is the proof, which
-# is also what anyone can check afterwards without a tool of ours: what the service answers
-# on /v1/models.
+# Usage: scripts/asr-service.sh /path/to/audiocpp_server /path/to/model.gguf
+#
+# The model is named here rather than in the settings because it is a deployment fact: which
+# checkpoint is on this disk. What the settings own is the endpoint the engine posts to.
+#
+# It is idempotent: run it again after changing the checkpoint or rebuilding audio.cpp, and
+# it rewrites only what differs. The last thing it prints is the proof, which is also what
+# anyone can check afterwards without a tool of ours: what the service answers on /v1/models.
 
 set -eu
 
-if [ $# -ne 1 ] || [ ! -x "$1" ]; then
-	echo "usage: scripts/asr-service.sh /path/to/audiocpp_server" >&2
+if [ $# -ne 2 ] || [ ! -x "$1" ]; then
+	echo "usage: scripts/asr-service.sh /path/to/audiocpp_server /path/to/model.gguf" >&2
 	exit 2
 fi
 server=$1
+model=$2
 gguf=${server%audiocpp_server}audiocpp_gguf
 settings=${XDG_CONFIG_HOME:-$HOME/.config}/voiceime/config.toml
 generated=${XDG_DATA_HOME:-$HOME/.local/share}/voiceime/asr-server.json
 unit_dir=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
 unit=$unit_dir/voiceime-asr-server.service
 
-# What the settings say. One TOML file, one line per key, written by hand: reading two keys
-# out of it is not parsing a format we do not control.
+# What the settings say: the one thing they own about recognition is the endpoint. Reading
+# two keys out of a file we write ourselves is not parsing a format we do not control.
 read_setting() {
 	sed -n -e "s/^$1[[:space:]]*=[[:space:]]*\"\(.*\)\"[[:space:]]*\$/\1/p" "$settings" | head -n 1
 }
-model=$(read_setting model)
 base_url=$(read_setting asr_server_url)
-[ -n "$model" ] || { echo "no model in $settings: set model = \"/path/to/model.gguf\"" >&2; exit 3; }
-[ -f "$model" ] || { echo "$model is not a file" >&2; exit 3; }
 [ -n "$base_url" ] || base_url=http://127.0.0.1:18080
 port=${base_url##*:}
 host=${base_url%:*}
 host=${host#*//}
 [ "$host" = "$base_url" ] && host=127.0.0.1
+
+# The settings can name a server that is not this machine - a provider's endpoint, another
+# host. Then nothing belongs here: starting a model on this box would contradict the
+# settings, not complete them. This is the whole of the "the local model is optional" case.
+case "$host" in
+127.0.0.1 | localhost | ::1 | \[::1\] | 127.*) ;;
+*)
+	echo "$base_url is not this machine: no model is started here."
+	echo "the engine needs only that this endpoint answer POST /v1/audio/transcriptions."
+	exit 0
+	;;
+esac
+
+[ -f "$model" ] || { echo "$model is not a file" >&2; exit 3; }
 
 # What the model is. audio.cpp wrote the family into the checkpoint, and its own tool reports
 # it; the server's config requires id, family and path and defaults everything else.

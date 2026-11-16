@@ -84,8 +84,14 @@ func stopEngines() (stopped int, forced bool) {
 			_ = process.Signal(syscall.SIGTERM)
 		}
 	}
-	// Give the engine the time its shutdown path needs to commit the sentence in
-	// progress; the drain budget is 5s (D25), so six is enough.
+	// Wait for them to be gone, because the next thing needs the bus name they hold:
+	// an engine that registers while another still owns the name fails with "the name
+	// org.freedesktop.IBus.voiceime is already taken". Nothing here is being given
+	// time to finish a sentence - a signalled engine drops the recording in progress
+	// (Run returns, Disable discards it), and measured on this machine a live engine
+	// is gone 7ms after SIGTERM. Six seconds is not that path's budget; it is the
+	// point past which waiting has stopped being useful and the process is only going
+	// to be stopped by force.
 	deadline := time.Now().Add(6 * time.Second)
 	for time.Now().Before(deadline) {
 		if len(processesRunning("ibus-engine", "voiceime")) == 0 {

@@ -169,6 +169,25 @@ dropped - starts the next one, and writes the log line that says so.
 Not measured: which client swallowed the release. The engine has no way to know, and its log
 line reports only what it saw.
 
+Measured on 2026-11-20 was the other half of that question: a client can send the release as
+part of the repeat. A Qt window on Wayland generates its own auto-repeat and reports each
+tick of it as a release immediately followed by a press of the key that is still down.
+Holding the trigger there ends the hold 33 times a second, every recording is over before
+the capture has produced its first buffer, and the engine log fills with
+
+```
+session: no audio was recorded; nothing was sent
+```
+
+- 332 such lines in one session, with nothing reaching the model - while the same key held
+in a GTK window on the same desktop produced one recording and a normal commit.
+
+The engine does not defend against this. Accepting a release only when no press followed it
+within one repeat tick would follow that client, and every other client would pay the tick:
+every dictation would wait around 150ms before the model was asked, and a press and a
+second press within that tick would stop being two holds. Measured against the desktops this
+project aims at, that is the worse trade, so the difference stays here as a measurement.
+
 ## The desktop's input-source list
 
 After an install that used `ibus engine` only:

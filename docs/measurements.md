@@ -135,6 +135,81 @@ ProcessKeyEvent(65507,29,0)            ← Ctrl pressed
 `1073741824` is `1 << 30` (`IBUS_RELEASE_MASK`). Not measured: a human holding the trigger —
 the presses above are a client's typing, not a test of the chord.
 
+## The first recording after the microphone has been idle starts late
+
+Asked whether a dictation loses its beginning at the recorder or at the model. Measured
+2026-11-21 on this machine (PipeWire 1.0.5-1bb6, WirePlumber 0.4.17, `Built-in Audio`),
+without involving voiceime at all:
+
+```sh
+s=$(date +%s%N)
+timeout -s INT 2 pw-record --format s16 --rate 16000 --channels=1 - 2>/dev/null \
+    | dd bs=1 count=1 status=none of=/dev/null     # blocks until the first byte
+echo $(( ($(date +%s%N) - s) / 1000000 ))
+```
+
+| The node's idle time before the hold | First sample | Bytes in a fixed 2 s window |
+|---|---|---|
+| ≥22 s (nothing else was recording) | **1030–1070 ms** | 38854 B = 1.21 s of audio |
+| 60 s | **1878 ms** | — |
+| held awake by another stream | **361–379 ms** | 60016 B = 1.88 s |
+
+The two columns are the same measurement: a 2 s window holds 64000 B, so the cold run's
+recording is **0.68 s shorter at the front** — speech that was spoken and never captured.
+This is the whole of "the first one loses characters and the second is fine": the retry
+comes a second or two later, which is inside the idle timer, so the second hold is warm.
+
+**The model is not involved.** The session log agrees with the byte count: `decoded 5.12s of
+audio` when the key was held that long. The audio sent was complete for what it had received.
+
+**`--raw` is a red herring here**, and was checked rather than assumed: the `pw-record` on
+this machine has no `--raw` in its usage block at all, and without it stdout is still raw
+samples — the first 32 bytes of a 2 s capture are `1500 d6ff 3300 a4ff c0fe feff 5f00 …`,
+samples near zero, no header and no leading bytes to swallow.
+
+The idle timer is WirePlumber's, and `session.suspend-timeout-seconds = 0` on the capture
+node turns it off (`/usr/share/wireplumber/scripts/suspend-node.lua`: it reads the property,
+defaults to 5 s, and `if timeout == 0 then return end`). Written in
+`~/.config/wireplumber/main.lua.d/51-voiceime-no-suspend-capture.lua`:
+
+```lua
+table.insert(alsa_monitor.rules, {
+  matches = { { { "node.name", "matches", "alsa_input.platform-snd-card_1.stereo-fallback" } } },
+  apply_properties = { ["session.suspend-timeout-seconds"] = 0 },
+})
+```
+
+| After that file (`systemctl --user restart wireplumber`) | First sample | Bytes in 2 s |
+|---|---|---|
+| idle 22 s ×3, idle 60 s | **365–376 ms** | 61382 B = 1.92 s |
+
+Three ways to get that file wrong, all of them found the hard way here:
+
+- the constraint must be three elements, `{ key, verb, value }`; two gives `Lua runtime
+  error … Constraint: invalid verb 'alsa_input…'`, and the ALSA card is built by that very
+  script — the sound card disappears from `wpctl status`, leaving `Dummy Output`.
+- `alsa_monitor.rules = { … }` **replaces** `50-alsa-config.lua`'s rule that sets
+  `api.alsa.use-acp`, so the profile falls back to bare pcm and node names change
+  (`[alsa:pcm]`, volume reset to 1.00). `table.insert` appends.
+- the key is the lowercase `node.name`: `monitors/alsa.lua` matches the properties it is
+  about to hand to `Node("adapter", properties)`, whose keys are lowercase. `Node.name`
+  loads without an error and matches nothing — `pw-dump` shows no such property.
+
+`--latency` does nothing for this: cold with `--latency 10ms` measured 1027–1034 ms, the
+same as without it. An earlier run of that test appeared to show 356 ms, which was the
+device still awake from the previous probe — a confounded order, not an effect.
+
+**Not fixed, and not fixed by this file**: ~365 ms before the first sample with everything
+warm — the process starting and the graph being built. Not measured: whether a capture
+stream the engine kept open between holds would remove that, and with it the ~0.36 s of
+speech that still precedes it.
+
+Two measurement traps from the same session, both of which cost a wrong number first:
+`pkill -f pw-record` matches the shell running it (that command died with 143) — use
+`pkill -x pw-record`. And a `timeout -s INT 2 pw-record` run does not produce 2 s of audio
+even warm: the signal is handled and the client drains first, hence the 1.88 s figure above
+rather than 2.00 s, which is why the tables compare runs measured the same way.
+
 ## A held key repeats; a pressed-again key does not
 
 The hold is read from key events, and the repeats of a held key arrive as more presses.

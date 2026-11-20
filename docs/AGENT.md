@@ -211,8 +211,8 @@ writes, and everything that can go wrong instead:
 | The line begins | What it means |
 |---|---|
 | `server <address> (model <id>)` | once per engine: the address and the id this process will use, exactly as the settings hold them. It says nothing about whether anything is listening, and `asr_endpoint` is the finding that does |
-| `capture ready:` | once per engine: this machine has a client to record with, named on the line, and what it must be told about raw samples was settled now rather than between a key coming down and the first sample |
-| `nothing to record with:` | neither `parec` nor `pw-record` was found, so a hold would record nothing; the engine started anyway, and the `capture` finding is the one that names what to install |
+| `capture ready:` | once per engine: this machine has a client to record with, named on the line; what it must be told about raw samples was settled now rather than between a key coming down and the first sample; and the microphone was opened once and the audio thrown away, which is what the duration on the line is - how long that open took to deliver its first sample. It is the sound server's first open of the device (1.09s on this machine, 0.36s for every open after it), paid here instead of by the first dictation after a login |
+| `nothing to record with:` | nothing could be opened to record with: neither `parec` nor `pw-record` was found, or the client that was found delivered no sample inside the warm-up's budget (a sound server that is not listening yet - which is why the warm-up retries before it says this). A hold would record nothing; the engine started anyway, and the `capture` finding is the one that names what to install |
 | `ready: hold … to dictate` | this input context is armed. Selecting the engine records nothing |
 | `recording` | the trigger was pressed |
 | `diagnostic: dictating` | this process was started with `--audio-file`: it dictated that file instead of waiting for a key |

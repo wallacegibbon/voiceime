@@ -293,16 +293,17 @@ func runIBusEngine(ctx *Context, options engineRunOptions) error {
 		return PreconditionError(issue.Fix, "the settings cannot work: %s: %s", issue.Key, issue.Message)
 	}
 
-	// Ask the capture client what it needs, and whether there is one, before anybody holds
-	// the key: the question costs a process, its answer cannot change while this process
-	// runs, and a machine with nothing to record with should say so in this log rather than
-	// in the middle of someone's first sentence. See audio.WarmUpCapture. The file
-	// diagnostic has no microphone to ask anything of.
+	// Open the microphone once before anybody holds the key - see audio.WarmUpCapture. It
+	// settles what the capture client must be told about its output, answers whether there is
+	// a client at all, and pays the sound server's first open of the device (1.09s measured on
+	// this machine, and paid by the first dictation after a login otherwise) here rather than
+	// between a key coming down and the first sample. The audio it captures is thrown away.
+	// The file diagnostic has no microphone to open.
 	if audioFile == "" {
-		if tool, err := audio.WarmUpCapture(ctx.Config); err != nil {
+		if tool, took, err := audio.WarmUpCapture(ctx.Config); err != nil {
 			logf("nothing to record with: %v", err)
 		} else {
-			logf("capture ready: %s", tool)
+			logf("capture ready: %s (first sample after %v)", tool, took.Round(time.Millisecond))
 		}
 	}
 

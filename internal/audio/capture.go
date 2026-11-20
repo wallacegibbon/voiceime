@@ -187,22 +187,88 @@ func NewMicrophone(cfg *config.Config) (Capture, error) {
 	}, nil
 }
 
-// WarmUpCapture answers the questions captureCommand would ask, before anyone dictates, and
-// returns the client this machine would record with.
+// WarmUpCapture opens the capture once, throws the audio away, and returns the client it
+// used with how long that client took to deliver its first sample.
 //
-// The one question - what the installed capture tool needs to be told about its output -
-// costs a process (15-21ms measured on 2026-11-20), and the answer cannot change while this
-// process runs, so the time belongs at start-up and not between a key coming down and the
-// first sample. Nothing is recorded here. A machine with nothing to record with is reported
-// now as well, where a log line can say so, rather than at the first hold in the middle of
-// somebody's sentence.
-func WarmUpCapture(cfg *config.Config) (string, error) {
+// Three things are bought at start-up here, and every one of them is otherwise paid between
+// a key coming down and the first sample - which is when a person starts speaking:
+//
+//   - what the installed capture tool needs to be told about its output: a process, 15-21ms
+//     measured on 2026-11-20, and an answer that cannot change while this process runs;
+//   - whether there is a client to record with at all, so that a machine with nothing to
+//     record with says so in a log instead of in the middle of somebody's sentence;
+//   - the sound server's own first open of the device. Measured on this machine on
+//     2026-11-21: the first open after the server has started delivers its first sample
+//     1.09s after the client starts, and every open after it 0.36s, because the server keeps
+//     the device open once something has opened it. The 1.09s is the first dictation after a
+//     login and nothing else, which is why it looked like a fault of the first hold rather
+//     than of the machine (docs/measurements.md, "The first recording after the microphone
+//     has been idle starts late").
+//
+// No audio is kept and none is sent anywhere: the capture is stopped as soon as one block
+// has arrived.
+func WarmUpCapture(cfg *config.Config) (string, time.Duration, error) {
+	deadline := time.Now().Add(warmUpBudget)
+	for {
+		tool, took, err := warmUpOnce(cfg)
+		if err == nil {
+			return tool, took, nil
+		}
+		// A login can start the engine process before the sound server is listening, and a
+		// warm-up that failed there would leave the one cost this exists to remove. It is
+		// retried inside a budget rather than waited out for as long as it takes: an engine
+		// that never came up would be the worse of the two failures.
+		if !time.Now().Add(warmUpRetry).Before(deadline) {
+			return "", 0, err
+		}
+		time.Sleep(warmUpRetry)
+	}
+}
+
+// warmUpOnce is one attempt: start the client, wait for a block, stop it.
+func warmUpOnce(cfg *config.Config) (string, time.Duration, error) {
 	command, err := captureCommand(cfg)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
-	return command[0], nil
+	capture := &microphone{
+		captureBase: newCaptureBase(),
+		command:     command,
+		finished:    make(chan struct{}),
+	}
+	started := time.Now()
+	if err := capture.Start(); err != nil {
+		return "", 0, err
+	}
+	defer capture.Stop()
+	select {
+	case chunk, ok := <-capture.Chunks():
+		if !ok {
+			if err := capture.Err(); err != nil {
+				return "", 0, fmt.Errorf("%s: %w", command[0], err)
+			}
+			return "", 0, fmt.Errorf("%s produced no audio", command[0])
+		}
+		if len(chunk.Data) == 0 {
+			return "", 0, fmt.Errorf("%s produced no audio", command[0])
+		}
+		return command[0], time.Since(started), nil
+	case <-time.After(warmUpFirstSample):
+		return "", 0, fmt.Errorf("%s delivered no sample within %v", command[0], warmUpFirstSample)
+	}
 }
+
+// The warm-up's three bounds are variables so that a test does not have to wait them out: a
+// test that sat through the budget would cost more than the failure it guards against.
+var (
+	// warmUpFirstSample is how long one attempt waits for the first block. A cold first open
+	// was measured at 1.09s, which leaves room for a slower machine and not for a hung one.
+	warmUpFirstSample = 2 * time.Second
+	// warmUpBudget bounds all the attempts together, retries included.
+	warmUpBudget = 6 * time.Second
+	// warmUpRetry is the pause between attempts.
+	warmUpRetry = 500 * time.Millisecond
+)
 
 func captureCommand(cfg *config.Config) ([]string, error) {
 	// The rate is not a setting, and it is not a parameter either: audio.cpp's bundled VAD

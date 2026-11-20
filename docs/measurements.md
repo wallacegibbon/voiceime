@@ -199,10 +199,18 @@ Three ways to get that file wrong, all of them found the hard way here:
 same as without it. An earlier run of that test appeared to show 356 ms, which was the
 device still awake from the previous probe — a confounded order, not an effect.
 
-**Not fixed, and not fixed by this file**: ~365 ms before the first sample with everything
-warm — the process starting and the graph being built. Not measured: whether a capture
-stream the engine kept open between holds would remove that, and with it the ~0.36 s of
-speech that still precedes it.
+**The first open is now paid at start-up instead.** The session manager stops suspending the
+node, and the engine opens the capture once as it comes up, throws the audio away, and logs
+how long that open took (`capture ready: <client> (first sample after <duration>)`). That
+moves the 1.09s to a second after login; what a hold pays is then 0.36s, always.
+
+**Still not fixed**: those ~365 ms, which are the client process starting and the graph being
+built, and they precede the first sample of every hold. Not measured: how much of them a
+capture stream kept open between holds would remove. The cost of that shape, measured on
+2026-11-21: an idle `pw-record` holds 7.5 MB and spends 1.1s of CPU per 62s (≈1.8% of one
+core, the 16 kHz resampling is done in the client) while `pipewire` and `wireplumber` add
+0.13%; the device then never closes, so the codec stays powered - which the suspend setting
+above already does, with nothing recording.
 
 Two measurement traps from the same session, both of which cost a wrong number first:
 `pkill -f pw-record` matches the shell running it (that command died with 143) — use

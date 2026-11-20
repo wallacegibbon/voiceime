@@ -211,6 +211,8 @@ writes, and everything that can go wrong instead:
 | The line begins | What it means |
 |---|---|
 | `server <address> (model <id>)` | once per engine: the address and the id this process will use, exactly as the settings hold them. It says nothing about whether anything is listening, and `asr_endpoint` is the finding that does |
+| `capture ready:` | once per engine: this machine has a client to record with, named on the line, and what it must be told about raw samples was settled now rather than between a key coming down and the first sample |
+| `nothing to record with:` | neither `parec` nor `pw-record` was found, so a hold would record nothing; the engine started anyway, and the `capture` finding is the one that names what to install |
 | `ready: hold … to dictate` | this input context is armed. Selecting the engine records nothing |
 | `recording` | the trigger was pressed |
 | `diagnostic: dictating` | this process was started with `--audio-file`: it dictated that file instead of waiting for a key |

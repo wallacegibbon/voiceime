@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/wallacegibbon/voiceime/internal/audio"
 	"github.com/wallacegibbon/voiceime/internal/config"
 	"github.com/wallacegibbon/voiceime/internal/daemon"
 	"github.com/wallacegibbon/voiceime/internal/gnome"
@@ -290,6 +291,19 @@ func runIBusEngine(ctx *Context, options engineRunOptions) error {
 	if issue, bad := firstBlockingIssue(ctx.Config); bad {
 		logf("not starting: the settings cannot work: %s: %s (%s)", issue.Key, issue.Message, issue.Fix)
 		return PreconditionError(issue.Fix, "the settings cannot work: %s: %s", issue.Key, issue.Message)
+	}
+
+	// Ask the capture client what it needs, and whether there is one, before anybody holds
+	// the key: the question costs a process, its answer cannot change while this process
+	// runs, and a machine with nothing to record with should say so in this log rather than
+	// in the middle of someone's first sentence. See audio.WarmUpCapture. The file
+	// diagnostic has no microphone to ask anything of.
+	if audioFile == "" {
+		if tool, err := audio.WarmUpCapture(ctx.Config); err != nil {
+			logf("nothing to record with: %v", err)
+		} else {
+			logf("capture ready: %s", tool)
+		}
 	}
 
 	// One pipeline, whether the audio comes from the microphone or from a file: the
